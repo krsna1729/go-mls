@@ -1,0 +1,10 @@
+{
+    "antmedia": {
+        "input_url": "rtmp://localhost/live/stream",
+        "output_url": "rtmp://test.antmedia.io/WebRTCAppEE/streamId_HrAETW10x"
+    },
+    "antmedia-5": {
+        "input_url": "rtmp://localhost/live/stream",
+        "output_url": "rtmp://test.antmedia.io/WebRTCAppEE/streamId_0GcufvYDr"
+    }
+}
