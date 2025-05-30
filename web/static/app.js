@@ -1,7 +1,23 @@
 document.addEventListener('DOMContentLoaded', function() {
     const controls = document.getElementById('controls');
     const statusDiv = document.getElementById('status');
+    const logsDiv = document.getElementById('logs');
     let configSelect;
+
+    function updateLogs() {
+        fetch('/api/relay/logs')
+            .then(r => r.json())
+            .then(data => {
+                if (data.logs && data.logs.length) {
+                    logsDiv.innerHTML = data.logs.map(l => l.replace(/</g,'&lt;')).join('<br>');
+                } else {
+                    logsDiv.innerHTML = '<i>No logs yet.</i>';
+                }
+            });
+    }
+
+    setInterval(updateLogs, 2000);
+    updateLogs();
 
     function updateStatus() {
         fetch('/api/status')

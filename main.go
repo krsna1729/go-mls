@@ -202,6 +202,12 @@ func apiImportConfigs(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"status": "imported"})
 }
 
+func apiRelayLogs(w http.ResponseWriter, r *http.Request) {
+	logs := streamMgr.GetLogs()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"logs": logs})
+}
+
 func main() {
 	// Serve static files from web/static
 	fs := http.FileServer(http.Dir("web/static"))
@@ -218,6 +224,7 @@ func main() {
 	http.HandleFunc("/api/delete-config", apiDeleteConfig)
 	http.HandleFunc("/api/export-configs", apiExportConfigs)
 	http.HandleFunc("/api/import-configs", apiImportConfigs)
+	http.HandleFunc("/api/relay/logs", apiRelayLogs)
 
 	logr.Info("Go-MLS server running at http://localhost:8080 ...")
 	if err := http.ListenAndServe(":8080", nil); err != nil {
