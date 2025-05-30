@@ -8,11 +8,19 @@ services:
     networks:
       - rtmp-net
 
-  output-rtmp:
+  output-rtmp-1:
     image: tiangolo/nginx-rtmp
-    container_name: output-rtmp
+    container_name: output-rtmp-1
     ports:
       - "1935:1935"
+    networks:
+      - rtmp-net
+
+  output-rtmp-2:
+    image: tiangolo/nginx-rtmp
+    container_name: output-rtmp-2
+    ports:
+      - "1936:1935"
     networks:
       - rtmp-net
 

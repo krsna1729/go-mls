@@ -12,15 +12,16 @@ import (
 const logBufferSize = 100
 
 type RTMPRelayConfig struct {
-	InputURL  string `json:"input_url"`
-	OutputURL string `json:"output_url"`
+	InputURL   string   `json:"input_url"`
+	OutputURLs []string `json:"output_urls"`
 }
 
+// StreamManager now manages multiple ffmpeg processes (one per output)
 type StreamManager struct {
-	cmd         *exec.Cmd
+	cmds        []*exec.Cmd
 	mu          sync.Mutex
 	Active      bool
-	LastCmd     string
+	LastCmds    []string
 	RelayConfig RTMPRelayConfig
 	logLines    []string
 }
@@ -42,88 +43,100 @@ func (s *StreamManager) StartRelay(cfg RTMPRelayConfig) error {
 	if s.Active {
 		return nil // Already running
 	}
-	cmd := exec.Command("ffmpeg", "-re", "-i", cfg.InputURL, "-c", "copy", "-f", "flv", cfg.OutputURL)
-	s.LastCmd = fmt.Sprintf("ffmpeg -re -i %s -c copy -f flv %s", cfg.InputURL, cfg.OutputURL)
-
-	stdoutPipe, err := cmd.StdoutPipe()
-	if err != nil {
-		return err
+	if len(cfg.OutputURLs) == 0 {
+		return fmt.Errorf("no output URLs specified")
 	}
-	stderrPipe, err := cmd.StderrPipe()
-	if err != nil {
-		return err
-	}
-
-	err = cmd.Start()
-	if err != nil {
-		return err
-	}
-	s.cmd = cmd
-	s.Active = true
-	s.RelayConfig = cfg
+	s.cmds = nil
+	s.LastCmds = nil
 	s.logLines = nil // reset logs
 
-	// Stream logs in real time
-	go func() {
-		stdoutReader := bufio.NewReader(stdoutPipe)
-		for {
-			line, err := stdoutReader.ReadString('\r')
-			line = strings.Trim(line, "\r\n")
-			if len(line) > 0 {
-				s.mu.Lock()
-				s.appendLog(line)
-				s.mu.Unlock()
-			}
-			if err != nil {
-				if err == io.EOF {
-					break
+	for _, outURL := range cfg.OutputURLs {
+		cmd := exec.Command("ffmpeg", "-re", "-i", cfg.InputURL, "-c", "copy", "-f", "flv", outURL)
+		lastCmd := fmt.Sprintf("ffmpeg -re -i %s -c copy -f flv %s", cfg.InputURL, outURL)
+		stdoutPipe, err := cmd.StdoutPipe()
+		if err != nil {
+			return err
+		}
+		stderrPipe, err := cmd.StderrPipe()
+		if err != nil {
+			return err
+		}
+		err = cmd.Start()
+		if err != nil {
+			return err
+		}
+		s.cmds = append(s.cmds, cmd)
+		s.LastCmds = append(s.LastCmds, lastCmd)
+
+		// Stream logs in real time for each process
+		go func(out string, stdout io.ReadCloser, stderr io.ReadCloser) {
+			stdoutReader := bufio.NewReader(stdout)
+			for {
+				line, err := stdoutReader.ReadString('\n')
+				line = strings.TrimRight(line, "\r\n")
+				if len(line) > 0 {
+					s.mu.Lock()
+					s.appendLog("[" + out + "] " + line)
+					s.mu.Unlock()
+				}
+				if err != nil {
+					if err == io.EOF {
+						break
+					}
 				}
 			}
-		}
-	}()
-	go func() {
-		for {
-			line, err := bufio.NewReader(stderrPipe).ReadString('\r')
-			line = strings.Trim(line, "\r\n")
-			if len(line) > 0 {
-				s.mu.Lock()
-				s.appendLog("[ERR] " + line)
-				s.mu.Unlock()
-			}
-			if err != nil {
-				if err == io.EOF {
-					break
+		}(outURL, stdoutPipe, stderrPipe)
+		go func(out string, stderr io.ReadCloser) {
+			stderrReader := bufio.NewReader(stderr)
+			for {
+				line, err := stderrReader.ReadString('\n')
+				line = strings.TrimRight(line, "\r\n")
+				if len(line) > 0 {
+					s.mu.Lock()
+					s.appendLog("[ERR][" + out + "] " + line)
+					s.mu.Unlock()
+				}
+				if err != nil {
+					if err == io.EOF {
+						break
+					}
 				}
 			}
-		}
-	}()
-	go func() {
-		cmd.Wait()
-		s.mu.Lock()
-		s.Active = false
-		s.mu.Unlock()
-	}()
+		}(outURL, stderrPipe)
+		go func(cmd *exec.Cmd) {
+			cmd.Wait()
+			s.mu.Lock()
+			// If any process exits, mark inactive
+			s.Active = false
+			s.mu.Unlock()
+		}(cmd)
+	}
+
+	s.Active = true
+	s.RelayConfig = cfg
 	return nil
 }
 
 func (s *StreamManager) Stop() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !s.Active || s.cmd == nil {
+	if !s.Active || len(s.cmds) == 0 {
 		return nil // Not running
 	}
-	if err := s.cmd.Process.Kill(); err != nil {
-		return err
+	for _, cmd := range s.cmds {
+		if cmd != nil && cmd.Process != nil {
+			cmd.Process.Kill()
+		}
 	}
 	s.Active = false
-	s.cmd = nil
+	s.cmds = nil
 	return nil
 }
 
-func (s *StreamManager) Status() (bool, RTMPRelayConfig, string) {
+func (s *StreamManager) Status() (bool, RTMPRelayConfig, []string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.Active, s.RelayConfig, s.LastCmd
+	return s.Active, s.RelayConfig, s.LastCmds
 }
 
 func (s *StreamManager) GetLogs() []string {
