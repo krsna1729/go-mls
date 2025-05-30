@@ -16,9 +16,6 @@ document.addEventListener('DOMContentLoaded', function() {
             });
     }
 
-    setInterval(updateLogs, 2000);
-    updateLogs();
-
     function updateStatus() {
         fetch('/api/status')
             .then(r => r.json())
@@ -30,6 +27,40 @@ document.addEventListener('DOMContentLoaded', function() {
                 document.getElementById('startBtn').disabled = data.running;
                 document.getElementById('stopBtn').disabled = !data.running;
             });
+    }
+
+    function setupSSE() {
+        if (!window.EventSource) return false;
+        const es = new EventSource('/api/relay/events');
+        es.addEventListener('status', function(e) {
+            const data = JSON.parse(e.data);
+            statusDiv.innerHTML = `<b>Status:</b> ${data.status === 'running' ? 'Stream running' : 'Idle'}` +
+                (data.input_url ? `<br><b>Input:</b> ${data.input_url}` : '') +
+                (data.output_url ? `<br><b>Output:</b> ${data.output_url}` : '') +
+                (data.last_cmd ? `<br><b>Last Cmd:</b> <code>${data.last_cmd}</code>` : '');
+            document.getElementById('startBtn').disabled = data.status === 'running';
+            document.getElementById('stopBtn').disabled = data.status !== 'running';
+        });
+        es.addEventListener('logs', function(e) {
+            const logs = JSON.parse(e.data);
+            if (logs && logs.length) {
+                logsDiv.innerHTML = logs.map(l => l.replace(/</g,'&lt;')).join('<br>');
+            } else {
+                logsDiv.innerHTML = '<i>No logs yet.</i>';
+            }
+        });
+        es.onerror = function() {
+            es.close();
+            // fallback to polling
+            setInterval(updateLogs, 2000);
+            setInterval(updateStatus, 2000);
+        };
+        return true;
+    }
+
+    if (!setupSSE()) {
+        setInterval(updateLogs, 2000);
+        setInterval(updateStatus, 2000);
     }
 
     function loadConfigList() {

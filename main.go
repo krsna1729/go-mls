@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"time"
 
 	"go-mls/internal/config"
 	"go-mls/internal/stream"
@@ -208,6 +209,64 @@ func apiRelayLogs(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{"logs": logs})
 }
 
+func apiRelayEvents(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "Streaming unsupported!", http.StatusInternalServerError)
+		return
+	}
+
+	lastLogLen := 0
+	lastStatus := ""
+	for {
+		running, relayCfg, lastCmd := streamMgr.Status()
+		logs := streamMgr.GetLogs()
+		status := "idle"
+		if running {
+			status = "running"
+		}
+		statusPayload := struct {
+			Status    string `json:"status"`
+			InputURL  string `json:"input_url"`
+			OutputURL string `json:"output_url"`
+			LastCmd   string `json:"last_cmd"`
+		}{
+			Status:    status,
+			InputURL:  relayCfg.InputURL,
+			OutputURL: relayCfg.OutputURL,
+			LastCmd:   lastCmd,
+		}
+		statusJSON, _ := json.Marshal(statusPayload)
+		logsJSON, _ := json.Marshal(logs)
+
+		if string(statusJSON) != lastStatus {
+			w.Write([]byte("event: status\n"))
+			w.Write([]byte("data: "))
+			w.Write(statusJSON)
+			w.Write([]byte("\n\n"))
+			flusher.Flush()
+			lastStatus = string(statusJSON)
+		}
+		if len(logs) != lastLogLen {
+			w.Write([]byte("event: logs\n"))
+			w.Write([]byte("data: "))
+			w.Write(logsJSON)
+			w.Write([]byte("\n\n"))
+			flusher.Flush()
+			lastLogLen = len(logs)
+		}
+		// Check for client disconnect using request context
+		select {
+		case <-r.Context().Done():
+			return
+		case <-time.After(1 * time.Second):
+		}
+	}
+}
+
 func main() {
 	// Serve static files from web/static
 	fs := http.FileServer(http.Dir("web/static"))
@@ -225,6 +284,7 @@ func main() {
 	http.HandleFunc("/api/export-configs", apiExportConfigs)
 	http.HandleFunc("/api/import-configs", apiImportConfigs)
 	http.HandleFunc("/api/relay/logs", apiRelayLogs)
+	http.HandleFunc("/api/relay/events", apiRelayEvents)
 
 	logr.Info("Go-MLS server running at http://localhost:8080 ...")
 	if err := http.ListenAndServe(":8080", nil); err != nil {
