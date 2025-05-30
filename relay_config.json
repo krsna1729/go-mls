@@ -1,6 +1,9 @@
 {
     "docker": {
         "input_url": "rtmp://localhost:1934/live/stream",
-        "output_url": "rtmp://localhost/live/stream"
+        "output_urls": [
+            "rtmp://localhost:1935/live/stream",
+            "rtmp://localhost:1936/live/stream"
+        ]
     }
 }

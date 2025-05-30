@@ -90,7 +90,7 @@ func (c *ConfigStore) Clean() error {
 		return err
 	}
 	for name, cfg := range configs {
-		if name == "" || (cfg.InputURL == "" && cfg.OutputURL == "") {
+		if name == "" || (cfg.InputURL == "" && (len(cfg.OutputURLs) == 0 || allEmpty(cfg.OutputURLs))) {
 			delete(configs, name)
 		}
 	}
@@ -102,6 +102,16 @@ func (c *ConfigStore) Clean() error {
 	encoder := json.NewEncoder(file)
 	encoder.SetIndent("", "    ")
 	return encoder.Encode(configs)
+}
+
+// allEmpty returns true if all strings in the slice are empty
+func allEmpty(urls []string) bool {
+	for _, u := range urls {
+		if u != "" {
+			return false
+		}
+	}
+	return true
 }
 
 func (c *ConfigStore) loadAll(target *map[string]stream.RTMPRelayConfig) error {

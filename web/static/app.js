@@ -20,10 +20,19 @@ document.addEventListener('DOMContentLoaded', function() {
         fetch('/api/status')
             .then(r => r.json())
             .then(data => {
+                let outputs = '';
+                if (data.output_urls && data.output_urls.length) {
+                    outputs = `<br><b>Outputs:</b><ul style='margin:0 0 0 20px;padding:0;'>` +
+                        data.output_urls.map(url => `<li>${url}</li>`).join('') + '</ul>';
+                }
+                let cmds = '';
+                if (data.last_cmds && data.last_cmds.length) {
+                    cmds = `<br><b>Last Cmds:</b><ul style='margin:0 0 0 20px;padding:0;'>` +
+                        data.last_cmds.map(cmd => `<li><code>${cmd}</code></li>`).join('') + '</ul>';
+                }
                 statusDiv.innerHTML = `<b>Status:</b> ${data.message}` +
                     (data.input_url ? `<br><b>Input:</b> ${data.input_url}` : '') +
-                    (data.output_url ? `<br><b>Output:</b> ${data.output_url}` : '') +
-                    (data.last_cmd ? `<br><b>Last Cmd:</b> <code>${data.last_cmd}</code>` : '');
+                    outputs + cmds;
                 document.getElementById('startBtn').disabled = data.running;
                 document.getElementById('stopBtn').disabled = !data.running;
             });
@@ -34,10 +43,19 @@ document.addEventListener('DOMContentLoaded', function() {
         const es = new EventSource('/api/relay/events');
         es.addEventListener('status', function(e) {
             const data = JSON.parse(e.data);
+            let outputs = '';
+            if (data.output_urls && data.output_urls.length) {
+                outputs = `<br><b>Outputs:</b><ul style='margin:0 0 0 20px;padding:0;'>` +
+                    data.output_urls.map(url => `<li>${url}</li>`).join('') + '</ul>';
+            }
+            let cmds = '';
+            if (data.last_cmds && data.last_cmds.length) {
+                cmds = `<br><b>Last Cmds:</b><ul style='margin:0 0 0 20px;padding:0;'>` +
+                    data.last_cmds.map(cmd => `<li><code>${cmd}</code></li>`).join('') + '</ul>';
+            }
             statusDiv.innerHTML = `<b>Status:</b> ${data.status === 'running' ? 'Stream running' : 'Idle'}` +
                 (data.input_url ? `<br><b>Input:</b> ${data.input_url}` : '') +
-                (data.output_url ? `<br><b>Output:</b> ${data.output_url}` : '') +
-                (data.last_cmd ? `<br><b>Last Cmd:</b> <code>${data.last_cmd}</code>` : '');
+                outputs + cmds;
             document.getElementById('startBtn').disabled = data.status === 'running';
             document.getElementById('stopBtn').disabled = data.status !== 'running';
         });
@@ -78,14 +96,14 @@ document.addEventListener('DOMContentLoaded', function() {
             .then(r => r.json())
             .then(cfg => {
                 if (cfg.input_url) document.getElementById('inputUrl').value = cfg.input_url;
-                if (cfg.output_url) document.getElementById('outputUrl').value = cfg.output_url;
+                if (cfg.output_urls) document.getElementById('outputUrls').value = Array.isArray(cfg.output_urls) ? cfg.output_urls.join('\n') : cfg.output_urls;
             });
     }
 
     controls.innerHTML = `
         <form id="relayForm" enctype="multipart/form-data">
             <label>RTMP Input URL: <input type="text" id="inputUrl" required placeholder="rtmp://source/live/stream" style="width:300px"></label><br>
-            <label>RTMP Output URL: <input type="text" id="outputUrl" required placeholder="rtmp://dest/live/stream" style="width:300px"></label><br>
+            <label>RTMP Output URLs: <textarea id="outputUrls" required placeholder="rtmp://dest/live/stream1\nrtmp://dest/live/stream2" style="width:300px;height:48px;"></textarea></label><br>
             <select id="configSelect"></select>
             <button id="loadBtn" type="button">Load Config</button>
             <button id="deleteBtn" type="button">Delete Config</button>
@@ -106,12 +124,16 @@ document.addEventListener('DOMContentLoaded', function() {
 
     document.getElementById('relayForm').onsubmit = function(e) {
         e.preventDefault();
+        const outputUrls = document.getElementById('outputUrls').value
+            .split(/\n|,/)
+            .map(s => s.trim())
+            .filter(Boolean);
         fetch('/api/start', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 input_url: document.getElementById('inputUrl').value,
-                output_url: document.getElementById('outputUrl').value
+                output_urls: outputUrls
             })
         }).then(() => updateStatus());
     };
@@ -122,13 +144,17 @@ document.addEventListener('DOMContentLoaded', function() {
     document.getElementById('saveBtn').onclick = function() {
         const name = document.getElementById('saveName').value.trim();
         if (!name) { alert('Enter a config name!'); return; }
+        const outputUrls = document.getElementById('outputUrls').value
+            .split(/\n|,/)
+            .map(s => s.trim())
+            .filter(Boolean);
         fetch('/api/save-config', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 name,
                 input_url: document.getElementById('inputUrl').value,
-                output_url: document.getElementById('outputUrl').value
+                output_urls: outputUrls
             })
         }).then(() => { alert('Config saved!'); loadConfigList(); });
     };

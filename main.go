@@ -18,11 +18,11 @@ var (
 )
 
 type StreamStatus struct {
-	Running   bool   `json:"running"`
-	Message   string `json:"message"`
-	InputURL  string `json:"input_url,omitempty"`
-	OutputURL string `json:"output_url,omitempty"`
-	LastCmd   string `json:"last_cmd,omitempty"`
+	Running    bool     `json:"running"`
+	Message    string   `json:"message"`
+	InputURL   string   `json:"input_url,omitempty"`
+	OutputURLs []string `json:"output_urls,omitempty"`
+	LastCmds   []string `json:"last_cmds,omitempty"`
 }
 
 func apiStartStream(w http.ResponseWriter, r *http.Request) {
@@ -39,8 +39,8 @@ func apiStartStream(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(StreamStatus{Running: false, Message: "Failed to start: " + err.Error()})
 		return
 	}
-	logr.Info("Stream relay started: %s -> %s", relayCfg.InputURL, relayCfg.OutputURL)
-	json.NewEncoder(w).Encode(StreamStatus{Running: true, Message: "Stream started", InputURL: relayCfg.InputURL, OutputURL: relayCfg.OutputURL})
+	logr.Info("Stream relay started: %s -> %v", relayCfg.InputURL, relayCfg.OutputURLs)
+	json.NewEncoder(w).Encode(StreamStatus{Running: true, Message: "Stream started", InputURL: relayCfg.InputURL, OutputURLs: relayCfg.OutputURLs})
 }
 
 func apiStopStream(w http.ResponseWriter, r *http.Request) {
@@ -56,9 +56,9 @@ func apiStopStream(w http.ResponseWriter, r *http.Request) {
 
 func apiStatus(w http.ResponseWriter, r *http.Request) {
 	logr.Debug("Status requested")
-	running, relayCfg, lastCmd := streamMgr.Status()
+	running, relayCfg, lastCmds := streamMgr.Status()
 	json.NewEncoder(w).Encode(StreamStatus{
-		Running: running,
+		Running:    running,
 		Message: func() string {
 			if running {
 				return "Stream running"
@@ -66,9 +66,9 @@ func apiStatus(w http.ResponseWriter, r *http.Request) {
 				return "Idle"
 			}
 		}(),
-		InputURL:  relayCfg.InputURL,
-		OutputURL: relayCfg.OutputURL,
-		LastCmd:   lastCmd,
+		InputURL:   relayCfg.InputURL,
+		OutputURLs: relayCfg.OutputURLs,
+		LastCmds:   lastCmds,
 	})
 }
 
@@ -222,22 +222,22 @@ func apiRelayEvents(w http.ResponseWriter, r *http.Request) {
 	lastLogLen := 0
 	lastStatus := ""
 	for {
-		running, relayCfg, lastCmd := streamMgr.Status()
+		running, relayCfg, lastCmds := streamMgr.Status()
 		logs := streamMgr.GetLogs()
 		status := "idle"
 		if running {
 			status = "running"
 		}
 		statusPayload := struct {
-			Status    string `json:"status"`
-			InputURL  string `json:"input_url"`
-			OutputURL string `json:"output_url"`
-			LastCmd   string `json:"last_cmd"`
+			Status    string   `json:"status"`
+			InputURL  string   `json:"input_url"`
+			OutputURLs []string `json:"output_urls"`
+			LastCmds   []string `json:"last_cmds"`
 		}{
 			Status:    status,
 			InputURL:  relayCfg.InputURL,
-			OutputURL: relayCfg.OutputURL,
-			LastCmd:   lastCmd,
+			OutputURLs: relayCfg.OutputURLs,
+			LastCmds:   lastCmds,
 		}
 		statusJSON, _ := json.Marshal(statusPayload)
 		logsJSON, _ := json.Marshal(logs)
