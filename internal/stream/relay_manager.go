@@ -62,25 +62,22 @@ func (rm *RelayManager) StartRelay(inputURL, outputURL string) error {
 
 	relay.mu.Lock()
 	if ep, exists := relay.Endpoints[outputURL]; exists && ep.Running {
-		rm.Logger.Debug("Relay already running for input=%s, output=%s", inputURL, outputURL)
-		relay.mu.Unlock()
 		rm.Logger.Warn("Relay already running for %s -> %s", inputURL, outputURL)
+		relay.mu.Unlock()
 		return fmt.Errorf("relay already running for %s -> %s", inputURL, outputURL)
 	}
 	cmd := exec.Command("ffmpeg", "-re", "-i", inputURL, "-c", "copy", "-f", "flv", outputURL)
 	rm.Logger.Debug("Starting ffmpeg process: %v", cmd.Args)
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
-		rm.Logger.Debug("Failed to create stderr pipe for input=%s, output=%s: %v", inputURL, outputURL, err)
-		relay.mu.Unlock()
 		rm.Logger.Error("Failed to create stderr pipe for %s -> %s: %v", inputURL, outputURL, err)
+		relay.mu.Unlock()
 		return fmt.Errorf("failed to create stderr pipe: %v", err)
 	}
 	err = cmd.Start()
 	if err != nil {
-		rm.Logger.Debug("Failed to start ffmpeg for input=%s, output=%s: %v", inputURL, outputURL, err)
-		relay.mu.Unlock()
 		rm.Logger.Error("Failed to start ffmpeg for %s -> %s: %v", inputURL, outputURL, err)
+		relay.mu.Unlock()
 		return fmt.Errorf("failed to start FFmpeg: %v", err)
 	}
 	rm.Logger.Info("Started relay: %s -> %s (pid=%d)", inputURL, outputURL, cmd.Process.Pid)
@@ -144,7 +141,6 @@ func (rm *RelayManager) StopRelay(inputURL, outputURL string) error {
 	relay, exists := rm.Relays[inputURL]
 	rm.mu.Unlock()
 	if !exists {
-		rm.Logger.Debug("No relay found for input=%s", inputURL)
 		rm.Logger.Warn("No relay for input %s", inputURL)
 		return fmt.Errorf("no relay for input %s", inputURL)
 	}
@@ -152,18 +148,15 @@ func (rm *RelayManager) StopRelay(inputURL, outputURL string) error {
 	ep, exists := relay.Endpoints[outputURL]
 	relay.mu.Unlock()
 	if !exists || !ep.Running {
-		rm.Logger.Debug("No running endpoint for input=%s, output=%s", inputURL, outputURL)
 		rm.Logger.Warn("Relay not running for %s -> %s", inputURL, outputURL)
 		return fmt.Errorf("relay not running for %s -> %s", inputURL, outputURL)
 	}
 	err := ep.Cmd.Process.Kill()
 	if err != nil {
-		rm.Logger.Debug("Failed to kill process for input=%s, output=%s: %v", inputURL, outputURL, err)
 		rm.Logger.Error("Failed to stop relay for %s -> %s: %v", inputURL, outputURL, err)
 		return err
 	}
 	rm.Logger.Info("Stopped relay: %s -> %s", inputURL, outputURL)
-	rm.Logger.Debug("StopRelay finished: input=%s, output=%s", inputURL, outputURL)
 	return nil
 }
 
@@ -226,11 +219,10 @@ func (rm *RelayManager) ExportConfig(filename string) error {
 	rm.mu.Unlock()
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
-		rm.Logger.Debug("Failed to marshal config: %v", err)
+		rm.Logger.Error("Failed to marshal config: %v", err)
 		return err
 	}
 	rm.Logger.Info("Exported relay config to %s", filename)
-	rm.Logger.Debug("ExportConfig finished: filename=%s", filename)
 	return os.WriteFile(filename, data, 0644)
 }
 
@@ -240,13 +232,13 @@ func (rm *RelayManager) ImportConfig(filename string) error {
 	type importConfig map[string][]string
 	data, err := os.ReadFile(filename)
 	if err != nil {
-		rm.Logger.Debug("Failed to read file %s: %v", filename, err)
+		rm.Logger.Error("Failed to read file %s: %v", filename, err)
 		return err
 	}
 	var cfg importConfig
 	err = json.Unmarshal(data, &cfg)
 	if err != nil {
-		rm.Logger.Debug("Failed to unmarshal config: %v", err)
+		rm.Logger.Error("Failed to unmarshal config: %v", err)
 		return err
 	}
 	for input, outputs := range cfg {
@@ -256,6 +248,5 @@ func (rm *RelayManager) ImportConfig(filename string) error {
 		}
 	}
 	rm.Logger.Info("Imported relay config from %s", filename)
-	rm.Logger.Debug("ImportConfig finished: filename=%s", filename)
 	return nil
 }

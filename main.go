@@ -18,14 +18,14 @@ func apiStartRelay(relayMgr *stream.RelayManager) http.HandlerFunc {
 			OutputURL string `json:"output_url"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			relayMgr.Logger.Debug("apiStartRelay: failed to decode request: %v", err)
+			relayMgr.Logger.Error("apiStartRelay: failed to decode request: %v", err)
 			w.WriteHeader(http.StatusBadRequest)
 			json.NewEncoder(w).Encode(map[string]string{"error": "Invalid request"})
 			return
 		}
 		relayMgr.Logger.Debug("apiStartRelay: starting relay for input=%s, output=%s", req.InputURL, req.OutputURL)
 		if err := relayMgr.StartRelay(req.InputURL, req.OutputURL); err != nil {
-			relayMgr.Logger.Debug("apiStartRelay: failed to start relay: %v", err)
+			relayMgr.Logger.Error("apiStartRelay: failed to start relay: %v", err)
 			w.WriteHeader(http.StatusInternalServerError)
 			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 			return
@@ -43,14 +43,14 @@ func apiStopRelay(relayMgr *stream.RelayManager) http.HandlerFunc {
 			OutputURL string `json:"output_url"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			relayMgr.Logger.Debug("apiStopRelay: failed to decode request: %v", err)
+			relayMgr.Logger.Error("apiStopRelay: failed to decode request: %v", err)
 			w.WriteHeader(http.StatusBadRequest)
 			json.NewEncoder(w).Encode(map[string]string{"error": "Invalid request"})
 			return
 		}
 		relayMgr.Logger.Debug("apiStopRelay: stopping relay for input=%s, output=%s", req.InputURL, req.OutputURL)
 		if err := relayMgr.StopRelay(req.InputURL, req.OutputURL); err != nil {
-			relayMgr.Logger.Debug("apiStopRelay: failed to stop relay: %v", err)
+			relayMgr.Logger.Error("apiStopRelay: failed to stop relay: %v", err)
 			w.WriteHeader(http.StatusInternalServerError)
 			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 			return
@@ -72,7 +72,7 @@ func apiExportRelays(relayMgr *stream.RelayManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		relayMgr.Logger.Debug("apiExportRelays called")
 		if err := relayMgr.ExportConfig("relay_config.json"); err != nil {
-			relayMgr.Logger.Debug("apiExportRelays: failed to export config: %v", err)
+			relayMgr.Logger.Error("apiExportRelays: failed to export config: %v", err)
 			w.WriteHeader(http.StatusInternalServerError)
 			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 			return
@@ -90,7 +90,7 @@ func apiImportRelays(relayMgr *stream.RelayManager) http.HandlerFunc {
 		relayMgr.Logger.Debug("apiImportRelays called")
 		file, _, err := r.FormFile("file")
 		if err != nil {
-			relayMgr.Logger.Debug("apiImportRelays: no file uploaded: %v", err)
+			relayMgr.Logger.Error("apiImportRelays: no file uploaded: %v", err)
 			w.WriteHeader(http.StatusBadRequest)
 			json.NewEncoder(w).Encode(map[string]string{"error": "No file uploaded"})
 			return
@@ -98,7 +98,7 @@ func apiImportRelays(relayMgr *stream.RelayManager) http.HandlerFunc {
 		defer file.Close()
 		f, err := os.Create("relay_config.json")
 		if err != nil {
-			relayMgr.Logger.Debug("apiImportRelays: failed to save file: %v", err)
+			relayMgr.Logger.Error("apiImportRelays: failed to save file: %v", err)
 			w.WriteHeader(http.StatusInternalServerError)
 			json.NewEncoder(w).Encode(map[string]string{"error": "Failed to save file"})
 			return
@@ -106,7 +106,7 @@ func apiImportRelays(relayMgr *stream.RelayManager) http.HandlerFunc {
 		defer f.Close()
 		io.Copy(f, file)
 		if err := relayMgr.ImportConfig("relay_config.json"); err != nil {
-			relayMgr.Logger.Debug("apiImportRelays: failed to import config: %v", err)
+			relayMgr.Logger.Error("apiImportRelays: failed to import config: %v", err)
 			w.WriteHeader(http.StatusInternalServerError)
 			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 			return
