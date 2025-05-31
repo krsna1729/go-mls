@@ -1,7 +1,5 @@
 document.addEventListener('DOMContentLoaded', function() {
     const relayControls = document.getElementById('controls');
-    const statusDiv = document.getElementById('status');
-    const logsDiv = document.getElementById('logs');
 
     // Render static input controls once
     relayControls.innerHTML = `<h2>Add Relay Endpoint</h2>
@@ -28,37 +26,45 @@ document.addEventListener('DOMContentLoaded', function() {
         } else {
             // Sort relays by input_url (alphanumeric ascending)
             data.sort((a, b) => a.input_url.localeCompare(b.input_url, undefined, {numeric: true, sensitivity: 'base'}));
-            html += `<table style="width:100%;border-collapse:collapse;">
-                <tr>
-                    <th>Input URL</th>
-                    <th>Output URL</th>
-                    <th>Status</th>
-                    <th>Bitrate (kbps)</th>
-                    <th>Action</th>
-                </tr>`;
-            for (const relay of data) {
+            html += `<table style="width:100%;border-collapse:separate;border-spacing:0;">
+                <thead>
+                    <tr>
+                        <th style="text-align:left; padding:8px 12px;">Input URL</th>
+                        <th style="text-align:left; padding:8px 12px;">Output URL</th>
+                        <th style="text-align:left; padding:8px 12px;">Status</th>
+                        <th style="text-align:left; padding:8px 12px;">Bitrate (kbps)</th>
+                        <th style="text-align:left; padding:8px 12px;">Action</th>
+                    </tr>
+                </thead>
+                <tbody>`;
+            for (let relayIdx = 0; relayIdx < data.length; relayIdx++) {
+                const relay = data[relayIdx];
                 const input = relay.input_url;
                 // Sort endpoints by output_url (alphanumeric ascending)
                 const endpoints = relay.endpoints ? relay.endpoints.slice().sort((a, b) => (a.output_url || '').localeCompare(b.output_url || '', undefined, {numeric: true, sensitivity: 'base'})) : [];
+                // Alternate input group background
+                const inputBg = relayIdx % 2 === 0 ? '#f7fafd' : '#f0f4fa';
+                const inputGroupBorder = 'border-top: 3px solid #b6d0f7;';
                 if (endpoints.length === 0) {
-                    html += `<tr>
-                        <td style="word-break:break-all; color:#1976d2; font-weight:bold;">${input}</td>
-                        <td colspan="4"><i>No endpoints</i></td>
+                    html += `<tr style="${inputGroupBorder}">
+                        <td style="word-break:break-all; color:#1976d2; font-weight:bold; padding:8px 12px; background:${inputBg};">${input}</td>
+                        <td colspan="4" style="padding:8px 12px; background:#fff;"><i>No endpoints</i></td>
                     </tr>`;
                 } else {
                     for (let i = 0; i < endpoints.length; i++) {
                         const ep = endpoints[i];
-                        html += `<tr>
-                            ${i === 0 ? `<td rowspan="${endpoints.length}" style="word-break:break-all; color:#1976d2; font-weight:bold; vertical-align:middle;">${input}</td>` : ''}
-                            <td style="word-break:break-all;">${ep.output_url}</td>
-                            <td>${ep.running ? 'Running' : 'Stopped'}</td>
-                            <td>${ep.bitrate ? ep.bitrate : '-'}</td>
-                            <td><button class="stopRelayBtn" data-input="${input}" data-output="${ep.output_url}" ${!ep.running ? 'disabled' : ''}>Stop</button></td>
+                        const outputBg = inputBg;
+                        html += `<tr style="${inputGroupBorder} background:${outputBg};">
+                            ${i === 0 ? `<td rowspan="${endpoints.length}" style="word-break:break-all; color:#1976d2; font-weight:bold; vertical-align:middle; padding:8px 12px; background:${inputBg}; border:none;">${input}</td>` : ''}
+                            <td style="word-break:break-all; padding:8px 12px;">${ep.output_url}</td>
+                            <td style="padding:8px 12px;">${ep.running ? 'Running' : 'Stopped'}</td>
+                            <td style="padding:8px 12px;">${ep.bitrate ? ep.bitrate : '-'}</td>
+                            <td style="padding:8px 12px;"><button class="stopRelayBtn" data-input="${input}" data-output="${ep.output_url}" ${!ep.running ? 'disabled' : ''}>Stop</button></td>
                         </tr>`;
                     }
                 }
             }
-            html += '</table>';
+            html += '</tbody></table>';
         }
         document.getElementById('relayTable').innerHTML = html;
 
