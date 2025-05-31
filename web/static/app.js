@@ -59,7 +59,11 @@ document.addEventListener('DOMContentLoaded', function() {
                             <td style="word-break:break-all; padding:8px 12px;">${ep.output_url}</td>
                             <td style="padding:8px 12px;">${ep.running ? 'Running' : 'Stopped'}</td>
                             <td style="padding:8px 12px;">${ep.bitrate ? ep.bitrate : '-'}</td>
-                            <td style="padding:8px 12px;"><button class="stopRelayBtn" data-input="${input}" data-output="${ep.output_url}" ${!ep.running ? 'disabled' : ''}>Stop</button></td>
+                            <td style="padding:8px 12px;">
+                                ${ep.running
+                                    ? `<button class="stopRelayBtn" data-input="${input}" data-output="${ep.output_url}">Stop</button>`
+                                    : `<button class="startRelayBtn" data-input="${input}" data-output="${ep.output_url}">Start</button>`}
+                            </td>
                         </tr>`;
                     }
                 }
@@ -84,6 +88,17 @@ document.addEventListener('DOMContentLoaded', function() {
                 const input = btn.getAttribute('data-input');
                 const output = btn.getAttribute('data-output');
                 fetch('/api/relay/stop', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ input_url: input, output_url: output })
+                }).then(() => { fetchStatus(); });
+            };
+        });
+        document.querySelectorAll('.startRelayBtn').forEach(btn => {
+            btn.onclick = function() {
+                const input = btn.getAttribute('data-input');
+                const output = btn.getAttribute('data-output');
+                fetch('/api/relay/start', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ input_url: input, output_url: output })
