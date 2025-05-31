@@ -26,22 +26,39 @@ document.addEventListener('DOMContentLoaded', function() {
         if (!data || data.length === 0) {
             html += '<i>No relays running.</i>';
         } else {
+            // Sort relays by input_url (alphanumeric ascending)
+            data.sort((a, b) => a.input_url.localeCompare(b.input_url, undefined, {numeric: true, sensitivity: 'base'}));
+            html += `<table style="width:100%;border-collapse:collapse;">
+                <tr>
+                    <th>Input URL</th>
+                    <th>Output URL</th>
+                    <th>Status</th>
+                    <th>Bitrate (kbps)</th>
+                    <th>Action</th>
+                </tr>`;
             for (const relay of data) {
                 const input = relay.input_url;
-                html += `<div style="margin-bottom:24px;">
-                    <div style="font-weight:bold; font-size:16px; margin-bottom:4px;">Input: <span style="color:#1976d2">${input}</span></div>
-                    <table style="width:100%;border-collapse:collapse;">
-                    <tr><th>Output URL</th><th>Status</th><th>Bitrate (kbps)</th><th>Action</th></tr>`;
-                for (const ep of relay.endpoints) {
+                // Sort endpoints by output_url (alphanumeric ascending)
+                const endpoints = relay.endpoints ? relay.endpoints.slice().sort((a, b) => (a.output_url || '').localeCompare(b.output_url || '', undefined, {numeric: true, sensitivity: 'base'})) : [];
+                if (endpoints.length === 0) {
                     html += `<tr>
-                        <td style="word-break:break-all;">${ep.output_url}</td>
-                        <td>${ep.running ? 'Running' : 'Stopped'}</td>
-                        <td>${ep.bitrate ? ep.bitrate : '-'}</td>
-                        <td><button class="stopRelayBtn" data-input="${input}" data-output="${ep.output_url}" ${!ep.running ? 'disabled' : ''}>Stop</button></td>
+                        <td style="word-break:break-all; color:#1976d2; font-weight:bold;">${input}</td>
+                        <td colspan="4"><i>No endpoints</i></td>
                     </tr>`;
+                } else {
+                    for (let i = 0; i < endpoints.length; i++) {
+                        const ep = endpoints[i];
+                        html += `<tr>
+                            ${i === 0 ? `<td rowspan="${endpoints.length}" style="word-break:break-all; color:#1976d2; font-weight:bold; vertical-align:middle;">${input}</td>` : ''}
+                            <td style="word-break:break-all;">${ep.output_url}</td>
+                            <td>${ep.running ? 'Running' : 'Stopped'}</td>
+                            <td>${ep.bitrate ? ep.bitrate : '-'}</td>
+                            <td><button class="stopRelayBtn" data-input="${input}" data-output="${ep.output_url}" ${!ep.running ? 'disabled' : ''}>Stop</button></td>
+                        </tr>`;
+                    }
                 }
-                html += '</table></div>';
             }
+            html += '</table>';
         }
         document.getElementById('relayTable').innerHTML = html;
 
