@@ -33,7 +33,9 @@ document.addEventListener('DOMContentLoaded', function() {
                 statusDiv.innerHTML = `<b>Status:</b> ${data.message}` +
                     (data.input_url ? `<br><b>Input:</b> ${data.input_url}` : '') +
                     outputs + cmds;
+                // Button logic: Only Start enabled if not running, else Update/Stop enabled
                 document.getElementById('startBtn').disabled = data.running;
+                document.getElementById('updateBtn').disabled = !data.running;
                 document.getElementById('stopBtn').disabled = !data.running;
             });
     }
@@ -57,6 +59,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 (data.input_url ? `<br><b>Input:</b> ${data.input_url}` : '') +
                 outputs + cmds;
             document.getElementById('startBtn').disabled = data.status === 'running';
+            document.getElementById('updateBtn').disabled = data.status !== 'running';
             document.getElementById('stopBtn').disabled = data.status !== 'running';
         });
         es.addEventListener('logs', function(e) {
@@ -114,6 +117,7 @@ document.addEventListener('DOMContentLoaded', function() {
             <input id="importFile" type="file" accept="application/json" style="display:none" />
             <button id="importBtn" type="button">Import Configs</button><br>
             <button id="startBtn" type="submit">Start Relay</button>
+            <button id="updateBtn" type="button">Update Relay</button>
             <button id="stopBtn" type="button">Stop Relay</button>
             <button id="refreshBtn" type="button">Show Status</button>
         </form>
@@ -190,6 +194,22 @@ document.addEventListener('DOMContentLoaded', function() {
     };
     configSelect.onchange = function() {
         loadConfigByName(configSelect.value);
+    };
+
+    document.getElementById('updateBtn').onclick = function() {
+        const outputUrls = document.getElementById('outputUrls').value
+            .split(/\n|,/)
+            .map(s => s.trim())
+            .filter(Boolean);
+        fetch('/api/update', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                input_url: document.getElementById('inputUrl').value,
+                output_urls: outputUrls
+            })
+        })
+        .then(() => updateStatus());
     };
 
     updateStatus();

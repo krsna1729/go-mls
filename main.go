@@ -58,7 +58,7 @@ func apiStatus(w http.ResponseWriter, r *http.Request) {
 	logr.Debug("Status requested")
 	running, relayCfg, lastCmds := streamMgr.Status()
 	json.NewEncoder(w).Encode(StreamStatus{
-		Running:    running,
+		Running: running,
 		Message: func() string {
 			if running {
 				return "Stream running"
@@ -229,13 +229,13 @@ func apiRelayEvents(w http.ResponseWriter, r *http.Request) {
 			status = "running"
 		}
 		statusPayload := struct {
-			Status    string   `json:"status"`
-			InputURL  string   `json:"input_url"`
+			Status     string   `json:"status"`
+			InputURL   string   `json:"input_url"`
 			OutputURLs []string `json:"output_urls"`
 			LastCmds   []string `json:"last_cmds"`
 		}{
-			Status:    status,
-			InputURL:  relayCfg.InputURL,
+			Status:     status,
+			InputURL:   relayCfg.InputURL,
 			OutputURLs: relayCfg.OutputURLs,
 			LastCmds:   lastCmds,
 		}
@@ -267,6 +267,24 @@ func apiRelayEvents(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func apiUpdateStream(w http.ResponseWriter, r *http.Request) {
+	logr.Info("Received update stream request")
+	var relayCfg stream.RTMPRelayConfig
+	if err := json.NewDecoder(r.Body).Decode(&relayCfg); err != nil {
+		logr.Error("Invalid relay config: %v", err)
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(StreamStatus{Running: false, Message: "Invalid config: " + err.Error()})
+		return
+	}
+	if err := streamMgr.UpdateRelay(relayCfg); err != nil {
+		logr.Error("Failed to update relay: %v", err)
+		json.NewEncoder(w).Encode(StreamStatus{Running: false, Message: "Failed to update: " + err.Error()})
+		return
+	}
+	logr.Info("Stream relay updated: %s -> %v", relayCfg.InputURL, relayCfg.OutputURLs)
+	json.NewEncoder(w).Encode(StreamStatus{Running: true, Message: "Stream updated", InputURL: relayCfg.InputURL, OutputURLs: relayCfg.OutputURLs})
+}
+
 func main() {
 	// Serve static files from web/static
 	fs := http.FileServer(http.Dir("web/static"))
@@ -285,6 +303,7 @@ func main() {
 	http.HandleFunc("/api/import-configs", apiImportConfigs)
 	http.HandleFunc("/api/relay/logs", apiRelayLogs)
 	http.HandleFunc("/api/relay/events", apiRelayEvents)
+	http.HandleFunc("/api/update", apiUpdateStream)
 
 	logr.Info("Go-MLS server running at http://localhost:8080 ...")
 	if err := http.ListenAndServe(":8080", nil); err != nil {
