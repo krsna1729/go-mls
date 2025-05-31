@@ -103,17 +103,149 @@ func (s *StreamManager) StartRelay(cfg RTMPRelayConfig) error {
 				}
 			}
 		}(outURL, stderrPipe)
-		go func(cmd *exec.Cmd) {
+		go func(cmd *exec.Cmd, url string) {
 			cmd.Wait()
 			s.mu.Lock()
-			// If any process exits, mark inactive
-			s.Active = false
+			// Only mark inactive if all processes have exited
+			allExited := true
+			for _, c := range s.cmds {
+				if c != nil && c.ProcessState != nil && !c.ProcessState.Exited() {
+					allExited = false
+					break
+				}
+			}
+			if allExited {
+				s.Active = false
+			}
 			s.mu.Unlock()
-		}(cmd)
+		}(cmd, outURL)
 	}
 
 	s.Active = true
 	s.RelayConfig = cfg
+	return nil
+}
+
+// UpdateRelay updates the output URLs for the running relay without stopping the input stream.
+// It starts new ffmpeg processes for new outputs and stops processes for removed outputs.
+func (s *StreamManager) UpdateRelay(newCfg RTMPRelayConfig) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.Active {
+		return s.StartRelay(newCfg)
+	}
+	// Find outputs to add and remove
+	current := make(map[string]bool)
+	for _, url := range s.RelayConfig.OutputURLs {
+		current[url] = true
+	}
+	newSet := make(map[string]bool)
+	for _, url := range newCfg.OutputURLs {
+		newSet[url] = true
+	}
+	// Stop removed outputs
+	for i, url := range s.RelayConfig.OutputURLs {
+		if !newSet[url] && s.cmds[i] != nil && s.cmds[i].Process != nil {
+			s.cmds[i].Process.Kill()
+			s.appendLog("[INFO] Stopped relay to removed output: " + url)
+		}
+	}
+	// Remove stopped cmds and LastCmds
+	var newCmds []*exec.Cmd
+	var newLastCmds []string
+	var keepOutputs []string
+	for i, url := range s.RelayConfig.OutputURLs {
+		if newSet[url] {
+			newCmds = append(newCmds, s.cmds[i])
+			newLastCmds = append(newLastCmds, s.LastCmds[i])
+			keepOutputs = append(keepOutputs, url)
+		}
+	}
+	// Add new outputs
+	for _, url := range newCfg.OutputURLs {
+		if !current[url] {
+			cmd := exec.Command("ffmpeg", "-re", "-i", newCfg.InputURL, "-c", "copy", "-f", "flv", url)
+			lastCmd := fmt.Sprintf("ffmpeg -re -i %s -c copy -f flv %s", newCfg.InputURL, url)
+			stdoutPipe, err := cmd.StdoutPipe()
+			if err != nil {
+				return err
+			}
+			stderrPipe, err := cmd.StderrPipe()
+			if err != nil {
+				return err
+			}
+			err = cmd.Start()
+			if err != nil {
+				return err
+			}
+			newCmds = append(newCmds, cmd)
+			newLastCmds = append(newLastCmds, lastCmd)
+			keepOutputs = append(keepOutputs, url)
+			go func(out string, stdout io.ReadCloser, stderr io.ReadCloser) {
+				stdoutReader := bufio.NewReader(stdout)
+				for {
+					line, err := stdoutReader.ReadString('\n')
+					line = strings.TrimRight(line, "\r\n")
+					if len(line) > 0 {
+						s.mu.Lock()
+						s.appendLog("[" + out + "] " + line)
+						s.mu.Unlock()
+					}
+					if err != nil {
+						if err == io.EOF {
+							break
+						}
+					}
+				}
+			}(url, stdoutPipe, stderrPipe)
+			go func(out string, stderr io.ReadCloser) {
+				stderrReader := bufio.NewReader(stderr)
+				for {
+					line, err := stderrReader.ReadString('\n')
+					line = strings.TrimRight(line, "\r\n")
+					if len(line) > 0 {
+						s.mu.Lock()
+						s.appendLog("[ERR][" + out + "] " + line)
+						s.mu.Unlock()
+					}
+					if err != nil {
+						if err == io.EOF {
+							break
+						}
+					}
+				}
+			}(url, stderrPipe)
+			go func(cmd *exec.Cmd, url string) {
+				cmd.Wait()
+				s.mu.Lock()
+				// Only mark inactive if all processes have exited
+				allExited := true
+				for _, c := range s.cmds {
+					if c != nil && c.ProcessState != nil && !c.ProcessState.Exited() {
+						allExited = false
+						break
+					}
+				}
+				if allExited {
+					s.Active = false
+				}
+				s.mu.Unlock()
+			}(cmd, url)
+			s.appendLog("[INFO] Started relay to new output: " + url)
+		}
+	}
+	// Update state
+	s.cmds = newCmds
+	s.LastCmds = newLastCmds
+	s.RelayConfig.OutputURLs = keepOutputs
+	// Set Active true if any process is running
+	for _, cmd := range s.cmds {
+		if cmd != nil && cmd.Process != nil && (cmd.ProcessState == nil || !cmd.ProcessState.Exited()) {
+			s.Active = true
+			return nil
+		}
+	}
+	s.Active = false
 	return nil
 }
 
