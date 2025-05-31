@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 
 	"go-mls/internal/logger"
@@ -95,20 +96,23 @@ func (rm *RelayManager) StartRelay(inputURL, outputURL string) error {
 	// Parse output in a goroutine
 	go func() {
 		rm.Logger.Debug("Goroutine started: parsing ffmpeg output for %s -> %s", inputURL, outputURL)
-		scanner := bufio.NewScanner(stderr)
-		bitrateRegex := regexp.MustCompile(`bitrate=([\d.]+)kbits/s`)
-		for scanner.Scan() {
-			line := scanner.Text()
+		reader := bufio.NewReader(stderr)
+		bitrateRegex := regexp.MustCompile(`bitrate=\s*([\d.]+)\s*kbits/s`)
+		for {
+			line, err := reader.ReadString('\r')
+			if err != nil {
+				break
+			}
+			line = strings.Trim(line, "\r\n") // Ensure line endings are trimmed
+			rm.Logger.Debug("ffmpeg [%s -> %s]: %s", inputURL, outputURL, line)
 			if matches := bitrateRegex.FindStringSubmatch(line); matches != nil {
 				if bitrate, err := strconv.ParseFloat(matches[1], 64); err == nil {
 					ep.mu.Lock()
 					ep.Bitrate = bitrate
 					ep.mu.Unlock()
 					rm.Logger.Debug("Updated bitrate for %s -> %s: %f", inputURL, outputURL, bitrate)
+					continue
 				}
-			}
-			if len(line) > 0 {
-				rm.Logger.Debug("ffmpeg [%s -> %s]: %s", inputURL, outputURL, line)
 			}
 		}
 		rm.Logger.Debug("Goroutine exiting: ffmpeg output parsing for %s -> %s", inputURL, outputURL)
