@@ -4,10 +4,10 @@ document.addEventListener('DOMContentLoaded', function() {
     const logsDiv = document.getElementById('logs');
 
     // Render static input controls once
-    relayControls.innerHTML = `<h2>Add Relay</h2>
+    relayControls.innerHTML = `<h2>Add Relay Endpoint</h2>
         <input type="text" id="inputUrl" placeholder="Input URL" style="width:260px;">
         <input type="text" id="outputUrl" placeholder="Output URL" style="width:260px;">
-        <button id="startRelayBtn">Start Relay</button>
+        <button id="startRelayBtn">Start Relay Endpoint</button>
         <button id="exportBtn">Export Relays</button>
         <input id="importFile" type="file" accept="application/json" style="display:none" />
         <button id="importBtn">Import Relays</button>
@@ -21,25 +21,27 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     function updateUI(data) {
-        // Only update the relay table, not the input fields
+        // data is an array of relays, each with input_url and endpoints
         let html = '';
-        if (Object.keys(data).length === 0) {
+        if (!data || data.length === 0) {
             html += '<i>No relays running.</i>';
         } else {
-            html += '<table style="width:100%;border-collapse:collapse;">';
-            html += '<tr><th>Input URL</th><th>Output URL</th><th>Status</th><th>Bitrate (kbps)</th><th>Action</th></tr>';
-            for (const key in data) {
-                const [input, output] = key.split('|');
-                const info = data[key];
-                html += `<tr>
-                    <td style="word-break:break-all;">${input}</td>
-                    <td style="word-break:break-all;">${output}</td>
-                    <td>${info.running ? 'Running' : 'Stopped'}</td>
-                    <td>${info.bitrate ? info.bitrate : '-'}</td>
-                    <td><button class="stopRelayBtn" data-key="${key}" ${!info.running ? 'disabled' : ''}>Stop</button></td>
-                </tr>`;
+            for (const relay of data) {
+                const input = relay.input_url;
+                html += `<div style="margin-bottom:24px;">
+                    <div style="font-weight:bold; font-size:16px; margin-bottom:4px;">Input: <span style="color:#1976d2">${input}</span></div>
+                    <table style="width:100%;border-collapse:collapse;">
+                    <tr><th>Output URL</th><th>Status</th><th>Bitrate (kbps)</th><th>Action</th></tr>`;
+                for (const ep of relay.endpoints) {
+                    html += `<tr>
+                        <td style="word-break:break-all;">${ep.output_url}</td>
+                        <td>${ep.running ? 'Running' : 'Stopped'}</td>
+                        <td>${ep.bitrate ? ep.bitrate : '-'}</td>
+                        <td><button class="stopRelayBtn" data-input="${input}" data-output="${ep.output_url}" ${!ep.running ? 'disabled' : ''}>Stop</button></td>
+                    </tr>`;
+                }
+                html += '</table></div>';
             }
-            html += '</table>';
         }
         document.getElementById('relayTable').innerHTML = html;
 
@@ -56,8 +58,8 @@ document.addEventListener('DOMContentLoaded', function() {
         };
         document.querySelectorAll('.stopRelayBtn').forEach(btn => {
             btn.onclick = function() {
-                const key = btn.getAttribute('data-key');
-                const [input, output] = key.split('|');
+                const input = btn.getAttribute('data-input');
+                const output = btn.getAttribute('data-output');
                 fetch('/api/relay/stop', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },

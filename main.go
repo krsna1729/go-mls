@@ -13,16 +13,7 @@ import (
 var (
 	relayMgr = stream.NewRelayManager()
 	logr     = config.NewLogger()
-	cfgStore = config.NewConfigStore("relay_config.json")
 )
-
-type StreamStatus struct {
-	Running    bool     `json:"running"`
-	Message    string   `json:"message"`
-	InputURL   string   `json:"input_url,omitempty"`
-	OutputURLs []string `json:"output_urls,omitempty"`
-	LastCmds   []string `json:"last_cmds,omitempty"`
-}
 
 func apiStartRelay(w http.ResponseWriter, r *http.Request) {
 	var req struct {
