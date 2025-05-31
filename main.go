@@ -5,16 +5,15 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"time"
 
 	"go-mls/internal/config"
 	"go-mls/internal/stream"
 )
 
 var (
-	streamMgr *stream.StreamManager = stream.NewStreamManager()
-	logr                            = config.NewLogger()
-	cfgStore                        = config.NewConfigStore("relay_config.json")
+	relayMgr = stream.NewRelayManager()
+	logr     = config.NewLogger()
+	cfgStore = config.NewConfigStore("relay_config.json")
 )
 
 type StreamStatus struct {
@@ -25,153 +24,59 @@ type StreamStatus struct {
 	LastCmds   []string `json:"last_cmds,omitempty"`
 }
 
-func apiStartStream(w http.ResponseWriter, r *http.Request) {
-	logr.Info("Received start stream request")
-	var relayCfg stream.RTMPRelayConfig
-	if err := json.NewDecoder(r.Body).Decode(&relayCfg); err != nil {
-		logr.Error("Invalid relay config: %v", err)
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(StreamStatus{Running: false, Message: "Invalid config: " + err.Error()})
-		return
-	}
-	if err := streamMgr.StartRelay(relayCfg); err != nil {
-		logr.Error("Failed to start relay: %v", err)
-		json.NewEncoder(w).Encode(StreamStatus{Running: false, Message: "Failed to start: " + err.Error()})
-		return
-	}
-	logr.Info("Stream relay started: %s -> %v", relayCfg.InputURL, relayCfg.OutputURLs)
-	json.NewEncoder(w).Encode(StreamStatus{Running: true, Message: "Stream started", InputURL: relayCfg.InputURL, OutputURLs: relayCfg.OutputURLs})
-}
-
-func apiStopStream(w http.ResponseWriter, r *http.Request) {
-	logr.Info("Received stop stream request")
-	if err := streamMgr.Stop(); err != nil {
-		logr.Error("Failed to stop stream: %v", err)
-		json.NewEncoder(w).Encode(StreamStatus{Running: true, Message: "Failed to stop: " + err.Error()})
-		return
-	}
-	logr.Info("Stream stopped successfully")
-	json.NewEncoder(w).Encode(StreamStatus{Running: false, Message: "Stream stopped"})
-}
-
-func apiStatus(w http.ResponseWriter, r *http.Request) {
-	logr.Debug("Status requested")
-	running, relayCfg, lastCmds := streamMgr.Status()
-	json.NewEncoder(w).Encode(StreamStatus{
-		Running: running,
-		Message: func() string {
-			if running {
-				return "Stream running"
-			} else {
-				return "Idle"
-			}
-		}(),
-		InputURL:   relayCfg.InputURL,
-		OutputURLs: relayCfg.OutputURLs,
-		LastCmds:   lastCmds,
-	})
-}
-
-func apiSaveConfig(w http.ResponseWriter, r *http.Request) {
+func apiStartRelay(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name string `json:"name"`
-		stream.RTMPRelayConfig
+		InputURL  string `json:"input_url"`
+		OutputURL string `json:"output_url"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		logr.Error("Invalid config for save: %v", err)
 		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid config: " + err.Error()})
+		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid request"})
 		return
 	}
-	if req.Name == "" {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Config name required"})
-		return
-	}
-	if err := cfgStore.SaveNamed(req.Name, req.RTMPRelayConfig); err != nil {
-		logr.Error("Failed to save config: %v", err)
+	if err := relayMgr.StartRelay(req.InputURL, req.OutputURL); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Failed to save: " + err.Error()})
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
-	logr.Info("Relay config '%s' saved", req.Name)
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	json.NewEncoder(w).Encode(map[string]string{"status": "started"})
 }
 
-func apiLoadConfig(w http.ResponseWriter, r *http.Request) {
-	name := r.URL.Query().Get("name")
-	if name == "" {
+func apiStopRelay(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		InputURL  string `json:"input_url"`
+		OutputURL string `json:"output_url"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Config name required"})
+		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid request"})
 		return
 	}
-	cfg, err := cfgStore.LoadNamed(name)
-	if err != nil {
-		logr.Error("Failed to load config: %v", err)
-		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(map[string]string{"error": "No config found"})
-		return
-	}
-	json.NewEncoder(w).Encode(cfg)
-}
-
-func apiListConfigs(w http.ResponseWriter, r *http.Request) {
-	configs, err := cfgStore.LoadAll()
-	if err != nil {
-		logr.Error("Failed to list configs: %v", err)
+	if err := relayMgr.StopRelay(req.InputURL, req.OutputURL); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Failed to list configs"})
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
-	names := make([]string, 0, len(configs))
-	for name := range configs {
-		names = append(names, name)
-	}
-	json.NewEncoder(w).Encode(names)
+	json.NewEncoder(w).Encode(map[string]string{"status": "stopped"})
 }
 
-func apiCleanConfigs(w http.ResponseWriter, r *http.Request) {
-	if err := cfgStore.Clean(); err != nil {
-		logr.Error("Failed to clean configs: %v", err)
+func apiRelayStatus(w http.ResponseWriter, r *http.Request) {
+	json.NewEncoder(w).Encode(relayMgr.Status())
+}
+
+func apiExportRelays(w http.ResponseWriter, r *http.Request) {
+	if err := relayMgr.ExportConfig("relay_config.json"); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Failed to clean configs"})
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
-	logr.Info("Relay configs cleaned")
-	json.NewEncoder(w).Encode(map[string]string{"status": "cleaned"})
-}
-
-func apiDeleteConfig(w http.ResponseWriter, r *http.Request) {
-	name := r.URL.Query().Get("name")
-	if name == "" {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Config name required"})
-		return
-	}
-	if err := cfgStore.DeleteNamed(name); err != nil {
-		logr.Error("Failed to delete config: %v", err)
-		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Config not found"})
-		return
-	}
-	logr.Info("Relay config '%s' deleted", name)
-	json.NewEncoder(w).Encode(map[string]string{"status": "deleted"})
-}
-
-func apiExportConfigs(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Content-Disposition", "attachment; filename=relay_config.json")
-	file, err := os.Open(cfgStore.FilePath)
-	if err != nil {
-		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(map[string]string{"error": "No config file found"})
-		return
-	}
-	defer file.Close()
-	io.Copy(w, file)
+	data, _ := os.ReadFile("relay_config.json")
+	w.Write(data)
 }
 
-func apiImportConfigs(w http.ResponseWriter, r *http.Request) {
+func apiImportRelays(w http.ResponseWriter, r *http.Request) {
 	file, _, err := r.FormFile("file")
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
@@ -179,133 +84,33 @@ func apiImportConfigs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer file.Close()
-	configs := map[string]stream.RTMPRelayConfig{}
-	if err := json.NewDecoder(file).Decode(&configs); err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid JSON"})
-		return
-	}
-	f, err := os.Create(cfgStore.FilePath)
+	f, err := os.Create("relay_config.json")
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]string{"error": "Failed to save file"})
 		return
 	}
 	defer f.Close()
-	encoder := json.NewEncoder(f)
-	encoder.SetIndent("", "    ")
-	if err := encoder.Encode(configs); err != nil {
+	io.Copy(f, file)
+	if err := relayMgr.ImportConfig("relay_config.json"); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Failed to write file"})
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
-	logr.Info("Relay configs imported")
 	json.NewEncoder(w).Encode(map[string]string{"status": "imported"})
 }
 
-func apiRelayLogs(w http.ResponseWriter, r *http.Request) {
-	logs := streamMgr.GetLogs()
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"logs": logs})
-}
-
-func apiRelayEvents(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		http.Error(w, "Streaming unsupported!", http.StatusInternalServerError)
-		return
-	}
-
-	lastLogLen := 0
-	lastStatus := ""
-	for {
-		running, relayCfg, lastCmds := streamMgr.Status()
-		logs := streamMgr.GetLogs()
-		status := "idle"
-		if running {
-			status = "running"
-		}
-		statusPayload := struct {
-			Status     string   `json:"status"`
-			InputURL   string   `json:"input_url"`
-			OutputURLs []string `json:"output_urls"`
-			LastCmds   []string `json:"last_cmds"`
-		}{
-			Status:     status,
-			InputURL:   relayCfg.InputURL,
-			OutputURLs: relayCfg.OutputURLs,
-			LastCmds:   lastCmds,
-		}
-		statusJSON, _ := json.Marshal(statusPayload)
-		logsJSON, _ := json.Marshal(logs)
-
-		if string(statusJSON) != lastStatus {
-			w.Write([]byte("event: status\n"))
-			w.Write([]byte("data: "))
-			w.Write(statusJSON)
-			w.Write([]byte("\n\n"))
-			flusher.Flush()
-			lastStatus = string(statusJSON)
-		}
-		if len(logs) != lastLogLen {
-			w.Write([]byte("event: logs\n"))
-			w.Write([]byte("data: "))
-			w.Write(logsJSON)
-			w.Write([]byte("\n\n"))
-			flusher.Flush()
-			lastLogLen = len(logs)
-		}
-		// Check for client disconnect using request context
-		select {
-		case <-r.Context().Done():
-			return
-		case <-time.After(1 * time.Second):
-		}
-	}
-}
-
-func apiUpdateStream(w http.ResponseWriter, r *http.Request) {
-	logr.Info("Received update stream request")
-	var relayCfg stream.RTMPRelayConfig
-	if err := json.NewDecoder(r.Body).Decode(&relayCfg); err != nil {
-		logr.Error("Invalid relay config: %v", err)
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(StreamStatus{Running: false, Message: "Invalid config: " + err.Error()})
-		return
-	}
-	if err := streamMgr.UpdateRelay(relayCfg); err != nil {
-		logr.Error("Failed to update relay: %v", err)
-		json.NewEncoder(w).Encode(StreamStatus{Running: false, Message: "Failed to update: " + err.Error()})
-		return
-	}
-	logr.Info("Stream relay updated: %s -> %v", relayCfg.InputURL, relayCfg.OutputURLs)
-	json.NewEncoder(w).Encode(StreamStatus{Running: true, Message: "Stream updated", InputURL: relayCfg.InputURL, OutputURLs: relayCfg.OutputURLs})
-}
-
 func main() {
-	// Serve static files from web/static
 	fs := http.FileServer(http.Dir("web/static"))
 	http.Handle("/static/", http.StripPrefix("/static/", fs))
 
-	// API endpoints
-	http.HandleFunc("/api/start", apiStartStream)
-	http.HandleFunc("/api/stop", apiStopStream)
-	http.HandleFunc("/api/status", apiStatus)
-	http.HandleFunc("/api/save-config", apiSaveConfig)
-	http.HandleFunc("/api/load-config", apiLoadConfig)
-	http.HandleFunc("/api/list-configs", apiListConfigs)
-	http.HandleFunc("/api/clean-configs", apiCleanConfigs)
-	http.HandleFunc("/api/delete-config", apiDeleteConfig)
-	http.HandleFunc("/api/export-configs", apiExportConfigs)
-	http.HandleFunc("/api/import-configs", apiImportConfigs)
-	http.HandleFunc("/api/relay/logs", apiRelayLogs)
-	http.HandleFunc("/api/relay/events", apiRelayEvents)
-	http.HandleFunc("/api/update", apiUpdateStream)
+	http.HandleFunc("/api/relay/start", apiStartRelay)
+	http.HandleFunc("/api/relay/stop", apiStopRelay)
+	http.HandleFunc("/api/relay/status", apiRelayStatus)
+	http.HandleFunc("/api/relay/export", apiExportRelays)
+	http.HandleFunc("/api/relay/import", apiImportRelays)
 
-	logr.Info("Go-MLS server running at http://localhost:8080 ...")
+	logr.Info("Go-MLS relay manager running at http://localhost:8080 ...")
 	if err := http.ListenAndServe(":8080", nil); err != nil {
 		logr.Error("Server error: %v", err)
 	}
