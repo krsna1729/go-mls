@@ -1,8 +1,15 @@
 version: '3.8'
 services:
-  input-rtmp:
+  input-rtmp-1:
     image: tiangolo/nginx-rtmp
-    container_name: input-rtmp
+    container_name: input-rtmp-1
+    ports:
+      - "1933:1935"
+    networks:
+      - rtmp-net
+  input-rtmp-2:
+    image: tiangolo/nginx-rtmp
+    container_name: input-rtmp-2
     ports:
       - "1934:1935"
     networks:
@@ -24,14 +31,35 @@ services:
     networks:
       - rtmp-net
 
+  output-rtmp-3:
+    image: tiangolo/nginx-rtmp
+    container_name: output-rtmp-3
+    ports:
+      - "1937:1935"
+    networks:
+      - rtmp-net
+
+  output-rtmp-4:
+    image: tiangolo/nginx-rtmp
+    container_name: output-rtmp-4
+    ports:
+      - "1938:1935"
+    networks:
+      - rtmp-net
+
   ffmpeg-source:
     image: linuxserver/ffmpeg
     container_name: ffmpeg-source
     depends_on:
-      - input-rtmp
+      - input-rtmp-1
+      - input-rtmp-2
     volumes:
       - ./testdata:/testdata:ro
-    entrypoint: ["ffmpeg", "-stream_loop", "-1", "-re", "-i", "/testdata/testsrc.mp4", "-c:v", "libx264", "-f", "flv", "rtmp://input-rtmp/live/stream"]
+    entrypoint: [
+      "sh", "-c",
+      "ffmpeg -stream_loop -1 -re -i /testdata/testsrc.mp4 -c:v libx264 -f flv rtmp://input-rtmp-1/live/stream & \
+       ffmpeg -stream_loop -1 -re -i /testdata/testsrc.mp4 -c:v libx264 -f flv rtmp://input-rtmp-2/live/stream && wait"
+    ]
     networks:
       - rtmp-net
 
