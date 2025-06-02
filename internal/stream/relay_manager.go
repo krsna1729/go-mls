@@ -178,37 +178,6 @@ type RelayStatus struct {
 	} `json:"endpoints"`
 }
 
-func (rm *RelayManager) Status() []RelayStatus {
-	rm.Logger.Debug("Status called")
-	statuses := []RelayStatus{}
-	rm.mu.Lock()
-	for _, relay := range rm.Relays {
-		relay.mu.Lock()
-		endpoints := []struct {
-			OutputURL string  `json:"output_url"`
-			Running   bool    `json:"running"`
-			Bitrate   float64 `json:"bitrate"`
-		}{}
-		for _, ep := range relay.Endpoints {
-			ep.mu.Lock()
-			endpoints = append(endpoints, struct {
-				OutputURL string  `json:"output_url"`
-				Running   bool    `json:"running"`
-				Bitrate   float64 `json:"bitrate"`
-			}{OutputURL: ep.OutputURL, Running: ep.Running, Bitrate: ep.Bitrate})
-			ep.mu.Unlock()
-		}
-		statuses = append(statuses, RelayStatus{
-			InputURL:  relay.InputURL,
-			Endpoints: endpoints,
-		})
-		relay.mu.Unlock()
-	}
-	rm.mu.Unlock()
-	rm.Logger.Debug("Status returning %d relays", len(statuses))
-	return statuses
-}
-
 // ExportConfig saves the current relay configurations to a file (grouped by input URL)
 func (rm *RelayManager) ExportConfig(filename string) error {
 	rm.Logger.Debug("ExportConfig called: filename=%s", filename)
@@ -259,14 +228,14 @@ func (rm *RelayManager) ImportConfig(filename string) error {
 	return nil
 }
 
-func (rm *RelayManager) StatusFull() status.FullStatus {
+func (rm *RelayManager) Status() status.FullStatus {
 	srv, _ := process.GetSelfUsage()
 	serverStatus := status.ServerStatus{}
 	if srv != nil {
 		serverStatus = status.ServerStatus{CPU: srv.CPU, Mem: srv.Mem, PID: srv.PID}
 	}
 
-	relays := []status.RelayStatusFull{}
+	relays := []status.RelayStatus{}
 	rm.mu.Lock()
 	for _, relay := range rm.Relays {
 		relay.mu.Lock()
@@ -293,7 +262,7 @@ func (rm *RelayManager) StatusFull() status.FullStatus {
 			})
 			ep.mu.Unlock()
 		}
-		relays = append(relays, status.RelayStatusFull{
+		relays = append(relays, status.RelayStatus{
 			InputURL:  relay.InputURL,
 			Endpoints: endpoints,
 		})

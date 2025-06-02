@@ -70,14 +70,6 @@ func apiRelayStatus(relayMgr *stream.RelayManager) http.HandlerFunc {
 	}
 }
 
-func apiRelayStatusFull(relayMgr *stream.RelayManager) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		relayMgr.Logger.Debug("apiRelayStatusFull called")
-		httputil.WriteJSON(w, http.StatusOK, relayMgr.StatusFull())
-		relayMgr.Logger.Debug("apiRelayStatusFull: status returned")
-	}
-}
-
 func apiExportRelays(relayMgr *stream.RelayManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		relayMgr.Logger.Debug("apiExportRelays called")
@@ -141,7 +133,6 @@ func main() {
 	http.HandleFunc("/api/relay/status", apiRelayStatus(relayMgr))
 	http.HandleFunc("/api/relay/export", apiExportRelays(relayMgr))
 	http.HandleFunc("/api/relay/import", apiImportRelays(relayMgr))
-	http.HandleFunc("/api/relay/statusfull", apiRelayStatusFull(relayMgr))
 
 	logger.Info("Go-MLS relay manager running at http://localhost:8080 ...")
 	logger.Debug("main: server starting on :8080")

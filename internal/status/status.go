@@ -15,12 +15,12 @@ type EndpointStatus struct {
 	Mem       uint64  `json:"mem"`
 }
 
-type RelayStatusFull struct {
+type RelayStatus struct {
 	InputURL  string           `json:"input_url"`
 	Endpoints []EndpointStatus `json:"endpoints"`
 }
 
 type FullStatus struct {
-	Server ServerStatus      `json:"server"`
-	Relays []RelayStatusFull `json:"relays"`
+	Server ServerStatus  `json:"server"`
+	Relays []RelayStatus `json:"relays"`
 }

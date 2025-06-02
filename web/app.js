@@ -65,7 +65,7 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     function fetchStatus() {
-        fetch('/api/relay/statusfull')
+        fetch('/api/relay/status')
             .then(r => r.json())
             .then(data => updateUI(data));
     }
