@@ -51,7 +51,7 @@ func (s *StreamManager) StartRelay(cfg RTMPRelayConfig) error {
 	s.logLines = nil // reset logs
 
 	for _, outURL := range cfg.OutputURLs {
-		cmd := exec.Command("ffmpeg", "-re", "-i", cfg.InputURL, "-c", "copy", "-f", "flv", outURL)
+		cmd := buildFFmpegCmd(cfg.InputURL, outURL)
 		lastCmd := fmt.Sprintf("ffmpeg -re -i %s -c copy -f flv %s", cfg.InputURL, outURL)
 		stdoutPipe, err := cmd.StdoutPipe()
 		if err != nil {
@@ -164,7 +164,7 @@ func (s *StreamManager) UpdateRelay(newCfg RTMPRelayConfig) error {
 	// Add new outputs
 	for _, url := range newCfg.OutputURLs {
 		if !current[url] {
-			cmd := exec.Command("ffmpeg", "-re", "-i", newCfg.InputURL, "-c", "copy", "-f", "flv", url)
+			cmd := buildFFmpegCmd(newCfg.InputURL, url)
 			lastCmd := fmt.Sprintf("ffmpeg -re -i %s -c copy -f flv %s", newCfg.InputURL, url)
 			stdoutPipe, err := cmd.StdoutPipe()
 			if err != nil {

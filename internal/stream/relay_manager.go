@@ -46,6 +46,10 @@ func NewRelayManager(l *logger.Logger) *RelayManager {
 	}
 }
 
+func buildFFmpegCmd(inputURL, outputURL string) *exec.Cmd {
+	return exec.Command("ffmpeg", "-re", "-i", inputURL, "-c", "copy", "-f", "flv", outputURL)
+}
+
 // StartRelay starts a relay for an input URL and output URL
 func (rm *RelayManager) StartRelay(inputURL, outputURL string) error {
 	rm.Logger.Debug("StartRelay called: input=%s, output=%s", inputURL, outputURL)
@@ -68,7 +72,7 @@ func (rm *RelayManager) StartRelay(inputURL, outputURL string) error {
 		relay.mu.Unlock()
 		return fmt.Errorf("relay already running for %s -> %s", inputURL, outputURL)
 	}
-	cmd := exec.Command("ffmpeg", "-re", "-i", inputURL, "-c", "copy", "-f", "flv", outputURL)
+	cmd := buildFFmpegCmd(inputURL, outputURL)
 	rm.Logger.Debug("Starting ffmpeg process: %v", cmd.Args)
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
