@@ -1,14 +1,19 @@
 package main
 
 import (
+	"embed"
 	"encoding/json"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 
 	"go-mls/internal/logger"
 	"go-mls/internal/stream"
 )
+
+//go:embed web/*
+var webAssets embed.FS
 
 func apiStartRelay(relayMgr *stream.RelayManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -121,8 +126,14 @@ func main() {
 	logger.Debug("main: initializing relay manager")
 	relayMgr := stream.NewRelayManager(logger)
 
-	fs := http.FileServer(http.Dir("web/static"))
-	http.Handle("/static/", http.StripPrefix("/static/", fs))
+	// Use embedded static assets
+	staticFS, err := fs.Sub(webAssets, "web")
+	if err != nil {
+		logger.Error("Failed to create sub FS for web assets: %v", err)
+		os.Exit(1)
+	}
+	fs := http.FileServer(http.FS(staticFS))
+	http.Handle("/", fs)
 
 	http.HandleFunc("/api/relay/start", apiStartRelay(relayMgr))
 	http.HandleFunc("/api/relay/stop", apiStopRelay(relayMgr))
