@@ -12,6 +12,8 @@ import (
 	"sync"
 
 	"go-mls/internal/logger"
+	"go-mls/internal/process"
+	"go-mls/internal/status"
 )
 
 // RelayEndpoint manages a single output URL and its ffmpeg process
@@ -251,4 +253,51 @@ func (rm *RelayManager) ImportConfig(filename string) error {
 	}
 	rm.Logger.Info("Imported relay config from %s", filename)
 	return nil
+}
+
+func (rm *RelayManager) StatusFull() status.FullStatus {
+	srv, _ := process.GetSelfUsage()
+	serverStatus := status.ServerStatus{}
+	if srv != nil {
+		serverStatus = status.ServerStatus{CPU: srv.CPU, Mem: srv.Mem, PID: srv.PID}
+	}
+
+	relays := []status.RelayStatusFull{}
+	rm.mu.Lock()
+	for _, relay := range rm.Relays {
+		relay.mu.Lock()
+		endpoints := []status.EndpointStatus{}
+		for _, ep := range relay.Endpoints {
+			ep.mu.Lock()
+			pid := 0
+			cpu := 0.0
+			mem := uint64(0)
+			if ep.Cmd != nil && ep.Cmd.Process != nil {
+				pid = ep.Cmd.Process.Pid
+				if u, err := process.GetProcUsage(pid); err == nil {
+					cpu = u.CPU
+					mem = u.Mem
+				}
+			}
+			endpoints = append(endpoints, status.EndpointStatus{
+				OutputURL: ep.OutputURL,
+				Running:   ep.Running,
+				Bitrate:   ep.Bitrate,
+				PID:       pid,
+				CPU:       cpu,
+				Mem:       mem,
+			})
+			ep.mu.Unlock()
+		}
+		relays = append(relays, status.RelayStatusFull{
+			InputURL:  relay.InputURL,
+			Endpoints: endpoints,
+		})
+		relay.mu.Unlock()
+	}
+	rm.mu.Unlock()
+	return status.FullStatus{
+		Server: serverStatus,
+		Relays: relays,
+	}
 }

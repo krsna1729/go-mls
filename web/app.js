@@ -9,23 +9,41 @@ document.addEventListener('DOMContentLoaded', function() {
         <button id="exportBtn">Export Relays</button>
         <input id="importFile" type="file" accept="application/json" style="display:none" />
         <button id="importBtn">Import Relays</button>
+        <h2>Server Stats</h2>
+        <div id="serverStats"></div>
         <h2>Active Relays</h2>
         <div id="relayTable"></div>`;
 
     function fetchStatus() {
-        fetch('/api/relay/status')
+        fetch('/api/relay/statusfull')
             .then(r => r.json())
             .then(data => updateUI(data));
     }
 
+    function formatBytes(bytes) {
+        if (bytes < 1024) return bytes + ' B';
+        if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+        if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+        return (bytes / (1024 * 1024 * 1024)).toFixed(1) + ' GB';
+    }
+
     function updateUI(data) {
-        // data is an array of relays, each with input_url and endpoints
+        // Server stats
+        let serverHtml = '';
+        if (data && data.server) {
+            serverHtml = `<b>PID:</b> ${data.server.pid} &nbsp; <b>CPU:</b> ${data.server.cpu.toFixed(1)}% &nbsp; <b>Mem:</b> ${formatBytes(data.server.mem)}`;
+        } else {
+            serverHtml = '<i>Unavailable</i>';
+        }
+        document.getElementById('serverStats').innerHTML = serverHtml;
+
+        // Relays table
         let html = '';
-        if (!data || data.length === 0) {
+        if (!data || !data.relays || data.relays.length === 0) {
             html += '<i>No relays running.</i>';
         } else {
             // Sort relays by input_url (alphanumeric ascending)
-            data.sort((a, b) => a.input_url.localeCompare(b.input_url, undefined, {numeric: true, sensitivity: 'base'}));
+            data.relays.sort((a, b) => a.input_url.localeCompare(b.input_url, undefined, {numeric: true, sensitivity: 'base'}));
             html += `<table style="width:100%;border-collapse:separate;border-spacing:0;">
                 <thead>
                     <tr>
@@ -33,12 +51,15 @@ document.addEventListener('DOMContentLoaded', function() {
                         <th style="text-align:left; padding:8px 12px;">Output URL</th>
                         <th style="text-align:left; padding:8px 12px;">Status</th>
                         <th style="text-align:left; padding:8px 12px;">Bitrate (kbps)</th>
+                        <th style="text-align:left; padding:8px 12px;">PID</th>
+                        <th style="text-align:left; padding:8px 12px;">CPU (%)</th>
+                        <th style="text-align:left; padding:8px 12px;">Mem</th>
                         <th style="text-align:left; padding:8px 12px;">Action</th>
                     </tr>
                 </thead>
                 <tbody>`;
-            for (let relayIdx = 0; relayIdx < data.length; relayIdx++) {
-                const relay = data[relayIdx];
+            for (let relayIdx = 0; relayIdx < data.relays.length; relayIdx++) {
+                const relay = data.relays[relayIdx];
                 const input = relay.input_url;
                 // Sort endpoints by output_url (alphanumeric ascending)
                 const endpoints = relay.endpoints ? relay.endpoints.slice().sort((a, b) => (a.output_url || '').localeCompare(b.output_url || '', undefined, {numeric: true, sensitivity: 'base'})) : [];
@@ -48,7 +69,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 if (endpoints.length === 0) {
                     html += `<tr style="${inputGroupBorder}">
                         <td style="word-break:break-all; color:#1976d2; font-weight:bold; padding:8px 12px; background:${inputBg};">${input}</td>
-                        <td colspan="4" style="padding:8px 12px; background:#fff;"><i>No endpoints</i></td>
+                        <td colspan="7" style="padding:8px 12px; background:#fff;"><i>No endpoints</i></td>
                     </tr>`;
                 } else {
                     for (let i = 0; i < endpoints.length; i++) {
@@ -59,6 +80,9 @@ document.addEventListener('DOMContentLoaded', function() {
                             <td style="word-break:break-all; padding:8px 12px;">${ep.output_url}</td>
                             <td style="padding:8px 12px;">${ep.running ? 'Running' : 'Stopped'}</td>
                             <td style="padding:8px 12px;">${ep.bitrate ? ep.bitrate : '-'}</td>
+                            <td style="padding:8px 12px;">${ep.pid || '-'}</td>
+                            <td style="padding:8px 12px;">${typeof ep.cpu === 'number' ? ep.cpu.toFixed(1) : '-'}</td>
+                            <td style="padding:8px 12px;">${ep.mem ? formatBytes(ep.mem) : '-'}</td>
                             <td style="padding:8px 12px;">
                                 ${ep.running
                                     ? `<button class="stopRelayBtn" data-input="${input}" data-output="${ep.output_url}">Stop</button>`
