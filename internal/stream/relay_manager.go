@@ -120,7 +120,9 @@ func (rm *RelayManager) StartRelay(inputURL, outputURL string) error {
 		rm.Logger.Debug("Goroutine started: monitoring ffmpeg process for %s -> %s", inputURL, outputURL)
 		err := cmd.Wait()
 		ep.mu.Lock()
+		// Reset state on exit
 		ep.Running = false
+		ep.Bitrate = 0.0
 		ep.mu.Unlock()
 		if err != nil {
 			rm.Logger.Error("ffmpeg exited with error for %s -> %s: %v", inputURL, outputURL, err)
