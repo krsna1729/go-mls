@@ -1,10 +1,30 @@
-{
-  "rtmp://localhost:1933/live/stream": [
-    "rtmp://localhost:1935/live/stream",
-    "rtmp://localhost:1936/live/stream"
-  ],
-  "rtmp://localhost:1934/live/stream": [
-    "rtmp://localhost:1937/live/stream",
-    "rtmp://localhost:1938/live/stream"
-  ]
-}
+[
+  {
+    "input_url": "rtmp://localhost:1934/live/stream",
+    "input_name": "Tamil",
+    "outputs": [
+      {
+        "output_url": "rtmp://localhost:1937/live/stream",
+        "output_name": "TN-2"
+      },
+      {
+        "output_url": "rtmp://localhost:1938/live/stream",
+        "output_name": "TN-1"
+      }
+    ]
+  },
+  {
+    "input_url": "rtmp://localhost:1933/live/stream",
+    "input_name": "English",
+    "outputs": [
+      {
+        "output_url": "rtmp://localhost:1935/live/stream",
+        "output_name": "ENG-1"
+      },
+      {
+        "output_url": "rtmp://localhost:1936/live/stream",
+        "output_name": "ENG-2"
+      }
+    ]
+  }
+]

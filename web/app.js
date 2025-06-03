@@ -3,14 +3,18 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // Render static input controls once
     relayControls.innerHTML = `<h2>Add Relay Endpoint</h2>
-        <input type="text" id="inputName" placeholder="Input Name" style="width:180px;">
-        <input type="text" id="inputUrl" placeholder="Input URL" style="width:220px;">
-        <input type="text" id="outputName" placeholder="Output Name" style="width:180px;">
-        <input type="text" id="outputUrl" placeholder="Output URL" style="width:220px;">
-        <button id="startRelayBtn">Start Relay Endpoint</button>
-        <button id="exportBtn">Export Relays</button>
-        <input id="importFile" type="file" accept="application/json" style="display:none" />
-        <button id="importBtn">Import Relays</button>
+        <div class="md-input-row">
+            <input type="text" id="inputName" placeholder="Input Name">
+            <input type="text" id="inputUrl" placeholder="Input URL">
+            <input type="text" id="outputName" placeholder="Output Name">
+            <input type="text" id="outputUrl" placeholder="Output URL">
+            <button id="startRelayBtn"><span class="material-icons">play_arrow</span>Start Relay</button>
+        </div>
+        <div class="md-action-row">
+            <button id="exportBtn" class="secondary"><span class="material-icons">file_download</span>Export</button>
+            <input id="importFile" type="file" accept="application/json" style="display:none" />
+            <button id="importBtn" class="secondary"><span class="material-icons">file_upload</span>Import</button>
+        </div>
         <h2>Server Stats</h2>
         <div id="serverStats"></div>
         <h2>Active Relays</h2>
@@ -27,12 +31,10 @@ document.addEventListener('DOMContentLoaded', function() {
         const outputBg = inputBg;
         return `<tr style="${inputGroupBorder} background:${outputBg};">
             ${i === 0 ? `<td rowspan="${endpointsLen}" style="word-break:break-all; color:#1976d2; font-weight:bold; vertical-align:middle; padding:8px 12px; background:${inputBg}; border:none;">
-                <span title="${input}">${ep.input_name || ''}</span>
-                <button class='eyeBtn' data-url="${input}" title="Show Input URL" style="margin-left:4px;">👁️</button>
+                <span class="centered-cell" title="${input}"><span>${ep.input_name || ''}</span><button class='eyeBtn' data-url="${input}" title="Show Input URL"><span class="material-icons">visibility</span></button></span>
             </td>` : ''}
             <td style="word-break:break-all; padding:8px 12px;">
-                <span title="${ep.output_url}">${ep.output_name || ep.output_url}</span>
-                <button class='eyeBtn' data-url="${ep.output_url}" title="Show Output URL" style="margin-left:4px;">👁️</button>
+                <span class="centered-cell" title="${ep.output_url}"><span>${ep.output_name || ep.output_url}</span><button class='eyeBtn' data-url="${ep.output_url}" title="Show Output URL"><span class="material-icons">visibility</span></button></span>
             </td>
             <td style="padding:8px 12px;">${ep.running ? 'Running' : 'Stopped'}</td>
             <td style="padding:8px 12px;">${ep.bitrate ? ep.bitrate : '-'}</td>
@@ -41,8 +43,8 @@ document.addEventListener('DOMContentLoaded', function() {
             <td style="padding:8px 12px;">${ep.mem ? formatBytes(ep.mem) : '-'}</td>
             <td style="padding:8px 12px;">
                 ${ep.running
-                    ? `<button class="stopRelayBtn" data-input="${input}" data-output="${ep.output_url}" data-input-name="${ep.input_name || ''}" data-output-name="${ep.output_name || ''}">Stop</button>`
-                    : `<button class="startRelayBtn" data-input="${input}" data-output="${ep.output_url}" data-input-name="${ep.input_name || ''}" data-output-name="${ep.output_name || ''}">Start</button>`}
+                    ? `<button class="stopRelayBtn" data-input="${input}" data-output="${ep.output_url}" data-input-name="${ep.input_name || ''}" data-output-name="${ep.output_name || ''}"><span class="material-icons">stop</span>Stop</button>`
+                    : `<button class="startRelayBtn" data-input="${input}" data-output="${ep.output_url}" data-input-name="${ep.input_name || ''}" data-output-name="${ep.output_name || ''}"><span class="material-icons">play_arrow</span>Start</button>`}
             </td>
         </tr>`;
     }
@@ -78,6 +80,18 @@ document.addEventListener('DOMContentLoaded', function() {
             btn.onclick = function() {
                 alert('URL: ' + btn.getAttribute('data-url'));
             };
+        });
+        // Add ripple effect to all buttons
+        document.querySelectorAll('button').forEach(btn => {
+            btn.addEventListener('click', function(e) {
+                const ripple = document.createElement('span');
+                ripple.className = 'ripple';
+                btn.appendChild(ripple);
+                // Force reflow to enable animation
+                void ripple.offsetWidth;
+                ripple.classList.add('active');
+                setTimeout(() => ripple.remove(), 500);
+            });
         });
     }
 
