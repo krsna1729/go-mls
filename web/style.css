@@ -192,3 +192,40 @@ tr:nth-child(odd) td {
 td .centered-cell, th .centered-cell {
     text-align: center;
 }
+#summaryBar {
+    background: #f7fafd;
+    border-bottom: 1px solid #e0e7ef;
+    font-size: 1.1em;
+    font-weight: 500;
+    display: flex;
+    gap: 2em;
+    align-items: center;
+    justify-content: flex-start;
+    padding: 1em 2em;
+}
+.badge {
+    display: inline-block;
+    padding: 0.2em 0.7em;
+    border-radius: 1em;
+    font-size: 0.95em;
+    font-weight: 600;
+    color: #fff;
+}
+.badge-running { background: #43a047; }
+.badge-stopped { background: #bdbdbd; color: #333; }
+.badge-error { background: #e53935; }
+.badge-healthy { background: #43a047; }
+.badge-warning { background: #fbc02d; color: #333; }
+.badge-unknown { background: #757575; }
+.details-btn {
+    background: none;
+    border: none;
+    color: #1976d2;
+    cursor: pointer;
+    font-size: 1em;
+    padding: 0 0.5em;
+    vertical-align: middle;
+}
+.details-row {
+    background: #f9f9fb;
+}
