@@ -264,7 +264,7 @@ func (rm *RelayManager) Status() status.FullStatus {
 	srv, _ := process.GetSelfUsage()
 	serverStatus := status.ServerStatus{}
 	if srv != nil {
-		serverStatus = status.ServerStatus{CPU: srv.CPU, Mem: srv.Mem, PID: srv.PID}
+		serverStatus = status.ServerStatus{CPU: srv.CPU, Mem: srv.Mem}
 	}
 
 	relays := []status.RelayStatus{}
@@ -274,12 +274,10 @@ func (rm *RelayManager) Status() status.FullStatus {
 		endpoints := []status.EndpointStatus{}
 		for _, ep := range relay.Endpoints {
 			ep.mu.Lock()
-			pid := 0
 			cpu := 0.0
 			mem := uint64(0)
 			if ep.Cmd != nil && ep.Cmd.Process != nil {
-				pid = ep.Cmd.Process.Pid
-				if u, err := process.GetProcUsage(pid); err == nil {
+				if u, err := process.GetProcUsage(ep.Cmd.Process.Pid); err == nil {
 					cpu = u.CPU
 					mem = u.Mem
 				}
@@ -289,7 +287,6 @@ func (rm *RelayManager) Status() status.FullStatus {
 				OutputName: ep.OutputName,
 				Running:    ep.Running,
 				Bitrate:    ep.Bitrate,
-				PID:        pid,
 				CPU:        cpu,
 				Mem:        mem,
 			})

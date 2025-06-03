@@ -38,7 +38,6 @@ document.addEventListener('DOMContentLoaded', function() {
             </td>
             <td style="padding:8px 12px;">${ep.running ? 'Running' : 'Stopped'}</td>
             <td style="padding:8px 12px;">${ep.bitrate ? ep.bitrate : '-'}</td>
-            <td style="padding:8px 12px;">${ep.pid || '-'}</td>
             <td style="padding:8px 12px;">${typeof ep.cpu === 'number' ? ep.cpu.toFixed(1) : '-'}</td>
             <td style="padding:8px 12px;">${ep.mem ? formatBytes(ep.mem) : '-'}</td>
             <td style="padding:8px 12px;">
@@ -105,7 +104,7 @@ document.addEventListener('DOMContentLoaded', function() {
         // Server stats
         let serverHtml = '';
         if (data && data.server) {
-            serverHtml = `<b>PID:</b> ${data.server.pid} &nbsp; <b>CPU:</b> ${data.server.cpu.toFixed(1)}% &nbsp; <b>Mem:</b> ${formatBytes(data.server.mem)}`;
+            serverHtml = `<b>CPU:</b> ${data.server.cpu.toFixed(1)}% &nbsp; <b>Mem:</b> ${formatBytes(data.server.mem)}`;
         } else {
             serverHtml = '<i>Unavailable</i>';
         }
@@ -124,7 +123,6 @@ document.addEventListener('DOMContentLoaded', function() {
                         <th style="text-align:left; padding:8px 12px;">Output</th>
                         <th style="text-align:left; padding:8px 12px;">Status</th>
                         <th style="text-align:left; padding:8px 12px;">Bitrate (kbps)</th>
-                        <th style="text-align:left; padding:8px 12px;">PID</th>
                         <th style="text-align:left; padding:8px 12px;">CPU (%)</th>
                         <th style="text-align:left; padding:8px 12px;">Mem</th>
                         <th style="text-align:left; padding:8px 12px;">Action</th>
@@ -141,7 +139,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 if (endpoints.length === 0) {
                     html += `<tr style="${inputGroupBorder}">
                         <td style="word-break:break-all; color:#1976d2; font-weight:bold; padding:8px 12px; background:${inputBg};">${inputName}</td>
-                        <td colspan="7" style="padding:8px 12px; background:#fff;"><i>No endpoints</i></td>
+                        <td colspan="6" style="padding:8px 12px; background:#fff;"><i>No endpoints</i></td>
                     </tr>`;
                 } else {
                     for (let i = 0; i < endpoints.length; i++) {
