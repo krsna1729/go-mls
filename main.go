@@ -20,16 +20,23 @@ func apiStartRelay(relayMgr *stream.RelayManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		relayMgr.Logger.Debug("apiStartRelay called")
 		var req struct {
-			InputURL  string `json:"input_url"`
-			OutputURL string `json:"output_url"`
+			InputURL   string `json:"input_url"`
+			OutputURL  string `json:"output_url"`
+			InputName  string `json:"input_name"`
+			OutputName string `json:"output_name"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			relayMgr.Logger.Error("apiStartRelay: failed to decode request: %v", err)
 			httputil.WriteError(w, http.StatusBadRequest, "Invalid request")
 			return
 		}
-		relayMgr.Logger.Debug("apiStartRelay: starting relay for input=%s, output=%s", req.InputURL, req.OutputURL)
-		if err := relayMgr.StartRelay(req.InputURL, req.OutputURL); err != nil {
+		if req.InputName == "" || req.OutputName == "" {
+			relayMgr.Logger.Error("apiStartRelay: missing input or output name")
+			httputil.WriteError(w, http.StatusBadRequest, "Input and output names are required")
+			return
+		}
+		relayMgr.Logger.Debug("apiStartRelay: starting relay for input=%s, output=%s, input_name=%s, output_name=%s", req.InputURL, req.OutputURL, req.InputName, req.OutputName)
+		if err := relayMgr.StartRelay(req.InputURL, req.OutputURL, req.InputName, req.OutputName); err != nil {
 			relayMgr.Logger.Error("apiStartRelay: failed to start relay: %v", err)
 			httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -43,16 +50,23 @@ func apiStopRelay(relayMgr *stream.RelayManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		relayMgr.Logger.Debug("apiStopRelay called")
 		var req struct {
-			InputURL  string `json:"input_url"`
-			OutputURL string `json:"output_url"`
+			InputURL   string `json:"input_url"`
+			OutputURL  string `json:"output_url"`
+			InputName  string `json:"input_name"`
+			OutputName string `json:"output_name"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			relayMgr.Logger.Error("apiStopRelay: failed to decode request: %v", err)
 			httputil.WriteError(w, http.StatusBadRequest, "Invalid request")
 			return
 		}
-		relayMgr.Logger.Debug("apiStopRelay: stopping relay for input=%s, output=%s", req.InputURL, req.OutputURL)
-		if err := relayMgr.StopRelay(req.InputURL, req.OutputURL); err != nil {
+		if req.InputName == "" || req.OutputName == "" {
+			relayMgr.Logger.Error("apiStopRelay: missing input or output name")
+			httputil.WriteError(w, http.StatusBadRequest, "Input and output names are required")
+			return
+		}
+		relayMgr.Logger.Debug("apiStopRelay: stopping relay for input=%s, output=%s, input_name=%s, output_name=%s", req.InputURL, req.OutputURL, req.InputName, req.OutputName)
+		if err := relayMgr.StopRelay(req.InputURL, req.OutputURL, req.InputName, req.OutputName); err != nil {
 			relayMgr.Logger.Error("apiStopRelay: failed to stop relay: %v", err)
 			httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 			return

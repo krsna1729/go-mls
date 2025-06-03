@@ -7,16 +7,18 @@ type ServerStatus struct {
 }
 
 type EndpointStatus struct {
-	OutputURL string  `json:"output_url"`
-	Running   bool    `json:"running"`
-	Bitrate   float64 `json:"bitrate"`
-	PID       int     `json:"pid"`
-	CPU       float64 `json:"cpu"`
-	Mem       uint64  `json:"mem"`
+	OutputURL  string  `json:"output_url"`
+	OutputName string  `json:"output_name"`
+	Running    bool    `json:"running"`
+	Bitrate    float64 `json:"bitrate"`
+	PID        int     `json:"pid"`
+	CPU        float64 `json:"cpu"`
+	Mem        uint64  `json:"mem"`
 }
 
 type RelayStatus struct {
 	InputURL  string           `json:"input_url"`
+	InputName string           `json:"input_name"`
 	Endpoints []EndpointStatus `json:"endpoints"`
 }
 

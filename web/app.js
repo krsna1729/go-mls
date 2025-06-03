@@ -3,8 +3,10 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // Render static input controls once
     relayControls.innerHTML = `<h2>Add Relay Endpoint</h2>
-        <input type="text" id="inputUrl" placeholder="Input URL" style="width:260px;">
-        <input type="text" id="outputUrl" placeholder="Output URL" style="width:260px;">
+        <input type="text" id="inputName" placeholder="Input Name" style="width:180px;">
+        <input type="text" id="inputUrl" placeholder="Input URL" style="width:220px;">
+        <input type="text" id="outputName" placeholder="Output Name" style="width:180px;">
+        <input type="text" id="outputUrl" placeholder="Output URL" style="width:220px;">
         <button id="startRelayBtn">Start Relay Endpoint</button>
         <button id="exportBtn">Export Relays</button>
         <input id="importFile" type="file" accept="application/json" style="display:none" />
@@ -24,8 +26,14 @@ document.addEventListener('DOMContentLoaded', function() {
     function renderEndpointRow(input, ep, endpointsLen, i, inputBg, inputGroupBorder) {
         const outputBg = inputBg;
         return `<tr style="${inputGroupBorder} background:${outputBg};">
-            ${i === 0 ? `<td rowspan="${endpointsLen}" style="word-break:break-all; color:#1976d2; font-weight:bold; vertical-align:middle; padding:8px 12px; background:${inputBg}; border:none;">${input}</td>` : ''}
-            <td style="word-break:break-all; padding:8px 12px;">${ep.output_url}</td>
+            ${i === 0 ? `<td rowspan="${endpointsLen}" style="word-break:break-all; color:#1976d2; font-weight:bold; vertical-align:middle; padding:8px 12px; background:${inputBg}; border:none;">
+                <span title="${input}">${ep.input_name || ''}</span>
+                <button class='eyeBtn' data-url="${input}" title="Show Input URL" style="margin-left:4px;">👁️</button>
+            </td>` : ''}
+            <td style="word-break:break-all; padding:8px 12px;">
+                <span title="${ep.output_url}">${ep.output_name || ep.output_url}</span>
+                <button class='eyeBtn' data-url="${ep.output_url}" title="Show Output URL" style="margin-left:4px;">👁️</button>
+            </td>
             <td style="padding:8px 12px;">${ep.running ? 'Running' : 'Stopped'}</td>
             <td style="padding:8px 12px;">${ep.bitrate ? ep.bitrate : '-'}</td>
             <td style="padding:8px 12px;">${ep.pid || '-'}</td>
@@ -33,8 +41,8 @@ document.addEventListener('DOMContentLoaded', function() {
             <td style="padding:8px 12px;">${ep.mem ? formatBytes(ep.mem) : '-'}</td>
             <td style="padding:8px 12px;">
                 ${ep.running
-                    ? `<button class="stopRelayBtn" data-input="${input}" data-output="${ep.output_url}">Stop</button>`
-                    : `<button class="startRelayBtn" data-input="${input}" data-output="${ep.output_url}">Start</button>`}
+                    ? `<button class="stopRelayBtn" data-input="${input}" data-output="${ep.output_url}" data-input-name="${ep.input_name || ''}" data-output-name="${ep.output_name || ''}">Stop</button>`
+                    : `<button class="startRelayBtn" data-input="${input}" data-output="${ep.output_url}" data-input-name="${ep.input_name || ''}" data-output-name="${ep.output_name || ''}">Start</button>`}
             </td>
         </tr>`;
     }
@@ -44,10 +52,12 @@ document.addEventListener('DOMContentLoaded', function() {
             btn.onclick = function() {
                 const input = btn.getAttribute('data-input');
                 const output = btn.getAttribute('data-output');
+                const inputName = btn.getAttribute('data-input-name') || '';
+                const outputName = btn.getAttribute('data-output-name') || '';
                 fetch('/api/relay/stop', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ input_url: input, output_url: output })
+                    body: JSON.stringify({ input_url: input, output_url: output, input_name: inputName, output_name: outputName })
                 }).then(() => { fetchStatus(); });
             };
         });
@@ -55,11 +65,18 @@ document.addEventListener('DOMContentLoaded', function() {
             btn.onclick = function() {
                 const input = btn.getAttribute('data-input');
                 const output = btn.getAttribute('data-output');
+                const inputName = btn.getAttribute('data-input-name') || '';
+                const outputName = btn.getAttribute('data-output-name') || '';
                 fetch('/api/relay/start', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ input_url: input, output_url: output })
+                    body: JSON.stringify({ input_url: input, output_url: output, input_name: inputName, output_name: outputName })
                 }).then(() => { fetchStatus(); });
+            };
+        });
+        document.querySelectorAll('.eyeBtn').forEach(btn => {
+            btn.onclick = function() {
+                alert('URL: ' + btn.getAttribute('data-url'));
             };
         });
     }
@@ -89,8 +106,8 @@ document.addEventListener('DOMContentLoaded', function() {
             html += `<table style="width:100%;border-collapse:separate;border-spacing:0;">
                 <thead>
                     <tr>
-                        <th style="text-align:left; padding:8px 12px;">Input URL</th>
-                        <th style="text-align:left; padding:8px 12px;">Output URL</th>
+                        <th style="text-align:left; padding:8px 12px;">Input</th>
+                        <th style="text-align:left; padding:8px 12px;">Output</th>
                         <th style="text-align:left; padding:8px 12px;">Status</th>
                         <th style="text-align:left; padding:8px 12px;">Bitrate (kbps)</th>
                         <th style="text-align:left; padding:8px 12px;">PID</th>
@@ -103,16 +120,18 @@ document.addEventListener('DOMContentLoaded', function() {
             for (let relayIdx = 0; relayIdx < data.relays.length; relayIdx++) {
                 const relay = data.relays[relayIdx];
                 const input = relay.input_url;
+                const inputName = relay.input_name || '';
                 const endpoints = relay.endpoints ? relay.endpoints.slice().sort((a, b) => (a.output_url || '').localeCompare(b.output_url || '', undefined, {numeric: true, sensitivity: 'base'})) : [];
                 const inputBg = relayIdx % 2 === 0 ? '#f7fafd' : '#f0f4fa';
                 const inputGroupBorder = 'border-top: 3px solid #b6d0f7;';
                 if (endpoints.length === 0) {
                     html += `<tr style="${inputGroupBorder}">
-                        <td style="word-break:break-all; color:#1976d2; font-weight:bold; padding:8px 12px; background:${inputBg};">${input}</td>
+                        <td style="word-break:break-all; color:#1976d2; font-weight:bold; padding:8px 12px; background:${inputBg};">${inputName}</td>
                         <td colspan="7" style="padding:8px 12px; background:#fff;"><i>No endpoints</i></td>
                     </tr>`;
                 } else {
                     for (let i = 0; i < endpoints.length; i++) {
+                        endpoints[i].input_name = inputName;
                         html += renderEndpointRow(input, endpoints[i], endpoints.length, i, inputBg, inputGroupBorder);
                     }
                 }
@@ -125,11 +144,13 @@ document.addEventListener('DOMContentLoaded', function() {
         document.getElementById('startRelayBtn').onclick = function() {
             const inputUrl = document.getElementById('inputUrl').value.trim();
             const outputUrl = document.getElementById('outputUrl').value.trim();
-            if (!inputUrl || !outputUrl) { alert('Input and Output URL required'); return; }
+            const inputName = document.getElementById('inputName').value.trim();
+            const outputName = document.getElementById('outputName').value.trim();
+            if (!inputUrl || !outputUrl || !inputName || !outputName) { alert('Input/Output URL and Name required'); return; }
             fetch('/api/relay/start', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ input_url: inputUrl, output_url: outputUrl })
+                body: JSON.stringify({ input_url: inputUrl, output_url: outputUrl, input_name: inputName, output_name: outputName })
             }).then(() => { fetchStatus(); });
         };
         document.getElementById('exportBtn').onclick = function() {
