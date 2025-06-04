@@ -1,0 +1,20 @@
+{
+  "name": "Go Video Streaming DevContainer",
+  "image": "mcr.microsoft.com/devcontainers/go:1.21",
+  "features": {
+    "ghcr.io/devcontainers-extra/features/ffmpeg-apt-get:1": {},
+    "ghcr.io/devcontainers/features/common-utils:2": {},
+    "ghcr.io/devcontainers/features/docker-in-docker:2": { "dockerGroup": true }
+  },
+  "postCreateCommand": "go mod tidy",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "golang.Go",
+        "ms-azuretools.vscode-docker"
+      ]
+    }
+  },
+  "forwardPorts": [8080],
+  "remoteUser": "vscode"
+}
