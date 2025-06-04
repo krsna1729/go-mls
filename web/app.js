@@ -185,10 +185,44 @@ document.addEventListener('DOMContentLoaded', function () {
             : '<span class="badge badge-warning">Warning</span>';
         let totalCpuStr = totalEndpoints ? totalCpu.toFixed(1) + '%' : '0';
         let totalMemStr = totalEndpoints ? formatBytes(totalMem) : '0';
-        let serverHtml = `<b>App CPU:</b> ${appCpu} &nbsp; <b>App Mem:</b> ${appMem}<br>
-<b>Relay Groups:</b> ${relayGroups} &nbsp; <b>Endpoints:</b> ${totalEndpoints} &nbsp;<b>Health:</b> ${healthBadge}<br>
-<b>Total Endpoint Bitrate:</b> ${Math.round(totalBitrate)} kbps &nbsp; <b>Total Endpoint CPU:</b> ${totalCpuStr} &nbsp; <b>Total Endpoint Mem:</b> ${totalMemStr} <br>`;
-        document.getElementById('serverStats').innerHTML = serverHtml;
+        let serverHtml = `
+  <div class="stats-card">
+    <div class="stats-grid stats-grid-custom">
+      <div class="stat-block">
+        <div class="stat-label">Relay Groups</div>
+        <div class="stat-value">${relayGroups}</div>
+      </div>
+      <div class="stat-block">
+        <div class="stat-label">Endpoints</div>
+        <div class="stat-value">${totalEndpoints}</div>
+      </div>
+      <div class="stat-block stat-health">
+        <div class="stat-label">Health</div>
+        <div class="stat-value">${healthBadge}</div>
+      </div>
+      <div class="stat-block">
+        <div class="stat-label">App CPU</div>
+        <div class="stat-value">${appCpu}</div>
+      </div>
+      <div class="stat-block">
+        <div class="stat-label">App Mem</div>
+        <div class="stat-value">${appMem}</div>
+      </div>
+      <div class="stat-block">
+        <div class="stat-label">Total CPU</div>
+        <div class="stat-value">${totalCpuStr}</div>
+      </div>
+      <div class="stat-block">
+        <div class="stat-label">Total Mem</div>
+        <div class="stat-value">${totalMemStr}</div>
+      </div>
+      <div class="stat-block">
+        <div class="stat-label">Total Bitrate</div>
+        <div class="stat-value">${Math.round(totalBitrate)} kbps</div>
+      </div>
+    </div>
+  </div>`;
+  document.getElementById('serverStats').innerHTML = serverHtml;
 
         // Relays table
         let html = '';
