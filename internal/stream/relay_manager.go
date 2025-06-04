@@ -17,11 +17,19 @@ import (
 )
 
 // RelayEndpoint manages a single output URL and its ffmpeg process
+type Status int
+
+const (
+	Running Status = iota
+	Stopped
+	Error
+)
+
 type RelayEndpoint struct {
 	OutputURL  string
 	OutputName string
 	Cmd        *exec.Cmd
-	Running    bool
+	Status     Status
 	Bitrate    float64 // in kbits/s
 	mu         sync.Mutex
 }
@@ -69,8 +77,9 @@ func (rm *RelayManager) StartRelay(inputURL, outputURL, inputName, outputName st
 	}
 	rm.mu.Unlock()
 
+	// Remove Running from RelayEndpoint, use Status field
 	relay.mu.Lock()
-	if ep, exists := relay.Endpoints[outputURL]; exists && ep.Running {
+	if ep, exists := relay.Endpoints[outputURL]; exists && ep.Status == Running {
 		rm.Logger.Warn("Relay already running for %s [%s] -> %s [%s]", relay.InputName, inputURL, ep.OutputName, outputURL)
 		relay.mu.Unlock()
 		return fmt.Errorf("relay already running for %s -> %s", inputURL, outputURL)
@@ -94,8 +103,8 @@ func (rm *RelayManager) StartRelay(inputURL, outputURL, inputName, outputName st
 		OutputURL:  outputURL,
 		OutputName: outputName,
 		Cmd:        cmd,
-		Running:    true,
 		Bitrate:    0.0,
+		Status:     Running,
 	}
 	relay.Endpoints[outputURL] = ep
 	relay.mu.Unlock()
@@ -131,13 +140,16 @@ func (rm *RelayManager) StartRelay(inputURL, outputURL, inputName, outputName st
 		err := cmd.Wait()
 		ep.mu.Lock()
 		// Reset state on exit
-		wasRunning := ep.Running
-		ep.Running = false
+		prevStatus := ep.Status
+		ep.Status = Stopped
 		ep.Bitrate = 0.0
 		ep.mu.Unlock()
 		if err != nil {
-			if wasRunning {
+			if prevStatus == Running {
 				rm.Logger.Error("ffmpeg exited with error for %s [%s] -> %s [%s]: %v", inputName, inputURL, outputName, outputURL, err)
+				ep.mu.Lock()
+				ep.Status = Error
+				ep.mu.Unlock()
 			} else {
 				rm.Logger.Info("ffmpeg process for %s [%s] -> %s [%s] was intentionally stopped", inputName, inputURL, outputName, outputURL)
 			}
@@ -165,7 +177,7 @@ func (rm *RelayManager) StopRelay(inputURL, outputURL, inputName, outputName str
 	}
 	relay.mu.Lock()
 	ep, exists := relay.Endpoints[outputURL]
-	if !exists || !ep.Running {
+	if !exists || ep.Status != Running {
 		relay.mu.Unlock()
 		return fmt.Errorf("relay not running for %s -> %s", inputURL, outputURL)
 	}
@@ -178,7 +190,7 @@ func (rm *RelayManager) StopRelay(inputURL, outputURL, inputName, outputName str
 		relay.mu.Unlock()
 		return fmt.Errorf("failed to stop relay for %s -> %s: %v", inputURL, outputURL, err)
 	}
-	ep.Running = false
+	ep.Status = Stopped
 	relay.mu.Unlock()
 	return nil
 }
@@ -274,21 +286,30 @@ func (rm *RelayManager) Status() status.FullStatus {
 		endpoints := []status.EndpointStatus{}
 		for _, ep := range relay.Endpoints {
 			ep.mu.Lock()
-			cpu := 0.0
-			mem := uint64(0)
+			cpuVal := 0.0
+			memVal := uint64(0)
 			if ep.Cmd != nil && ep.Cmd.Process != nil {
 				if u, err := process.GetProcUsage(ep.Cmd.Process.Pid); err == nil {
-					cpu = u.CPU
-					mem = u.Mem
+					cpuVal = u.CPU
+					memVal = u.Mem
 				}
+			}
+			var statusStr string
+			switch ep.Status {
+			case Running:
+				statusStr = "Running"
+			case Error:
+				statusStr = "Error"
+			default:
+				statusStr = "Stopped"
 			}
 			endpoints = append(endpoints, status.EndpointStatus{
 				OutputURL:  ep.OutputURL,
 				OutputName: ep.OutputName,
-				Running:    ep.Running,
+				Status:     statusStr,
 				Bitrate:    ep.Bitrate,
-				CPU:        cpu,
-				Mem:        mem,
+				CPU:        cpuVal,
+				Mem:        memVal,
 			})
 			ep.mu.Unlock()
 		}

@@ -8,7 +8,7 @@ type ServerStatus struct {
 type EndpointStatus struct {
 	OutputURL  string  `json:"output_url"`
 	OutputName string  `json:"output_name"`
-	Running    bool    `json:"running"`
+	Status     string  `json:"status"`
 	Bitrate    float64 `json:"bitrate"`
 	CPU        float64 `json:"cpu"`
 	Mem        uint64  `json:"mem"`

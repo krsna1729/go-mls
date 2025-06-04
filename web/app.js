@@ -39,7 +39,9 @@ document.addEventListener('DOMContentLoaded', function () {
 
     function renderEndpointRow(input, ep, endpointsLen, i, inputBg, inputGroupBorder, relayIdx, endpointIdx) {
         const outputBg = inputBg;
-        const status = ep.status || (ep.running ? 'Running' : 'Stopped');
+        // Use backend-provided status string
+        const status = ep.status || 'Stopped';
+        const isRunning = status === 'Running';
         return `<tr style="${inputGroupBorder} background:${outputBg};">
             ${i === 0 ? `<td rowspan="${endpointsLen}" style="word-break:break-all; color:#1976d2; font-weight:bold; vertical-align:middle; padding:8px 12px; background:${inputBg}; border:none;" data-label="Input">
                 <span class="centered-cell" title="${input}"><span>${ep.input_name || ''}</span><button class='eyeBtn' data-url="${input}" title="Show Input URL"><span class="material-icons">visibility</span></button></span>
@@ -48,11 +50,11 @@ document.addEventListener('DOMContentLoaded', function () {
                 <span class="centered-cell" title="${ep.output_url}"><span>${ep.output_name || ep.output_url}</span><button class='eyeBtn' data-url="${ep.output_url}" title="Show Output URL"><span class="material-icons">visibility</span></button></span>
             </td>
             <td style="padding:8px 12px;" data-label="Status">${getStatusBadge(status)}</td>
-            <td style="padding:8px 12px;" data-label="Bitrate (kbps)">${ep.running && ep.bitrate ? ep.bitrate : '-'}</td>
-            <td style="padding:8px 12px;" data-label="CPU">${ep.running && typeof ep.cpu === 'number' ? ep.cpu.toFixed(1) : '-'}</td>
-            <td style="padding:8px 12px;" data-label="Mem">${ep.running && ep.mem ? (ep.mem / (1024 * 1024)).toFixed(1) : '-'}</td>
+            <td style="padding:8px 12px;" data-label="Bitrate (kbps)">${isRunning && ep.bitrate ? ep.bitrate : '-'}</td>
+            <td style="padding:8px 12px;" data-label="CPU">${isRunning && typeof ep.cpu === 'number' ? ep.cpu.toFixed(1) : '-'}</td>
+            <td style="padding:8px 12px;" data-label="Mem">${isRunning && ep.mem ? (ep.mem / (1024 * 1024)).toFixed(1) : '-'}</td>
             <td style="padding:8px 12px;" data-label="Action">
-                ${ep.running
+                ${isRunning
                 ? `<button class="stopRelayBtn" data-input="${input}" data-output="${ep.output_url}" data-input-name="${ep.input_name || ''}" data-output-name="${ep.output_name || ''}"><span class="material-icons">stop</span>Stop</button>`
                 : `<button class="startRelayBtn" data-input="${input}" data-output="${ep.output_url}" data-input-name="${ep.input_name || ''}" data-output-name="${ep.output_name || ''}"><span class="material-icons">play_arrow</span>Start</button>`}
             </td>
@@ -238,6 +240,9 @@ document.addEventListener('DOMContentLoaded', function () {
                         if (endpoints[i].bitrate && !isNaN(endpoints[i].bitrate)) {
                             endpoints[i].bitrate = Math.round(Number(endpoints[i].bitrate));
                         }
+                        // Use backend status string for running logic
+                        const status = endpoints[i].status || 'Stopped';
+                        const isRunning = status === 'Running';
                         html += `<tr data-input-group="${groupId}">`;
                         if (i === 0) {
                             html += `<td class="input-group-row" data-input-group="${groupId}" rowspan="${endpoints.length}" style="word-break:break-all; color:#1976d2; font-weight:bold; vertical-align:middle; padding:8px 12px; background:${inputBg}; border:none;" data-label="Input">
@@ -247,14 +252,16 @@ document.addEventListener('DOMContentLoaded', function () {
                         html += `<td style="word-break:break-all; padding:8px 12px;" data-label="Output">
                                 <span class="centered-cell" title="${endpoints[i].output_url}"><span>${endpoints[i].output_name || endpoints[i].output_url}</span><button class='eyeBtn' data-url="${endpoints[i].output_url}" title="Show Output URL"><span class="material-icons">visibility</span></button></span>
                             </td>
-                            <td style="padding:8px 12px;" data-label="Status">${getStatusBadge(endpoints[i].status || (endpoints[i].running ? 'Running' : 'Stopped'))}</td>
-                            <td style="padding:8px 12px;" data-label="Bitrate (kbps)">${endpoints[i].running && endpoints[i].bitrate ? endpoints[i].bitrate : '-'}</td>
-                            <td style="padding:8px 12px;" data-label="CPU">${endpoints[i].running && typeof endpoints[i].cpu === 'number' ? endpoints[i].cpu.toFixed(1) : '-'}</td>
-                            <td style="padding:8px 12px;" data-label="Mem">${endpoints[i].running && endpoints[i].mem ? (endpoints[i].mem / (1024 * 1024)).toFixed(1) : '-'}</td>
+                            <td style="padding:8px 12px;" data-label="Status">${getStatusBadge(status)}</td>
+                            <td style="padding:8px 12px;" data-label="Bitrate (kbps)">${isRunning && endpoints[i].bitrate ? endpoints[i].bitrate : '-'}</td>
+                            <td style="padding:8px 12px;" data-label="CPU">${isRunning && typeof endpoints[i].cpu === 'number' ? endpoints[i].cpu.toFixed(1) : '-'}</td>
+                            <td style="padding:8px 12px;" data-label="Mem">${isRunning && endpoints[i].mem ? (endpoints[i].mem / (1024 * 1024)).toFixed(1) : '-'}</td>
                             <td style="padding:8px 12px;" data-label="Action">
-                                ${endpoints[i].running
-                                ? `<button class="stopRelayBtn" data-input="${input}" data-output="${endpoints[i].output_url}" data-input-name="${endpoints[i].input_name || ''}" data-output-name="${endpoints[i].output_name || ''}"><span class="material-icons">stop</span>Stop</button>`
-                                : `<button class="startRelayBtn" data-input="${input}" data-output="${endpoints[i].output_url}" data-input-name="${endpoints[i].input_name || ''}" data-output-name="${endpoints[i].output_name || ''}"><span class="material-icons">play_arrow</span>Start</button>`}
+                                ${
+                                    isRunning
+                                    ? `<button class="stopRelayBtn" data-input="${input}" data-output="${endpoints[i].output_url}" data-input-name="${endpoints[i].input_name || ''}" data-output-name="${endpoints[i].output_name || ''}"><span class="material-icons">stop</span>Stop</button>`
+                                    : `<button class="startRelayBtn" data-input="${input}" data-output="${endpoints[i].output_url}" data-input-name="${endpoints[i].input_name || ''}" data-output-name="${endpoints[i].output_name || ''}"><span class="material-icons">play_arrow</span>Start</button>`
+                                }
                             </td>
                         </tr>`;
                     }
