@@ -217,15 +217,62 @@ td .centered-cell, th .centered-cell {
 .badge-healthy { background: #43a047; }
 .badge-warning { background: #fbc02d; color: #333; }
 .badge-unknown { background: #757575; }
-.details-btn {
-    background: none;
-    border: none;
-    color: #1976d2;
-    cursor: pointer;
-    font-size: 1em;
-    padding: 0 0.5em;
-    vertical-align: middle;
+/* Modernize Active Relays Table */
+thead th {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: #e3f2fd;
 }
+
+tr:hover td {
+    background: #e0e7ef !important;
+    transition: background 0.2s;
+}
+
 .details-row {
-    background: #f9f9fb;
+    transition: all 0.3s cubic-bezier(.4,0,.2,1);
+    border-bottom: 2px solid #e3f2fd;
+}
+
+.input-group-row.input-highlight {
+    background: #e0e7ef !important;
+    transition: background 0.2s;
+}
+
+@media (max-width: 900px) {
+    table, thead, tbody, th, td, tr {
+        display: block;
+    }
+    thead {
+        display: none;
+    }
+    tr {
+        margin-bottom: 1em;
+        border-radius: 8px;
+        box-shadow: 0 1px 4px rgba(60,60,60,0.06);
+    }
+    td {
+        padding: 10px 8px;
+        border: none;
+        background: #fff !important;
+        position: relative;
+    }
+    td:before {
+        content: attr(data-label);
+        font-weight: bold;
+        color: #1976d2;
+        display: block;
+        margin-bottom: 0.3em;
+    }
+}
+
+/* Action button tweaks */
+.stopRelayBtn, .startRelayBtn {
+    min-width: 90px;
+    margin: 0 2px;
+}
+
+tr.selected-row td {
+    background: #dbeafe !important;
 }

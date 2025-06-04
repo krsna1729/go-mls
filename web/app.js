@@ -41,34 +41,22 @@ document.addEventListener('DOMContentLoaded', function () {
         const outputBg = inputBg;
         const status = ep.status || (ep.running ? 'Running' : 'Stopped');
         return `<tr style="${inputGroupBorder} background:${outputBg};">
-            ${i === 0 ? `<td rowspan="${endpointsLen}" style="word-break:break-all; color:#1976d2; font-weight:bold; vertical-align:middle; padding:8px 12px; background:${inputBg}; border:none;">
+            ${i === 0 ? `<td rowspan="${endpointsLen}" style="word-break:break-all; color:#1976d2; font-weight:bold; vertical-align:middle; padding:8px 12px; background:${inputBg}; border:none;" data-label="Input">
                 <span class="centered-cell" title="${input}"><span>${ep.input_name || ''}</span><button class='eyeBtn' data-url="${input}" title="Show Input URL"><span class="material-icons">visibility</span></button></span>
             </td>` : ''}
-            <td style="word-break:break-all; padding:8px 12px;">
+            <td style="word-break:break-all; padding:8px 12px;" data-label="Output">
                 <span class="centered-cell" title="${ep.output_url}"><span>${ep.output_name || ep.output_url}</span><button class='eyeBtn' data-url="${ep.output_url}" title="Show Output URL"><span class="material-icons">visibility</span></button></span>
             </td>
-            <td style="padding:8px 12px;">${getStatusBadge(status)}</td>
-            <td style="padding:8px 12px;">${ep.bitrate ? ep.bitrate : '-'}</td>
-            <td style="padding:8px 12px; text-align:center;">
-                <button class="details-btn" data-relay="${relayIdx}" data-endpoint="${endpointIdx}" title="Show details">${openDetails.has(`${relayIdx}-${endpointIdx}`) ? '&#9650;' : '&#9660;'}</button>
-            </td>
-            <td style="padding:8px 12px;">
+            <td style="padding:8px 12px;" data-label="Status">${getStatusBadge(status)}</td>
+            <td style="padding:8px 12px;" data-label="Bitrate (kbps)">${ep.running && ep.bitrate ? ep.bitrate : '-'}</td>
+            <td style="padding:8px 12px;" data-label="CPU">${ep.running && typeof ep.cpu === 'number' ? ep.cpu.toFixed(1) : '-'}</td>
+            <td style="padding:8px 12px;" data-label="Mem">${ep.running && ep.mem ? (ep.mem / (1024 * 1024)).toFixed(1) : '-'}</td>
+            <td style="padding:8px 12px;" data-label="Action">
                 ${ep.running
                 ? `<button class="stopRelayBtn" data-input="${input}" data-output="${ep.output_url}" data-input-name="${ep.input_name || ''}" data-output-name="${ep.output_name || ''}"><span class="material-icons">stop</span>Stop</button>`
                 : `<button class="startRelayBtn" data-input="${input}" data-output="${ep.output_url}" data-input-name="${ep.input_name || ''}" data-output-name="${ep.output_name || ''}"><span class="material-icons">play_arrow</span>Start</button>`}
             </td>
         </tr>`;
-    }
-
-    function renderDetailsRow(ep, relayIdx, endpointIdx) {
-        // Set display based on openDetails
-        const key = `${relayIdx}-${endpointIdx}`;
-        const display = openDetails.has(key) ? '' : 'none';
-        return `<tr class="details-row" style="display:${display};"><td colspan="6" style="padding:10px 2em 10px 3em; font-size:0.98em; color:#333; background:#f9f9fb;">
-            <b>CPU:</b> ${typeof ep.cpu === 'number' ? ep.cpu.toFixed(1) + '%' : '-'} &nbsp; 
-            <b>Mem:</b> ${ep.mem ? formatBytes(ep.mem) : '-'} &nbsp; 
-            <b>Output URL:</b> <span style="word-break:break-all;">${ep.output_url}</span>
-        </td></tr>`;
     }
 
     function attachRelayButtonHandlers() {
@@ -140,6 +128,25 @@ document.addEventListener('DOMContentLoaded', function () {
             .then(data => updateUI(data));
     }
 
+    function addInputHighlightHandlers() {
+        // Remove previous listeners if any
+        document.querySelectorAll('.input-group-row').forEach(cell => {
+            cell.onmouseenter = null;
+            cell.onmouseleave = null;
+        });
+        document.querySelectorAll('tr[data-input-group]').forEach(row => {
+            const group = row.getAttribute('data-input-group');
+            row.onmouseenter = function () {
+                const inputCell = document.querySelector(`.input-group-row[data-input-group="${group}"]`);
+                if (inputCell) inputCell.classList.add('input-highlight');
+            };
+            row.onmouseleave = function () {
+                const inputCell = document.querySelector(`.input-group-row[data-input-group="${group}"]`);
+                if (inputCell) inputCell.classList.remove('input-highlight');
+            };
+        });
+    }
+
     function updateUI(data) {
         // Server stats
         let appCpu = '0.0%';
@@ -199,7 +206,8 @@ document.addEventListener('DOMContentLoaded', function () {
                         <th style="text-align:left; padding:8px 12px;">Output</th>
                         <th style="text-align:left; padding:8px 12px;">Status</th>
                         <th style="text-align:left; padding:8px 12px;">Bitrate (kbps)</th>
-                        <th style="text-align:left; padding:8px 12px;">Details</th>
+                        <th style="text-align:left; padding:8px 12px;">CPU (%)</th>
+                        <th style="text-align:left; padding:8px 12px;">Mem (MB)</th>
                         <th style="text-align:left; padding:8px 12px;">Action</th>
                     </tr>
                 </thead>
@@ -208,6 +216,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 const relay = data.relays[relayIdx];
                 const input = relay.input_url;
                 const inputName = relay.input_name || '';
+                const groupId = `group-${relayIdx}`;
                 // Sort endpoints by output_name (fallback output_url)
                 const endpoints = relay.endpoints
                     ? relay.endpoints.slice().sort((a, b) => {
@@ -219,19 +228,35 @@ document.addEventListener('DOMContentLoaded', function () {
                 const inputBg = relayIdx % 2 === 0 ? '#f7fafd' : '#f0f4fa';
                 const inputGroupBorder = 'border-top: 3px solid #b6d0f7;';
                 if (endpoints.length === 0) {
-                    html += `<tr style="${inputGroupBorder}">
-                        <td style="word-break:break-all; color:#1976d2; font-weight:bold; padding:8px 12px; background:${inputBg};">${inputName}</td>
+                    html += `<tr data-input-group="${groupId}">
+                        <td class="input-group-row" data-input-group="${groupId}" style="word-break:break-all; color:#1976d2; font-weight:bold; padding:8px 12px; background:${inputBg};">${inputName}</td>
                         <td colspan="5" style="padding:8px 12px; background:#fff;"><i>No endpoints</i></td>
                     </tr>`;
                 } else {
                     for (let i = 0; i < endpoints.length; i++) {
                         endpoints[i].input_name = inputName;
-                        // Ensure per-endpoint bitrate is integer
                         if (endpoints[i].bitrate && !isNaN(endpoints[i].bitrate)) {
                             endpoints[i].bitrate = Math.round(Number(endpoints[i].bitrate));
                         }
-                        html += renderEndpointRow(input, endpoints[i], endpoints.length, i, inputBg, inputGroupBorder, relayIdx, i);
-                        html += renderDetailsRow(endpoints[i], relayIdx, i);
+                        html += `<tr data-input-group="${groupId}">`;
+                        if (i === 0) {
+                            html += `<td class="input-group-row" data-input-group="${groupId}" rowspan="${endpoints.length}" style="word-break:break-all; color:#1976d2; font-weight:bold; vertical-align:middle; padding:8px 12px; background:${inputBg}; border:none;" data-label="Input">
+                                <span class="centered-cell" title="${input}"><span>${endpoints[i].input_name || ''}</span><button class='eyeBtn' data-url="${input}" title="Show Input URL"><span class="material-icons">visibility</span></button></span>
+                            </td>`;
+                        }
+                        html += `<td style="word-break:break-all; padding:8px 12px;" data-label="Output">
+                                <span class="centered-cell" title="${endpoints[i].output_url}"><span>${endpoints[i].output_name || endpoints[i].output_url}</span><button class='eyeBtn' data-url="${endpoints[i].output_url}" title="Show Output URL"><span class="material-icons">visibility</span></button></span>
+                            </td>
+                            <td style="padding:8px 12px;" data-label="Status">${getStatusBadge(endpoints[i].status || (endpoints[i].running ? 'Running' : 'Stopped'))}</td>
+                            <td style="padding:8px 12px;" data-label="Bitrate (kbps)">${endpoints[i].running && endpoints[i].bitrate ? endpoints[i].bitrate : '-'}</td>
+                            <td style="padding:8px 12px;" data-label="CPU">${endpoints[i].running && typeof endpoints[i].cpu === 'number' ? endpoints[i].cpu.toFixed(1) : '-'}</td>
+                            <td style="padding:8px 12px;" data-label="Mem">${endpoints[i].running && endpoints[i].mem ? (endpoints[i].mem / (1024 * 1024)).toFixed(1) : '-'}</td>
+                            <td style="padding:8px 12px;" data-label="Action">
+                                ${endpoints[i].running
+                                ? `<button class="stopRelayBtn" data-input="${input}" data-output="${endpoints[i].output_url}" data-input-name="${endpoints[i].input_name || ''}" data-output-name="${endpoints[i].output_name || ''}"><span class="material-icons">stop</span>Stop</button>`
+                                : `<button class="startRelayBtn" data-input="${input}" data-output="${endpoints[i].output_url}" data-input-name="${endpoints[i].input_name || ''}" data-output-name="${endpoints[i].output_name || ''}"><span class="material-icons">play_arrow</span>Start</button>`}
+                            </td>
+                        </tr>`;
                     }
                 }
             }
@@ -239,6 +264,7 @@ document.addEventListener('DOMContentLoaded', function () {
         }
         document.getElementById('relayTable').innerHTML = html;
         attachRelayButtonHandlers();
+        addInputHighlightHandlers();
 
         document.getElementById('startRelayBtn').onclick = function () {
             const inputUrl = document.getElementById('inputUrl').value.trim();
