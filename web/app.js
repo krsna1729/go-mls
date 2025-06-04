@@ -34,6 +34,9 @@ document.addEventListener('DOMContentLoaded', function () {
         return '<span class="badge badge-unknown">Unknown</span>';
     }
 
+    // Track open details rows by relayIdx-endpointIdx
+    const openDetails = new Set();
+
     function renderEndpointRow(input, ep, endpointsLen, i, inputBg, inputGroupBorder, relayIdx, endpointIdx) {
         const outputBg = inputBg;
         const status = ep.status || (ep.running ? 'Running' : 'Stopped');
@@ -47,7 +50,7 @@ document.addEventListener('DOMContentLoaded', function () {
             <td style="padding:8px 12px;">${getStatusBadge(status)}</td>
             <td style="padding:8px 12px;">${ep.bitrate ? ep.bitrate : '-'}</td>
             <td style="padding:8px 12px; text-align:center;">
-                <button class="details-btn" data-relay="${relayIdx}" data-endpoint="${endpointIdx}" title="Show details">&#9660;</button>
+                <button class="details-btn" data-relay="${relayIdx}" data-endpoint="${endpointIdx}" title="Show details">${openDetails.has(`${relayIdx}-${endpointIdx}`) ? '&#9650;' : '&#9660;'}</button>
             </td>
             <td style="padding:8px 12px;">
                 ${ep.running
@@ -57,8 +60,11 @@ document.addEventListener('DOMContentLoaded', function () {
         </tr>`;
     }
 
-    function renderDetailsRow(ep) {
-        return `<tr class="details-row" style="display:none;"><td colspan="6" style="padding:10px 2em 10px 3em; font-size:0.98em; color:#333; background:#f9f9fb;">
+    function renderDetailsRow(ep, relayIdx, endpointIdx) {
+        // Set display based on openDetails
+        const key = `${relayIdx}-${endpointIdx}`;
+        const display = openDetails.has(key) ? '' : 'none';
+        return `<tr class="details-row" style="display:${display};"><td colspan="6" style="padding:10px 2em 10px 3em; font-size:0.98em; color:#333; background:#f9f9fb;">
             <b>CPU:</b> ${typeof ep.cpu === 'number' ? ep.cpu.toFixed(1) + '%' : '-'} &nbsp; 
             <b>Mem:</b> ${ep.mem ? formatBytes(ep.mem) : '-'} &nbsp; 
             <b>Output URL:</b> <span style="word-break:break-all;">${ep.output_url}</span>
@@ -114,18 +120,16 @@ document.addEventListener('DOMContentLoaded', function () {
             btn.onclick = function () {
                 const relayIdx = btn.getAttribute('data-relay');
                 const endpointIdx = btn.getAttribute('data-endpoint');
-                const table = btn.closest('table');
-                const row = btn.closest('tr');
-                const detailsRow = row.nextElementSibling;
-                if (detailsRow && detailsRow.classList.contains('details-row')) {
-                    if (detailsRow.style.display === 'none' || !detailsRow.style.display) {
-                        detailsRow.style.display = '';
-                        btn.innerHTML = '&#9650;';
-                    } else {
-                        detailsRow.style.display = 'none';
-                        btn.innerHTML = '&#9660;';
-                    }
+                const key = `${relayIdx}-${endpointIdx}`;
+                if (openDetails.has(key)) {
+                    openDetails.delete(key);
+                } else {
+                    openDetails.add(key);
                 }
+                // Force UI update to reflect the new state
+                fetch('/api/relay/status')
+                    .then(r => r.json())
+                    .then(data => updateUI(data));
             };
         });
     }
@@ -182,7 +186,12 @@ document.addEventListener('DOMContentLoaded', function () {
         if (!data || !data.relays || data.relays.length === 0) {
             html += '<i>No relays running.</i>';
         } else {
-            data.relays.sort((a, b) => a.input_url.localeCompare(b.input_url, undefined, { numeric: true, sensitivity: 'base' }));
+            // Sort relays by input_name (fallback input_url)
+            data.relays.sort((a, b) => {
+                const aName = a.input_name || a.input_url || '';
+                const bName = b.input_name || b.input_url || '';
+                return aName.localeCompare(bName, undefined, { numeric: true, sensitivity: 'base' });
+            });
             html += `<table style="width:100%;border-collapse:separate;border-spacing:0;">
                 <thead>
                     <tr>
@@ -199,7 +208,14 @@ document.addEventListener('DOMContentLoaded', function () {
                 const relay = data.relays[relayIdx];
                 const input = relay.input_url;
                 const inputName = relay.input_name || '';
-                const endpoints = relay.endpoints ? relay.endpoints.slice().sort((a, b) => (a.output_url || '').localeCompare(b.output_url || '', undefined, { numeric: true, sensitivity: 'base' })) : [];
+                // Sort endpoints by output_name (fallback output_url)
+                const endpoints = relay.endpoints
+                    ? relay.endpoints.slice().sort((a, b) => {
+                        const aName = a.output_name || a.output_url || '';
+                        const bName = b.output_name || b.output_url || '';
+                        return aName.localeCompare(bName, undefined, { numeric: true, sensitivity: 'base' });
+                    })
+                    : [];
                 const inputBg = relayIdx % 2 === 0 ? '#f7fafd' : '#f0f4fa';
                 const inputGroupBorder = 'border-top: 3px solid #b6d0f7;';
                 if (endpoints.length === 0) {
@@ -215,7 +231,7 @@ document.addEventListener('DOMContentLoaded', function () {
                             endpoints[i].bitrate = Math.round(Number(endpoints[i].bitrate));
                         }
                         html += renderEndpointRow(input, endpoints[i], endpoints.length, i, inputBg, inputGroupBorder, relayIdx, i);
-                        html += renderDetailsRow(endpoints[i]);
+                        html += renderDetailsRow(endpoints[i], relayIdx, i);
                     }
                 }
             }
@@ -258,3 +274,14 @@ document.addEventListener('DOMContentLoaded', function () {
     fetchStatus();
     setInterval(fetchStatus, 5000);
 });
+
+// The fallback is only necessary if you are not guaranteed to always have input_name and output_name
+// in every relay and endpoint object in the status response. If your backend always provides these
+// names (even if they are just copies of the URLs), you can safely remove the fallback and sort
+// directly by input_name and output_name:
+
+// Example (if names are always present):
+// data.relays.sort((a, b) => a.input_name.localeCompare(a.input_name, undefined, { numeric: true, sensitivity: 'base' }));
+// endpoints.slice().sort((a, b) => a.output_name.localeCompare(a.output_name, undefined, { numeric: true, sensitivity: 'base' }));
+
+// If you are not sure, keep the fallback to avoid runtime errors or blank sorting keys.
