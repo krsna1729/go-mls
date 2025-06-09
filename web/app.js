@@ -36,27 +36,50 @@ document.addEventListener('DOMContentLoaded', function () {
     const addRelayRow = relayControls.querySelector('.md-input-row');
     const advancedRow = document.createElement('div');
     advancedRow.className = 'md-input-row';
+    advancedRow.style.display = 'flex';
+    advancedRow.style.flexWrap = 'wrap';
+    advancedRow.style.alignItems = 'center';
+    advancedRow.style.gap = '12px';
+    advancedRow.style.marginBottom = '8px';
+    // Use same height as Input Name/Input URL (default 38px)
+    const inputHeight = '38px';
+    const inputStyle = `height:${inputHeight}; min-height:${inputHeight}; box-sizing:border-box; border:1.5px solid #b6d0f7; border-radius:6px; background:#f7fafd; color:#222; outline:none; transition:border-color 0.2s; box-shadow:0 1px 2px rgba(25,118,210,0.04); font-size:1rem; padding:8px 10px;`;
+    const selectStyle = inputStyle + ' min-width:160px;';
     advancedRow.innerHTML = `
-        <label for="platformPreset" style="margin-right:8px;">Platform Preset:</label>
-        <select id="platformPreset" style="margin-right:16px;"></select>
-        <label for="videoCodec">Video Codec:</label>
-        <input type="text" id="videoCodec" placeholder="e.g. libx264" style="width:90px;">
-        <label for="audioCodec">Audio Codec:</label>
-        <input type="text" id="audioCodec" placeholder="e.g. aac" style="width:70px;">
-        <label for="resolution">Res:</label>
-        <input type="text" id="resolution" placeholder="e.g. 1280x720" style="width:80px;">
-        <label for="framerate">FPS:</label>
-        <input type="text" id="framerate" placeholder="e.g. 30" style="width:40px;">
-        <label for="bitrate">Bitrate:</label>
-        <input type="text" id="bitrate" placeholder="e.g. 2500k" style="width:60px;">
-        <label for="rotation">Rotation</label>
-        <select id="rotation" style="min-width:220px; margin-right:16px; border:1.5px solid #b6d0f7; border-radius:6px; background:#f7fafd; color:#222; outline:none; transition:border-color 0.2s; box-shadow:0 1px 2px rgba(25,118,210,0.04); font-size:1rem; padding:10px 12px;">
-            <option value="">None</option>
-            <option value="transpose=1">90° Clockwise</option>
-            <option value="transpose=2">90° Counter-Clockwise</option>
-            <option value="transpose=0">90° CCW + Flip Vertically</option>
-            <option value="transpose=3">90° CW + Flip Vertically</option>
-        </select>
+        <div style="display:flex; align-items:center; gap:8px;">
+            <label for="platformPreset" style="min-width:110px; display:flex; align-items:center; height:${inputHeight};">Platform Preset:</label>
+            <select id="platformPreset" style="${selectStyle}"></select>
+        </div>
+        <div style="display:flex; align-items:center; gap:8px;">
+            <label for="videoCodec" style="min-width:90px; display:flex; align-items:center; height:${inputHeight};">Video Codec:</label>
+            <input type="text" id="videoCodec" placeholder="e.g. libx264" style="width:120px; ${inputStyle}">
+        </div>
+        <div style="display:flex; align-items:center; gap:8px;">
+            <label for="audioCodec" style="min-width:90px; display:flex; align-items:center; height:${inputHeight};">Audio Codec:</label>
+            <input type="text" id="audioCodec" placeholder="e.g. aac" style="width:100px; ${inputStyle}">
+        </div>
+        <div style="display:flex; align-items:center; gap:8px;">
+            <label for="resolution" style="min-width:50px; display:flex; align-items:center; height:${inputHeight};">Res:</label>
+            <input type="text" id="resolution" placeholder="e.g. 1280x720" style="width:110px; ${inputStyle}">
+        </div>
+        <div style="display:flex; align-items:center; gap:8px;">
+            <label for="framerate" style="min-width:40px; display:flex; align-items:center; height:${inputHeight};">FPS:</label>
+            <input type="text" id="framerate" placeholder="e.g. 30" style="width:70px; ${inputStyle}">
+        </div>
+        <div style="display:flex; align-items:center; gap:8px;">
+            <label for="bitrate" style="min-width:60px; display:flex; align-items:center; height:${inputHeight};">Bitrate:</label>
+            <input type="text" id="bitrate" placeholder="e.g. 2500k" style="width:90px; ${inputStyle}">
+        </div>
+        <div style="display:flex; align-items:center; gap:8px;">
+            <label for="rotation" style="min-width:70px; display:flex; align-items:center; height:${inputHeight};">Rotation:</label>
+            <select id="rotation" style="${selectStyle} min-width:170px;">
+                <option value="">None</option>
+                <option value="transpose=1">90° Clockwise</option>
+                <option value="transpose=2">90° Counter-Clockwise</option>
+                <option value="transpose=0">90° CCW + Flip Vertically</option>
+                <option value="transpose=3">90° CW + Flip Vertically</option>
+            </select>
+        </div>
     `;
     // Insert advancedRow just before the Start Relay button
     const startBtn = document.getElementById('startRelayBtn');
