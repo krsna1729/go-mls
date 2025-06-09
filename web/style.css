@@ -364,3 +364,65 @@ tr.selected-row td {
     grid-column: 1 / -1;
   }
 }
+
+/* --- Material Design for Preset Dropdown and Advanced Options --- */
+#platformPreset {
+  font-size: 1rem;
+  padding: 10px 12px;
+  border: 1.5px solid #b6d0f7;
+  border-radius: 6px;
+  background: #f7fafd;
+  color: #222;
+  outline: none;
+  transition: border-color 0.2s;
+  margin-bottom: 0.5em;
+  min-width: 220px;
+  box-shadow: 0 1px 2px rgba(25, 118, 210, 0.04);
+}
+#platformPreset:focus {
+  border-color: #1976d2;
+}
+
+.advanced-options-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 16px 24px;
+  align-items: center;
+  margin-bottom: 1em;
+  margin-top: 0.5em;
+}
+.advanced-options-grid label {
+  font-size: 1rem;
+  color: #222;
+  margin-bottom: 4px;
+  font-weight: 500;
+}
+.advanced-options-grid input {
+  font-size: 1rem;
+  padding: 10px 12px;
+  border: 1.5px solid #b6d0f7;
+  border-radius: 6px;
+  background: #f7fafd;
+  color: #222;
+  outline: none;
+  transition: border-color 0.2s;
+  margin-bottom: 0.5em;
+  width: 100%;
+  box-sizing: border-box;
+}
+.advanced-options-grid input:focus {
+  border-color: #1976d2;
+}
+
+@media (max-width: 900px) {
+  .advanced-options-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+@media (max-width: 600px) {
+  .advanced-options-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* --- End Material Design for Advanced Options --- */

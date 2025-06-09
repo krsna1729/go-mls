@@ -20,6 +20,98 @@ document.addEventListener('DOMContentLoaded', function () {
         <h2>Active Relays</h2>
         <div id="relayTable"></div>`;
 
+    // --- Dynamic Preset Loading ---
+    let loadedPresets = {};
+    function populatePresetDropdown(presets) {
+        const presetSelect = document.getElementById('platformPreset');
+        presetSelect.innerHTML = '<option value="">None (Custom/Default)</option>';
+        Object.keys(presets).forEach(name => {
+            presetSelect.innerHTML += `<option value="${name}">${name}</option>`;
+        });
+        loadedPresets = presets;
+    }
+    fetch('/api/relay/presets').then(r => r.json()).then(populatePresetDropdown);
+
+    // --- Move Preset/Options UI to just above Start Relay button ---
+    const addRelayRow = relayControls.querySelector('.md-input-row');
+    const advancedRow = document.createElement('div');
+    advancedRow.className = 'md-input-row';
+    advancedRow.innerHTML = `
+        <label for="platformPreset" style="margin-right:8px;">Platform Preset:</label>
+        <select id="platformPreset" style="margin-right:16px;"></select>
+        <label for="videoCodec">Video Codec:</label>
+        <input type="text" id="videoCodec" placeholder="e.g. libx264" style="width:90px;">
+        <label for="audioCodec">Audio Codec:</label>
+        <input type="text" id="audioCodec" placeholder="e.g. aac" style="width:70px;">
+        <label for="resolution">Res:</label>
+        <input type="text" id="resolution" placeholder="e.g. 1280x720" style="width:80px;">
+        <label for="framerate">FPS:</label>
+        <input type="text" id="framerate" placeholder="e.g. 30" style="width:40px;">
+        <label for="bitrate">Bitrate:</label>
+        <input type="text" id="bitrate" placeholder="e.g. 2500k" style="width:60px;">
+        <label for="rotation">Rotation</label>
+        <select id="rotation" style="min-width:220px; margin-right:16px; border:1.5px solid #b6d0f7; border-radius:6px; background:#f7fafd; color:#222; outline:none; transition:border-color 0.2s; box-shadow:0 1px 2px rgba(25,118,210,0.04); font-size:1rem; padding:10px 12px;">
+            <option value="">None</option>
+            <option value="transpose=1">90° Clockwise</option>
+            <option value="transpose=2">90° Counter-Clockwise</option>
+            <option value="transpose=0">90° CCW + Flip Vertically</option>
+            <option value="transpose=3">90° CW + Flip Vertically</option>
+        </select>
+    `;
+    // Insert advancedRow just before the Start Relay button
+    const startBtn = document.getElementById('startRelayBtn');
+    startBtn.parentNode.insertBefore(advancedRow, startBtn);
+
+    // --- Preset change handler (now uses loadedPresets) ---
+    relayControls.addEventListener('change', function (e) {
+        if (e.target && e.target.id === 'platformPreset') {
+            const preset = e.target.value;
+            if (loadedPresets[preset]) {
+                document.getElementById('videoCodec').value = loadedPresets[preset].video_codec || '';
+                document.getElementById('audioCodec').value = loadedPresets[preset].audio_codec || '';
+                document.getElementById('resolution').value = loadedPresets[preset].resolution || '';
+                document.getElementById('framerate').value = loadedPresets[preset].framerate || '';
+                document.getElementById('bitrate').value = loadedPresets[preset].bitrate || '';
+
+                // Set rotation dropdown based on transpose value in preset
+                let rotationValue = '';
+
+                // Prioritize 'transpose' if it exists and is a simple digit (like '1')
+                if ('transpose' in loadedPresets[preset]) {
+                    const t = String(loadedPresets[preset].transpose);
+                    if (["0", "1", "2", "3"].includes(t)) {
+                        rotationValue = `transpose=${t}`;
+                    }
+                }
+
+                // If 'transpose' wasn't used or didn't exist, check 'rotation'
+                // This modified logic handles cases where 'rotation' is a digit OR "transpose=X"
+                if (!rotationValue && 'rotation' in loadedPresets[preset]) {
+                    const r = String(loadedPresets[preset].rotation);
+
+                    if (r.startsWith('transpose=')) { // Check if it's already in the "transpose=X" format
+                        // Extract the digit and validate it
+                        const parts = r.split('=');
+                        if (parts.length === 2 && ["0", "1", "2", "3"].includes(parts[1])) {
+                            rotationValue = r; // Use the full string "transpose=X" directly
+                        }
+                    } else if (["0", "1", "2", "3"].includes(r)) { // Fallback: if 'rotation' is just a digit (like old 'transpose' format)
+                        rotationValue = `transpose=${r}`;
+                    }
+                }
+
+                document.getElementById('rotation').value = rotationValue;
+            } else {
+                document.getElementById('videoCodec').value = '';
+                document.getElementById('audioCodec').value = '';
+                document.getElementById('resolution').value = '';
+                document.getElementById('framerate').value = '';
+                document.getElementById('bitrate').value = '';
+                document.getElementById('rotation').value = ''; // Clear rotation
+            }
+        }
+    });
+
     // Move search input to appear under 'Active Relays' heading
     const activeRelaysHeading = Array.from(relayControls.querySelectorAll('h2')).find(h2 => h2.textContent.trim() === 'Active Relays');
     const searchRow = document.createElement('div');
@@ -263,7 +355,7 @@ document.addEventListener('DOMContentLoaded', function () {
       </div>
     </div>
   </div>`;
-  document.getElementById('serverStats').innerHTML = serverHtml;
+        document.getElementById('serverStats').innerHTML = serverHtml;
 
         // Relays table
         let html = '';
@@ -332,11 +424,10 @@ document.addEventListener('DOMContentLoaded', function () {
                             <td style="padding:8px 12px;" data-label="CPU">${isRunning && typeof endpoints[i].cpu === 'number' ? endpoints[i].cpu.toFixed(1) : '-'}</td>
                             <td style="padding:8px 12px;" data-label="Mem">${isRunning && endpoints[i].mem ? (endpoints[i].mem / (1024 * 1024)).toFixed(1) : '-'}</td>
                             <td style="padding:8px 12px;" data-label="Action">
-                                ${
-                                    isRunning
-                                    ? `<button class="stopRelayBtn" data-input="${input}" data-output="${endpoints[i].output_url}" data-input-name="${endpoints[i].input_name || ''}" data-output-name="${endpoints[i].output_name || ''}"><span class="material-icons">stop</span>Stop</button>`
-                                    : `<button class="startRelayBtn" data-input="${input}" data-output="${endpoints[i].output_url}" data-input-name="${endpoints[i].input_name || ''}" data-output-name="${endpoints[i].output_name || ''}"><span class="material-icons">play_arrow</span>Start</button>`
-                                }
+                                ${isRunning
+                                ? `<button class="stopRelayBtn" data-input="${input}" data-output="${endpoints[i].output_url}" data-input-name="${endpoints[i].input_name || ''}" data-output-name="${endpoints[i].output_name || ''}"><span class="material-icons">stop</span>Stop</button>`
+                                : `<button class="startRelayBtn" data-input="${input}" data-output="${endpoints[i].output_url}" data-input-name="${endpoints[i].input_name || ''}" data-output-name="${endpoints[i].output_name || ''}"><span class="material-icons">play_arrow</span>Start</button>`
+                            }
                             </td>
                         </tr>`;
                     }
@@ -353,13 +444,25 @@ document.addEventListener('DOMContentLoaded', function () {
             const outputUrl = document.getElementById('outputUrl').value.trim();
             const inputName = document.getElementById('inputName').value.trim();
             const outputName = document.getElementById('outputName').value.trim();
+            const preset = document.getElementById('platformPreset').value;
+            const videoCodec = document.getElementById('videoCodec').value.trim();
+            const audioCodec = document.getElementById('audioCodec').value.trim();
+            const resolution = document.getElementById('resolution').value.trim();
+            const framerate = document.getElementById('framerate').value.trim();
+            const bitrate = document.getElementById('bitrate').value.trim();
+            const rotation = document.getElementById('rotation').value.trim();
             if (!inputUrl || !outputUrl || !inputName || !outputName) { alert('Input/Output URL and Name required'); return; }
+            const ffmpeg_options = { video_codec: videoCodec, audio_codec: audioCodec, resolution, framerate, bitrate, rotation };
+            if (rotation) {
+                ffmpeg_options.rotation = rotation;
+            }
             fetch('/api/relay/start', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ input_url: inputUrl, output_url: outputUrl, input_name: inputName, output_name: outputName })
+                body: JSON.stringify({ input_url: inputUrl, output_url: outputUrl, input_name: inputName, output_name: outputName, platform_preset: preset, ffmpeg_options })
             }).then(() => { fetchStatus(); });
         };
+
         document.getElementById('exportBtn').onclick = function () {
             window.location = '/api/relay/export';
         };

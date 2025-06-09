@@ -20,10 +20,12 @@ func apiStartRelay(relayMgr *stream.RelayManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		relayMgr.Logger.Debug("apiStartRelay called")
 		var req struct {
-			InputURL   string `json:"input_url"`
-			OutputURL  string `json:"output_url"`
-			InputName  string `json:"input_name"`
-			OutputName string `json:"output_name"`
+			InputURL       string            `json:"input_url"`
+			OutputURL      string            `json:"output_url"`
+			InputName      string            `json:"input_name"`
+			OutputName     string            `json:"output_name"`
+			PlatformPreset string            `json:"platform_preset"`
+			FFmpegOptions  map[string]string `json:"ffmpeg_options"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			relayMgr.Logger.Error("apiStartRelay: failed to decode request: %v", err)
@@ -35,8 +37,19 @@ func apiStartRelay(relayMgr *stream.RelayManager) http.HandlerFunc {
 			httputil.WriteError(w, http.StatusBadRequest, "Input and output names are required")
 			return
 		}
-		relayMgr.Logger.Debug("apiStartRelay: starting relay for input=%s, output=%s, input_name=%s, output_name=%s", req.InputURL, req.OutputURL, req.InputName, req.OutputName)
-		if err := relayMgr.StartRelay(req.InputURL, req.OutputURL, req.InputName, req.OutputName); err != nil {
+		relayMgr.Logger.Debug("apiStartRelay: starting relay for input=%s, output=%s, input_name=%s, output_name=%s, preset=%s", req.InputURL, req.OutputURL, req.InputName, req.OutputName, req.PlatformPreset)
+		var opts *stream.FFmpegOptions
+		if req.FFmpegOptions != nil {
+			opts = &stream.FFmpegOptions{
+				VideoCodec: req.FFmpegOptions["video_codec"],
+				AudioCodec: req.FFmpegOptions["audio_codec"],
+				Resolution: req.FFmpegOptions["resolution"],
+				Framerate:  req.FFmpegOptions["framerate"],
+				Bitrate:    req.FFmpegOptions["bitrate"],
+				Rotation:   req.FFmpegOptions["rotation"],
+			}
+		}
+		if err := relayMgr.StartRelayWithOptions(req.InputURL, req.OutputURL, req.InputName, req.OutputName, opts, req.PlatformPreset); err != nil {
 			relayMgr.Logger.Error("apiStartRelay: failed to start relay: %v", err)
 			httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -128,6 +141,23 @@ func apiImportRelays(relayMgr *stream.RelayManager) http.HandlerFunc {
 	}
 }
 
+func apiRelayPresets() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		presets := make(map[string]map[string]string)
+		for name, preset := range stream.PlatformPresets {
+			presets[name] = map[string]string{
+				"video_codec": preset.Options.VideoCodec,
+				"audio_codec": preset.Options.AudioCodec,
+				"resolution":  preset.Options.Resolution,
+				"framerate":   preset.Options.Framerate,
+				"bitrate":     preset.Options.Bitrate,
+				"rotation":    preset.Options.Rotation,
+			}
+		}
+		httputil.WriteJSON(w, http.StatusOK, presets)
+	}
+}
+
 func main() {
 	logger := logger.NewLogger()
 	logger.Debug("main: initializing relay manager")
@@ -147,6 +177,7 @@ func main() {
 	http.HandleFunc("/api/relay/status", apiRelayStatus(relayMgr))
 	http.HandleFunc("/api/relay/export", apiExportRelays(relayMgr))
 	http.HandleFunc("/api/relay/import", apiImportRelays(relayMgr))
+	http.HandleFunc("/api/relay/presets", apiRelayPresets())
 
 	logger.Info("Go-MLS relay manager running at http://localhost:8080 ...")
 	logger.Debug("main: server starting on :8080")
