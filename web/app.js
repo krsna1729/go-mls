@@ -20,6 +20,44 @@ document.addEventListener('DOMContentLoaded', function () {
         <h2>Active Relays</h2>
         <div id="relayTable"></div>`;
 
+    // Move search input to appear under 'Active Relays' heading
+    const activeRelaysHeading = Array.from(relayControls.querySelectorAll('h2')).find(h2 => h2.textContent.trim() === 'Active Relays');
+    const searchRow = document.createElement('div');
+    searchRow.className = 'md-input-row';
+    searchRow.innerHTML = `
+        <input type="text" id="searchBox" placeholder="Search sources or destinations by name or URL" style="width:60%;margin-bottom:1em;">
+    `;
+    relayControls.insertBefore(searchRow, activeRelaysHeading.nextSibling);
+
+    let lastSearch = '';
+    function highlightMatch(text, query) {
+        if (!query) return text;
+        const re = new RegExp(`(${query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'ig');
+        return text.replace(re, '<mark>$1</mark>');
+    }
+
+    function filterData(data, query) {
+        if (!query) return data;
+        const q = query.toLowerCase();
+        const filtered = { ...data, relays: [] };
+        for (const relay of data.relays) {
+            const inputMatch = (relay.input_name && relay.input_name.toLowerCase().includes(q)) ||
+                (relay.input_url && relay.input_url.toLowerCase().includes(q));
+            const endpoints = relay.endpoints.filter(ep =>
+                (ep.output_name && ep.output_name.toLowerCase().includes(q)) ||
+                (ep.output_url && ep.output_url.toLowerCase().includes(q))
+            );
+            if (inputMatch || endpoints.length > 0) {
+                // If input matches, show all endpoints; else only matching endpoints
+                filtered.relays.push({
+                    ...relay,
+                    endpoints: inputMatch ? relay.endpoints : endpoints
+                });
+            }
+        }
+        return filtered;
+    }
+
     function formatBytes(bytes) {
         if (bytes < 1024) return bytes + ' B';
         if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
@@ -150,6 +188,9 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     function updateUI(data) {
+        const searchVal = document.getElementById('searchBox').value.trim();
+        lastSearch = searchVal;
+        const filtered = filterData(data, searchVal);
         // Server stats
         let appCpu = '0.0%';
         let appMem = '0';
@@ -226,11 +267,11 @@ document.addEventListener('DOMContentLoaded', function () {
 
         // Relays table
         let html = '';
-        if (!data || !data.relays || data.relays.length === 0) {
+        if (!filtered || !filtered.relays || filtered.relays.length === 0) {
             html += '<i>No relays running.</i>';
         } else {
             // Sort relays by input_name (fallback input_url)
-            data.relays.sort((a, b) => {
+            filtered.relays.sort((a, b) => {
                 const aName = a.input_name || a.input_url || '';
                 const bName = b.input_name || b.input_url || '';
                 return aName.localeCompare(bName, undefined, { numeric: true, sensitivity: 'base' });
@@ -248,8 +289,8 @@ document.addEventListener('DOMContentLoaded', function () {
                     </tr>
                 </thead>
                 <tbody>`;
-            for (let relayIdx = 0; relayIdx < data.relays.length; relayIdx++) {
-                const relay = data.relays[relayIdx];
+            for (let relayIdx = 0; relayIdx < filtered.relays.length; relayIdx++) {
+                const relay = filtered.relays[relayIdx];
                 const input = relay.input_url;
                 const inputName = relay.input_name || '';
                 const groupId = `group-${relayIdx}`;
@@ -265,7 +306,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 const inputGroupBorder = 'border-top: 3px solid #b6d0f7;';
                 if (endpoints.length === 0) {
                     html += `<tr data-input-group="${groupId}">
-                        <td class="input-group-row" data-input-group="${groupId}" style="word-break:break-all; color:#1976d2; font-weight:bold; padding:8px 12px; background:${inputBg};">${inputName}</td>
+                        <td class="input-group-row" data-input-group="${groupId}" style="word-break:break-all; color:#1976d2; font-weight:bold; padding:8px 12px; background:${inputBg};">${highlightMatch(inputName, searchVal)}</td>
                         <td colspan="5" style="padding:8px 12px; background:#fff;"><i>No endpoints</i></td>
                     </tr>`;
                 } else {
@@ -280,11 +321,11 @@ document.addEventListener('DOMContentLoaded', function () {
                         html += `<tr data-input-group="${groupId}">`;
                         if (i === 0) {
                             html += `<td class="input-group-row" data-input-group="${groupId}" rowspan="${endpoints.length}" style="word-break:break-all; color:#1976d2; font-weight:bold; vertical-align:middle; padding:8px 12px; background:${inputBg}; border:none;" data-label="Input">
-                                <span class="centered-cell" title="${input}"><span>${endpoints[i].input_name || ''}</span><button class='eyeBtn' data-url="${input}" title="Show Input URL"><span class="material-icons">visibility</span></button></span>
+                                <span class="centered-cell" title="${input}"><span>${highlightMatch(endpoints[i].input_name || '', searchVal)}</span><button class='eyeBtn' data-url="${input}" title="Show Input URL"><span class="material-icons">visibility</span></button></span>
                             </td>`;
                         }
                         html += `<td style="word-break:break-all; padding:8px 12px;" data-label="Output">
-                                <span class="centered-cell" title="${endpoints[i].output_url}"><span>${endpoints[i].output_name || endpoints[i].output_url}</span><button class='eyeBtn' data-url="${endpoints[i].output_url}" title="Show Output URL"><span class="material-icons">visibility</span></button></span>
+                                <span class="centered-cell" title="${endpoints[i].output_url}"><span>${highlightMatch(endpoints[i].output_name || endpoints[i].output_url, searchVal)}</span><button class='eyeBtn' data-url="${endpoints[i].output_url}" title="Show Output URL"><span class="material-icons">visibility</span></button></span>
                             </td>
                             <td style="padding:8px 12px;" data-label="Status">${getStatusBadge(status)}</td>
                             <td style="padding:8px 12px;" data-label="Bitrate (kbps)">${isRunning && endpoints[i].bitrate ? endpoints[i].bitrate : '-'}</td>
@@ -336,6 +377,12 @@ document.addEventListener('DOMContentLoaded', function () {
             }).then(() => { fetchStatus(); });
         };
     }
+
+    document.getElementById('searchBox').addEventListener('input', function () {
+        fetch('/api/relay/status')
+            .then(r => r.json())
+            .then(data => updateUI(data));
+    });
 
     // Initial render
     fetchStatus();

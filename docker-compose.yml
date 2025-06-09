@@ -1,4 +1,3 @@
-version: '3.8'
 services:
   input-rtmp-1:
     image: tiangolo/nginx-rtmp
