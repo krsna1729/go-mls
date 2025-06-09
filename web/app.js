@@ -24,7 +24,7 @@ document.addEventListener('DOMContentLoaded', function () {
     let loadedPresets = {};
     function populatePresetDropdown(presets) {
         const presetSelect = document.getElementById('platformPreset');
-        presetSelect.innerHTML = '<option value="">None (Custom/Default)</option>';
+        presetSelect.innerHTML = '<option value="">None (Default)</option>';
         Object.keys(presets).forEach(name => {
             presetSelect.innerHTML += `<option value="${name}">${name}</option>`;
         });
@@ -41,46 +41,78 @@ document.addEventListener('DOMContentLoaded', function () {
     advancedRow.style.alignItems = 'center';
     advancedRow.style.gap = '12px';
     advancedRow.style.marginBottom = '8px';
+    // Responsive styles: collapse advanced options like server stats grid on small screens
+    const responsiveStyle = document.createElement('style');
+    responsiveStyle.innerHTML = `
+    @media (max-width: 900px) {
+        .advanced-options-grid {
+            grid-template-columns: 1fr !important;
+            grid-template-rows: none !important;
+        }
+        .advanced-options-grid > div {
+            min-width: 0 !important;
+            max-width: 100% !important;
+        }
+    }
+    @media (max-width: 600px) {
+        .advanced-options-row {
+            flex-direction: column !important;
+            gap: 8px !important;
+        }
+        .advanced-options-grid {
+            display: flex !important;
+            flex-direction: column !important;
+            gap: 10px !important;
+        }
+        .advanced-options-grid > div {
+            width: 100% !important;
+            max-width: 100% !important;
+        }
+    }
+    `;
+    document.head.appendChild(responsiveStyle);
+
     // Use same height as Input Name/Input URL (default 38px)
     const inputHeight = '38px';
-    const inputStyle = `height:${inputHeight}; min-height:${inputHeight}; box-sizing:border-box; border:1.5px solid #b6d0f7; border-radius:6px; background:#f7fafd; color:#222; outline:none; transition:border-color 0.2s; box-shadow:0 1px 2px rgba(25,118,210,0.04); font-size:1rem; padding:8px 10px;`;
-    const selectStyle = inputStyle + ' min-width:160px;';
+    const advancedInputWidth = '140px'; // Set a consistent width for all advanced inputs
+    const inputStyle = `height:${inputHeight}; min-height:${inputHeight}; box-sizing:border-box; border:1.5px solid #b6d0f7; border-radius:6px; background:#f7fafd; color:#222; outline:none; transition:border-color 0.2s; box-shadow:0 1px 2px rgba(25,118,210,0.04); font-size:1rem; padding:8px 10px; width:${advancedInputWidth}; display:block;`;
+    const selectStyle = inputStyle; // Use same width for selects
+
+    // Helper: label and input vertically aligned, label right-aligned, input full width in cell
+    function advancedField(labelFor, labelText, inputHtml) {
+        return `
+            <div style="display:flex; align-items:center; gap:8px;">
+                <label for="${labelFor}" style="min-width:110px; text-align:right; display:inline-block; height:${inputHeight}; line-height:${inputHeight}; color:#1976d2; font-weight:500; vertical-align:middle;">${labelText}</label>
+                ${inputHtml}
+            </div>
+        `;
+    }
+
     advancedRow.innerHTML = `
-        <div style="display:flex; align-items:center; gap:8px;">
-            <label for="platformPreset" style="min-width:110px; display:flex; align-items:center; height:${inputHeight};">Platform Preset:</label>
+    <div class="advanced-options-group" style="display:flex; flex-direction:column; gap:8px; width:100%; background:rgba(243,247,252,0.7); border:1px solid #e3eaf5; border-radius:7px; padding:10px 14px 6px 14px; margin-bottom:6px;">
+        <!-- Platform Preset Row -->
+        <div style="display:flex; align-items:center; gap:8px; margin-bottom:2px;">
+            <label for="platformPreset" style="min-width:110px; text-align:right; display:inline-block; height:${inputHeight}; line-height:${inputHeight}; color:#1976d2; font-weight:500; vertical-align:middle;">Platform Preset:</label>
             <select id="platformPreset" style="${selectStyle}"></select>
         </div>
-        <div style="display:flex; align-items:center; gap:8px;">
-            <label for="videoCodec" style="min-width:90px; display:flex; align-items:center; height:${inputHeight};">Video Codec:</label>
-            <input type="text" id="videoCodec" placeholder="e.g. libx264" style="width:120px; ${inputStyle}">
-        </div>
-        <div style="display:flex; align-items:center; gap:8px;">
-            <label for="audioCodec" style="min-width:90px; display:flex; align-items:center; height:${inputHeight};">Audio Codec:</label>
-            <input type="text" id="audioCodec" placeholder="e.g. aac" style="width:100px; ${inputStyle}">
-        </div>
-        <div style="display:flex; align-items:center; gap:8px;">
-            <label for="resolution" style="min-width:50px; display:flex; align-items:center; height:${inputHeight};">Res:</label>
-            <input type="text" id="resolution" placeholder="e.g. 1280x720" style="width:110px; ${inputStyle}">
-        </div>
-        <div style="display:flex; align-items:center; gap:8px;">
-            <label for="framerate" style="min-width:40px; display:flex; align-items:center; height:${inputHeight};">FPS:</label>
-            <input type="text" id="framerate" placeholder="e.g. 30" style="width:70px; ${inputStyle}">
-        </div>
-        <div style="display:flex; align-items:center; gap:8px;">
-            <label for="bitrate" style="min-width:60px; display:flex; align-items:center; height:${inputHeight};">Bitrate:</label>
-            <input type="text" id="bitrate" placeholder="e.g. 2500k" style="width:90px; ${inputStyle}">
-        </div>
-        <div style="display:flex; align-items:center; gap:8px;">
-            <label for="rotation" style="min-width:70px; display:flex; align-items:center; height:${inputHeight};">Rotation:</label>
-            <select id="rotation" style="${selectStyle} min-width:170px;">
+        
+        <!-- Options Grid: 3 columns x 2 rows -->
+        <div class="advanced-options-grid" style="display:grid; grid-template-columns: 1fr 1fr 1fr; grid-template-rows: 1fr 1fr; gap:10px; width:100%; align-items:center;">
+            ${advancedField('videoCodec', 'Video Codec:', `<input type="text" id="videoCodec" placeholder="e.g. libx264" style="${inputStyle}">`)}
+            ${advancedField('framerate', 'FPS:', `<input type="text" id="framerate" placeholder="e.g. 30" style="${inputStyle}">`)}
+            ${advancedField('resolution', 'Resolution:', `<input type="text" id="resolution" placeholder="e.g. 1280x720" style="${inputStyle}">`)}
+            ${advancedField('audioCodec', 'Audio Codec:', `<input type="text" id="audioCodec" placeholder="e.g. aac" style="${inputStyle}">`)}
+            ${advancedField('bitrate', 'Bitrate:', `<input type="text" id="bitrate" placeholder="e.g. 2500k" style="${inputStyle}">`)}
+            ${advancedField('rotation', 'Rotation:', `<select id="rotation" style="${selectStyle}">
                 <option value="">None</option>
                 <option value="transpose=1">90° Clockwise</option>
                 <option value="transpose=2">90° Counter-Clockwise</option>
                 <option value="transpose=0">90° CCW + Flip Vertically</option>
                 <option value="transpose=3">90° CW + Flip Vertically</option>
-            </select>
+            </select>`)}
         </div>
-    `;
+    </div>
+`;
     // Insert advancedRow just before the Start Relay button
     const startBtn = document.getElementById('startRelayBtn');
     startBtn.parentNode.insertBefore(advancedRow, startBtn);
