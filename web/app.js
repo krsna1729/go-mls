@@ -2,14 +2,18 @@ document.addEventListener('DOMContentLoaded', function () {
     const relayControls = document.getElementById('controls');
 
     // Render static input controls once
-    relayControls.innerHTML = `<h2>Statistics</h2>
+    relayControls.innerHTML = `
+        <h2>Statistics</h2>
         <div id="serverStats"></div>
         <h2>Add Relay Endpoint</h2>
-        <div class="md-input-row">
+        <div class="md-input-row relay-input-grid" id="addRelayRow">
             <input type="text" id="inputName" placeholder="Input Name">
             <input type="text" id="inputUrl" placeholder="Input URL">
             <input type="text" id="outputName" placeholder="Output Name">
             <input type="text" id="outputUrl" placeholder="Output URL">
+        </div>
+        <div id="advancedOptionsContainer"></div>
+        <div class="md-input-row">
             <button id="startRelayBtn"><span class="material-icons">play_arrow</span>Start Relay</button>
         </div>
         <div class="md-action-row">
@@ -18,7 +22,37 @@ document.addEventListener('DOMContentLoaded', function () {
             <button id="importBtn" class="secondary"><span class="material-icons">file_upload</span>Import</button>
         </div>
         <h2>Active Relays</h2>
+        <div class="md-input-row" id="searchRow"></div>
         <div id="relayTable"></div>`;
+
+    // Responsive grid for relay input row
+    const relayInputGridStyle = document.createElement('style');
+    relayInputGridStyle.innerHTML = `
+        .relay-input-grid {
+            display: grid !important;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 12px;
+            width: 100%;
+        }
+        .relay-input-grid input {
+            min-width: 0;
+            width: 100%;
+            box-sizing: border-box;
+        }
+        @media (max-width: 900px) {
+            .relay-input-grid {
+                grid-template-columns: repeat(2, 1fr);
+                grid-template-rows: repeat(2, auto);
+            }
+        }
+        @media (max-width: 600px) {
+            .relay-input-grid {
+                grid-template-columns: 1fr;
+                grid-template-rows: repeat(4, auto);
+            }
+        }
+    `;
+    document.head.appendChild(relayInputGridStyle);
 
     // --- Dynamic Preset Loading ---
     let loadedPresets = {};
@@ -32,8 +66,8 @@ document.addEventListener('DOMContentLoaded', function () {
     }
     fetch('/api/relay/presets').then(r => r.json()).then(populatePresetDropdown);
 
-    // --- Move Preset/Options UI to just above Start Relay button ---
-    const addRelayRow = relayControls.querySelector('.md-input-row');
+    // --- Advanced Options UI ---
+    const advancedOptionsContainer = document.getElementById('advancedOptionsContainer');
     const advancedRow = document.createElement('div');
     advancedRow.className = 'md-input-row';
     advancedRow.style.display = 'flex';
@@ -95,7 +129,6 @@ document.addEventListener('DOMContentLoaded', function () {
             <label for="platformPreset" style="min-width:110px; text-align:right; display:inline-block; height:${inputHeight}; line-height:${inputHeight}; color:#1976d2; font-weight:500; vertical-align:middle;">Platform Preset:</label>
             <select id="platformPreset" style="${selectStyle}"></select>
         </div>
-        
         <!-- Options Grid: 3 columns x 2 rows -->
         <div class="advanced-options-grid" style="display:grid; grid-template-columns: 1fr 1fr 1fr; grid-template-rows: 1fr 1fr; gap:10px; width:100%; align-items:center;">
             ${advancedField('videoCodec', 'Video Codec:', `<input type="text" id="videoCodec" placeholder="e.g. libx264" style="${inputStyle}">`)}
@@ -113,9 +146,7 @@ document.addEventListener('DOMContentLoaded', function () {
         </div>
     </div>
 `;
-    // Insert advancedRow just before the Start Relay button
-    const startBtn = document.getElementById('startRelayBtn');
-    startBtn.parentNode.insertBefore(advancedRow, startBtn);
+    advancedOptionsContainer.appendChild(advancedRow);
 
     // --- Preset change handler (now uses loadedPresets) ---
     relayControls.addEventListener('change', function (e) {
@@ -168,13 +199,10 @@ document.addEventListener('DOMContentLoaded', function () {
     });
 
     // Move search input to appear under 'Active Relays' heading
-    const activeRelaysHeading = Array.from(relayControls.querySelectorAll('h2')).find(h2 => h2.textContent.trim() === 'Active Relays');
-    const searchRow = document.createElement('div');
-    searchRow.className = 'md-input-row';
+    const searchRow = document.getElementById('searchRow');
     searchRow.innerHTML = `
         <input type="text" id="searchBox" placeholder="Search sources or destinations by name or URL" style="width:60%;margin-bottom:1em;">
     `;
-    relayControls.insertBefore(searchRow, activeRelaysHeading.nextSibling);
 
     let lastSearch = '';
     function highlightMatch(text, query) {
@@ -210,6 +238,12 @@ document.addEventListener('DOMContentLoaded', function () {
         if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
         if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
         return (bytes / (1024 * 1024 * 1024)).toFixed(1) + ' GB';
+    }
+
+    function formatBitrate(kbps) {
+        if (kbps >= 1000) return (kbps / 1000).toFixed(2) + ' Mbps';
+        if (kbps > 0) return Math.round(kbps) + ' kbps';
+        return '0 kbps';
     }
 
     function getStatusBadge(status) {
@@ -406,7 +440,7 @@ document.addEventListener('DOMContentLoaded', function () {
       </div>
       <div class="stat-block">
         <div class="stat-label">Total Bitrate</div>
-        <div class="stat-value">${Math.round(totalBitrate)} kbps</div>
+        <div class="stat-value">${formatBitrate(totalBitrate)}</div>
       </div>
     </div>
   </div>`;
