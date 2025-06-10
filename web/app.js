@@ -26,33 +26,7 @@ document.addEventListener('DOMContentLoaded', function () {
         <div id="relayTable"></div>`;
 
     // Responsive grid for relay input row
-    const relayInputGridStyle = document.createElement('style');
-    relayInputGridStyle.innerHTML = `
-        .relay-input-grid {
-            display: grid !important;
-            grid-template-columns: repeat(4, 1fr);
-            gap: 12px;
-            width: 100%;
-        }
-        .relay-input-grid input {
-            min-width: 0;
-            width: 100%;
-            box-sizing: border-box;
-        }
-        @media (max-width: 900px) {
-            .relay-input-grid {
-                grid-template-columns: repeat(2, 1fr);
-                grid-template-rows: repeat(2, auto);
-            }
-        }
-        @media (max-width: 600px) {
-            .relay-input-grid {
-                grid-template-columns: 1fr;
-                grid-template-rows: repeat(4, auto);
-            }
-        }
-    `;
-    document.head.appendChild(relayInputGridStyle);
+    // (CSS moved to style.css)
 
     // --- Dynamic Preset Loading ---
     let loadedPresets = {};
@@ -76,35 +50,7 @@ document.addEventListener('DOMContentLoaded', function () {
     advancedRow.style.gap = '12px';
     advancedRow.style.marginBottom = '8px';
     // Responsive styles: collapse advanced options like server stats grid on small screens
-    const responsiveStyle = document.createElement('style');
-    responsiveStyle.innerHTML = `
-    @media (max-width: 900px) {
-        .advanced-options-grid {
-            grid-template-columns: 1fr !important;
-            grid-template-rows: none !important;
-        }
-        .advanced-options-grid > div {
-            min-width: 0 !important;
-            max-width: 100% !important;
-        }
-    }
-    @media (max-width: 600px) {
-        .advanced-options-row {
-            flex-direction: column !important;
-            gap: 8px !important;
-        }
-        .advanced-options-grid {
-            display: flex !important;
-            flex-direction: column !important;
-            gap: 10px !important;
-        }
-        .advanced-options-grid > div {
-            width: 100% !important;
-            max-width: 100% !important;
-        }
-    }
-    `;
-    document.head.appendChild(responsiveStyle);
+    // (CSS moved to style.css)
 
     // Use same height as Input Name/Input URL (default 38px)
     const inputHeight = '38px';
@@ -123,29 +69,31 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     advancedRow.innerHTML = `
-    <div class="advanced-options-group" style="display:flex; flex-direction:column; gap:8px; width:100%; background:rgba(243,247,252,0.7); border:1px solid #e3eaf5; border-radius:7px; padding:10px 14px 6px 14px; margin-bottom:6px;">
-        <!-- Platform Preset Row -->
-        <div style="display:flex; align-items:center; gap:8px; margin-bottom:2px;">
-            <label for="platformPreset" style="min-width:110px; text-align:right; display:inline-block; height:${inputHeight}; line-height:${inputHeight}; color:#1976d2; font-weight:500; vertical-align:middle;">Platform Preset:</label>
-            <select id="platformPreset" style="${selectStyle}"></select>
+        <div class="advanced-options-group" style="display:flex; flex-direction:column; gap:8px; width:100%; background:rgba(243,247,252,0.7); border:1px solid #e3eaf5; border-radius:7px; padding:10px 14px 6px 14px; margin-bottom:6px;">
+            <!-- Platform Preset Row -->
+            <div style="display:flex; align-items:center; gap:8px; margin-bottom:2px;">
+                <label for="platformPreset" style="min-width:110px; text-align:right; display:inline-block; height:${inputHeight}; line-height:${inputHeight}; color:#1976d2; font-weight:500; vertical-align:middle;">Platform Preset:</label>
+                <select id="platformPreset" style="${selectStyle}"></select>
+            </div>
+            <!-- Options Grid: Responsive columns/rows via CSS -->
+            <div class="advanced-options-grid">
+                ${advancedField('videoCodec', 'Video Codec:', `<input type="text" id="videoCodec" placeholder="e.g. libx264" style="${inputStyle}">`)}
+                ${advancedField('framerate', 'FPS:', `<input type="text" id="framerate" placeholder="e.g. 30" style="${inputStyle}">`)}
+                ${advancedField('resolution', 'Resolution:', `<input type="text" id="resolution" placeholder="e.g. 1280x720" style="${inputStyle}">`)}
+                ${advancedField('audioCodec', 'Audio Codec:', `<input type="text" id="audioCodec" placeholder="e.g. aac" style="${inputStyle}">`)}
+                ${advancedField('bitrate', 'Bitrate:', `<input type="text" id="bitrate" placeholder="e.g. 2500k" style="${inputStyle}">`)}
+                ${advancedField('rotation', 'Rotation:', `<select id="rotation" style="${selectStyle}">
+                    <option value="">None</option>
+                    <option value="transpose=1">90° Clockwise</option>
+                    <option value="transpose=2">90° Counter-Clockwise</option>
+                    <option value="transpose=0">90° CCW + Flip Vertically</option>
+                    <option value="transpose=3">90° CW + Flip Vertically</option>
+                </select>`)}
+            </div>
         </div>
-        <!-- Options Grid: 3 columns x 2 rows -->
-        <div class="advanced-options-grid" style="display:grid; grid-template-columns: 1fr 1fr 1fr; grid-template-rows: 1fr 1fr; gap:10px; width:100%; align-items:center;">
-            ${advancedField('videoCodec', 'Video Codec:', `<input type="text" id="videoCodec" placeholder="e.g. libx264" style="${inputStyle}">`)}
-            ${advancedField('framerate', 'FPS:', `<input type="text" id="framerate" placeholder="e.g. 30" style="${inputStyle}">`)}
-            ${advancedField('resolution', 'Resolution:', `<input type="text" id="resolution" placeholder="e.g. 1280x720" style="${inputStyle}">`)}
-            ${advancedField('audioCodec', 'Audio Codec:', `<input type="text" id="audioCodec" placeholder="e.g. aac" style="${inputStyle}">`)}
-            ${advancedField('bitrate', 'Bitrate:', `<input type="text" id="bitrate" placeholder="e.g. 2500k" style="${inputStyle}">`)}
-            ${advancedField('rotation', 'Rotation:', `<select id="rotation" style="${selectStyle}">
-                <option value="">None</option>
-                <option value="transpose=1">90° Clockwise</option>
-                <option value="transpose=2">90° Counter-Clockwise</option>
-                <option value="transpose=0">90° CCW + Flip Vertically</option>
-                <option value="transpose=3">90° CW + Flip Vertically</option>
-            </select>`)}
-        </div>
-    </div>
-`;
+    `;
+
+    // Remove dynamic style injection for advanced-options-grid (CSS is now in style.css)
     advancedOptionsContainer.appendChild(advancedRow);
 
     // --- Preset change handler (now uses loadedPresets) ---
