@@ -3,10 +3,12 @@ package main
 import (
 	"embed"
 	"encoding/json"
+	"flag"
 	"io"
 	"io/fs"
 	"net/http"
 	"os"
+	"path/filepath"
 
 	"go-mls/internal/httputil"
 	"go-mls/internal/logger"
@@ -159,9 +161,23 @@ func apiRelayPresets() http.HandlerFunc {
 }
 
 func main() {
+	var recordingsDir string
+	flag.StringVar(&recordingsDir, "recordings-dir", "./recordings", "Directory to store recordings")
+	flag.Parse()
+
 	logger := logger.NewLogger()
-	logger.Debug("main: initializing relay manager")
+
+	absDir, err := filepath.Abs(recordingsDir)
+	if err != nil {
+		logger.Fatal("Failed to resolve recordings directory: %v", err)
+	}
+	if err := os.MkdirAll(absDir, 0755); err != nil {
+		logger.Fatal("Failed to create recordings directory: %v", err)
+	}
+	logger.Info("Using recordings directory: %s", absDir)
+
 	relayMgr := stream.NewRelayManager(logger)
+	recordingMgr := stream.NewRecordingManager(logger, absDir)
 
 	// Use embedded static assets
 	staticFS, err := fs.Sub(webAssets, "web")
@@ -178,6 +194,13 @@ func main() {
 	http.HandleFunc("/api/relay/export", apiExportRelays(relayMgr))
 	http.HandleFunc("/api/relay/import", apiImportRelays(relayMgr))
 	http.HandleFunc("/api/relay/presets", apiRelayPresets())
+
+	http.HandleFunc("/api/recording/start", stream.ApiStartRecording(recordingMgr))
+	http.HandleFunc("/api/recording/stop", stream.ApiStopRecording(recordingMgr))
+	http.HandleFunc("/api/recording/list", stream.ApiListRecordings(recordingMgr))
+	http.HandleFunc("/api/recording/delete", stream.ApiDeleteRecording(recordingMgr))
+	http.HandleFunc("/api/recording/download", stream.ApiDownloadRecording(recordingMgr))
+	http.HandleFunc("/api/recording/sse", stream.ApiRecordingsSSE())
 
 	logger.Info("Go-MLS relay manager running at http://localhost:8080 ...")
 	logger.Debug("main: server starting on :8080")

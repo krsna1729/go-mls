@@ -317,6 +317,8 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     function updateUI(data) {
+        window.latestRelayStatus = data;
+        window.dispatchEvent(new Event('relayStatusUpdated'));
         const searchVal = document.getElementById('searchBox').value.trim();
         lastSearch = searchVal;
         const filtered = filterData(data, searchVal);

@@ -10,9 +10,35 @@
 </head>
 <body>
     <h1>Go-MLS Control Panel</h1>
-    <div id="controls">
-        <!-- Controls will be populated by JS -->
+    <nav style="margin-bottom:1em; display:flex; gap:16px;">
+        <button id="tabRelays" class="tab-btn md-btn active">Relays</button>
+        <button id="tabRecordings" class="tab-btn md-btn">Recordings</button>
+    </nav>
+    <div id="relaysTab">
+        <div id="controls"></div>
     </div>
+    <div id="recordingsTab" style="display:none"></div>
     <script src="/app.js"></script>
+    <script src="/recordings.js"></script>
+    <script>
+    document.addEventListener('DOMContentLoaded', function () {
+        const tabRelays = document.getElementById('tabRelays');
+        const tabRecordings = document.getElementById('tabRecordings');
+        const relaysTab = document.getElementById('relaysTab');
+        const recordingsTab = document.getElementById('recordingsTab');
+        tabRelays.onclick = function () {
+            tabRelays.classList.add('active');
+            tabRecordings.classList.remove('active');
+            relaysTab.style.display = '';
+            recordingsTab.style.display = 'none';
+        };
+        tabRecordings.onclick = function () {
+            tabRecordings.classList.add('active');
+            tabRelays.classList.remove('active');
+            relaysTab.style.display = 'none';
+            recordingsTab.style.display = '';
+        };
+    });
+    </script>
 </body>
 </html>

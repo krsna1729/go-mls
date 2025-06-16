@@ -90,7 +90,7 @@ button::after, .ripple {
     background: rgba(255,255,255,0.4);
     border-radius: 100%;
     transform: translate(-50%, -50%) scale(0);
-    transition: transform 0.3s cubic-bezier(.4,0,.2,1), opacity 0.3s cubic-bezier(.4,0,.2,1);
+    transition: transform 0.05s cubic-bezier(.4,0,.2,1), opacity 0.05s cubic-bezier(.4,0,.2,1);
     opacity: 0;
     pointer-events: none;
     z-index: 1;
@@ -397,3 +397,159 @@ td .centered-cell, th .centered-cell {
 .badge-healthy { background: #43a047; }
 .badge-warning { background: #fbc02d; color: #333; }
 .badge-unknown { background: #757575; }
+
+/* Material Design card for tab content */
+/* Remove card background and padding from tab containers */
+#recordingsTab, #relaysTab {
+    max-width: 1200px;
+    margin-left: auto;
+    margin-right: auto;
+    margin-top: 18px;
+    margin-bottom: 32px;
+}
+/* Table styling for consistency */
+#recordingsTab table, #relaysTab table {
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 0;
+    background: #fff;
+    border-radius: 8px;
+    box-shadow: 0 1px 3px rgba(25,118,210,0.04);
+    margin-bottom: 24px;
+}
+#recordingsTab th, #relaysTab th {
+    background: #e3eaf5;
+    color: #2563c7;
+    font-weight: 500;
+    padding: 12px 10px;
+    text-align: left;
+}
+#recordingsTab td, #relaysTab td {
+    padding: 12px 10px;
+    border-bottom: 1px solid #e3eaf5;
+}
+#recordingsTab tr:last-child td, #relaysTab tr:last-child td {
+    border-bottom: none;
+}
+#recordingsTab input[type="text"] {
+    width: 60%;
+}
+#relaysTab input[type="text"] {
+    width: unset;
+}
+#recordingsTab h2, #relaysTab h2 {
+    color: #2563c7;
+    margin-top: 0;
+    margin-bottom: 10px;
+    font-weight: 600;
+}
+#recordingsTab .material-icons, #relaysTab .material-icons {
+    vertical-align: middle;
+    font-size: 1.1em;
+}
+#recordingsTab button {
+    background: #4a80e8;
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    padding: 8px 18px;
+    font-size: 1rem;
+    font-family: inherit;
+    font-weight: 500;
+    box-shadow: 0 1px 3px rgba(25,118,210,0.08);
+    cursor: pointer;
+    transition: background 0.2s, box-shadow 0.2s;
+    outline: none;
+    margin-right: 8px;
+    margin-bottom: 4px;
+}
+#recordingsTab button:hover {
+    background: #2563c7;
+}
+.md-btn {
+    background: #4a80e8;
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    padding: 10px 28px;
+    font-size: 1.1rem;
+    font-family: inherit;
+    font-weight: 500;
+    box-shadow: 0 2px 4px rgba(25,118,210,0.08);
+    cursor: pointer;
+    transition: background 0.2s, box-shadow 0.2s;
+    outline: none;
+    margin-right: 8px;
+}
+.md-btn.active, .md-btn:focus {
+    background: #2563c7;
+    box-shadow: 0 4px 12px rgba(25,118,210,0.13);
+}
+.tab-btn {
+    min-width: 120px;
+}
+.tab-btn:not(.active) {
+    background: #e3eaf5;
+    color: #2563c7;
+}
+.tab-btn:not(.active):hover {
+    background: #d0e0fa;
+}
+#recordingsTab .recordings-card {
+    background: #fff;
+    border-radius: 10px;
+    box-shadow: 0 2px 8px rgba(25,118,210,0.07);
+    padding: 32px 28px 24px 28px;
+    margin-bottom: 32px;
+    max-width: 900px;
+    width: 100%;
+    margin-left: auto;
+    margin-right: auto;
+}
+.toggleRecBtn {
+  background: #5c7cfa;
+  color: #fff;
+  border: none;
+  border-radius: 10px;
+  padding: 0.7em 1.5em;
+  font-size: 1.1em;
+  margin-right: 0.5em;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  transition: background 0.2s;
+}
+.toggleRecBtn.active {
+  background: #e53935;
+}
+.toggleRecBtn .rec-dot {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #ff1744;
+  margin-right: 8px;
+  box-shadow: 0 0 8px 2px #ff1744;
+  animation: rec-blink 1s infinite;
+}
+@keyframes rec-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+.downloadLatestBtn {
+  min-width: 140px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.downloadRecordingBtn, .deleteRecordingBtn {
+    min-width: unset;
+    width: 40px;
+    height: 40px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 24px;
+    border-radius: 8px;
+}

@@ -12,6 +12,7 @@ const (
 	INFO
 	WARN
 	ERROR
+	FATAL
 )
 
 type Logger struct {
@@ -44,5 +45,11 @@ func (l *Logger) Warn(msg string, args ...interface{}) {
 func (l *Logger) Error(msg string, args ...interface{}) {
 	if l.level <= ERROR {
 		log.Printf("[ERROR] "+msg, args...)
+	}
+}
+func (l *Logger) Fatal(msg string, args ...interface{}) {
+	if l.level <= FATAL {
+		log.Printf("[FATAL] "+msg, args...)
+		os.Exit(1)
 	}
 }

@@ -14,3 +14,9 @@ func WriteJSON(w http.ResponseWriter, status int, data interface{}) {
 func WriteError(w http.ResponseWriter, status int, msg string) {
 	WriteJSON(w, status, map[string]string{"error": msg})
 }
+
+// DecodeJSON decodes JSON from request body into v
+func DecodeJSON(r *http.Request, v interface{}) error {
+	defer r.Body.Close()
+	return json.NewDecoder(r.Body).Decode(v)
+}
