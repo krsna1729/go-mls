@@ -1,0 +1,125 @@
+{
+  "id": null,
+  "title": "Host & Container Resource Usage",
+  "tags": ["node-exporter", "cadvisor", "system", "docker"],
+  "timezone": "browser",
+  "schemaVersion": 30,
+  "version": 6,
+  "refresh": "10s",
+  "panels": [
+    {
+      "type": "graph",
+      "title": "Host CPU Usage (%)",
+      "datasource": "Prometheus",
+      "lines": true,
+      "fill": 0,
+      "targets": [
+        {
+          "expr": "100 - (avg by(instance) (irate(node_cpu_seconds_total{mode=\"idle\"}[1m])) * 100)",
+          "legendFormat": "{{instance}}",
+          "interval": ""
+        }
+      ],
+      "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8}
+    },
+    {
+      "type": "graph",
+      "title": "Container CPU Usage (%)",
+      "datasource": "Prometheus",
+      "lines": true,
+      "fill": 0,
+      "targets": [
+        {
+          "expr": "sum(rate(container_cpu_usage_seconds_total{image!=\"\"}[1m])) by (name) * 100",
+          "legendFormat": "{{name}}",
+          "interval": ""
+        }
+      ],
+      "gridPos": {"x": 12, "y": 0, "w": 12, "h": 8}
+    },
+    {
+      "type": "graph",
+      "title": "Host Memory Usage (MB)",
+      "datasource": "Prometheus",
+      "lines": true,
+      "fill": 0,
+      "targets": [
+        {
+          "expr": "(node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / 1024 / 1024",
+          "legendFormat": "{{instance}}",
+          "interval": ""
+        }
+      ],
+      "gridPos": {"x": 0, "y": 8, "w": 12, "h": 8}
+    },
+    {
+      "type": "graph",
+      "title": "Container Memory Usage (MB)",
+      "datasource": "Prometheus",
+      "lines": true,
+      "fill": 0,
+      "targets": [
+        {
+          "expr": "sum(container_memory_usage_bytes{image!=\"\"}) by (name) / 1024 / 1024",
+          "legendFormat": "{{name}}",
+          "interval": ""
+        }
+      ],
+      "gridPos": {"x": 12, "y": 8, "w": 12, "h": 8}
+    },
+    {
+      "type": "graph",
+      "title": "Host Network Traffic (Bits/s)",
+      "datasource": "Prometheus",
+      "lines": true,
+      "fill": 0,
+      "yaxes": [
+        { "format": "bps", "label": null, "logBase": 1, "min": null, "max": null, "show": true },
+        { "format": "bps", "label": null, "logBase": 1, "min": null, "max": null, "show": true }
+      ],
+      "grid": { "leftLogBase": 1, "rightLogBase": 1, "threshold1": null, "threshold2": null, "threshold1Color": "rgba(216, 200, 27, 0.27)", "threshold2Color": "rgba(234, 112, 112, 0.22)", "show": true },
+      "xaxis": { "show": true },
+      "yaxis": { "show": true },
+      "targets": [
+        {
+          "expr": "sum by(device) (irate(node_network_receive_bytes_total[1m]) * 8)",
+          "legendFormat": "{{device}} in",
+          "interval": ""
+        },
+        {
+          "expr": "sum by(device) (irate(node_network_transmit_bytes_total[1m]) * 8)",
+          "legendFormat": "{{device}} out",
+          "interval": ""
+        }
+      ],
+      "gridPos": {"x": 0, "y": 16, "w": 12, "h": 8}
+    },
+    {
+      "type": "graph",
+      "title": "Container Network Traffic (Bits/s)",
+      "datasource": "Prometheus",
+      "lines": true,
+      "fill": 0,
+      "yaxes": [
+        { "format": "bps", "label": null, "logBase": 1, "min": null, "max": null, "show": true },
+        { "format": "bps", "label": null, "logBase": 1, "min": null, "max": null, "show": true }
+      ],
+      "grid": { "leftLogBase": 1, "rightLogBase": 1, "threshold1": null, "threshold2": null, "threshold1Color": "rgba(216, 200, 27, 0.27)", "threshold2Color": "rgba(234, 112, 112, 0.22)", "show": true },
+      "xaxis": { "show": true },
+      "yaxis": { "show": true },
+      "targets": [
+        {
+          "expr": "sum(rate(container_network_receive_bytes_total{image!=\"\"}[1m]) * 8) by (name)",
+          "legendFormat": "{{name}} in",
+          "interval": ""
+        },
+        {
+          "expr": "sum(rate(container_network_transmit_bytes_total{image!=\"\"}[1m]) * 8) by (name)",
+          "legendFormat": "{{name}} out",
+          "interval": ""
+        }
+      ],
+      "gridPos": {"x": 12, "y": 16, "w": 12, "h": 8}
+    }
+  ]
+}
