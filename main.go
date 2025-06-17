@@ -40,6 +40,9 @@ func apiStartRelay(relayMgr *stream.RelayManager) http.HandlerFunc {
 			return
 		}
 		relayMgr.Logger.Debug("apiStartRelay: starting relay for input=%s, output=%s, input_name=%s, output_name=%s, preset=%s", req.InputURL, req.OutputURL, req.InputName, req.OutputName, req.PlatformPreset)
+
+		// Check if preset/options are provided in request, otherwise try to get from stored config
+		platformPreset := req.PlatformPreset
 		var opts *stream.FFmpegOptions
 		if req.FFmpegOptions != nil {
 			opts = &stream.FFmpegOptions{
@@ -50,8 +53,16 @@ func apiStartRelay(relayMgr *stream.RelayManager) http.HandlerFunc {
 				Bitrate:    req.FFmpegOptions["bitrate"],
 				Rotation:   req.FFmpegOptions["rotation"],
 			}
+		} else if platformPreset == "" {
+			// Try to get stored configuration for this endpoint
+			storedPreset, storedOpts, err := relayMgr.GetEndpointConfig(req.InputURL, req.OutputURL)
+			if err == nil {
+				platformPreset = storedPreset
+				opts = storedOpts
+				relayMgr.Logger.Debug("apiStartRelay: using stored config - preset=%s, options=%+v", platformPreset, opts)
+			}
 		}
-		if err := relayMgr.StartRelayWithOptions(req.InputURL, req.OutputURL, req.InputName, req.OutputName, opts, req.PlatformPreset); err != nil {
+		if err := relayMgr.StartRelayWithOptions(req.InputURL, req.OutputURL, req.InputName, req.OutputName, opts, platformPreset); err != nil {
 			relayMgr.Logger.Error("apiStartRelay: failed to start relay: %v", err)
 			httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -143,6 +154,20 @@ func apiImportRelays(relayMgr *stream.RelayManager) http.HandlerFunc {
 	}
 }
 
+func apiRTSPStatus(rtspServer *stream.RTSPServerManager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if rtspServer == nil {
+			httputil.WriteError(w, http.StatusServiceUnavailable, "RTSP server not available")
+			return
+		}
+		stats := rtspServer.GetStreamStats()
+		httputil.WriteJSON(w, http.StatusOK, map[string]interface{}{
+			"streams": stats,
+			"total":   len(stats),
+		})
+	}
+}
+
 func apiRelayPresets() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		presets := make(map[string]map[string]string)
@@ -176,8 +201,16 @@ func main() {
 	}
 	logger.Info("Using recordings directory: %s", absDir)
 
+	// Initialize RTSP server
+	rtspServer := stream.NewRTSPServerManager(logger)
+	if err := rtspServer.Start(); err != nil {
+		logger.Fatal("Failed to start RTSP server: %v", err)
+	}
+	defer rtspServer.Stop()
+
 	relayMgr := stream.NewRelayManager(logger)
-	recordingMgr := stream.NewRecordingManager(logger, absDir)
+	relayMgr.SetRTSPServer(rtspServer)
+	recordingMgr := stream.NewRecordingManager(logger, absDir, relayMgr)
 
 	// Use embedded static assets
 	staticFS, err := fs.Sub(webAssets, "web")
@@ -194,6 +227,7 @@ func main() {
 	http.HandleFunc("/api/relay/export", apiExportRelays(relayMgr))
 	http.HandleFunc("/api/relay/import", apiImportRelays(relayMgr))
 	http.HandleFunc("/api/relay/presets", apiRelayPresets())
+	http.HandleFunc("/api/rtsp/status", apiRTSPStatus(rtspServer))
 
 	http.HandleFunc("/api/recording/start", stream.ApiStartRecording(recordingMgr))
 	http.HandleFunc("/api/recording/stop", stream.ApiStopRecording(recordingMgr))

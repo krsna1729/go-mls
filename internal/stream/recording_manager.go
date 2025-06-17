@@ -29,6 +29,7 @@ type Recording struct {
 }
 
 // RecordingManager manages active and completed recordings
+// Now uses RelayManager for local relay and refcounting
 type RecordingManager struct {
 	mu         sync.Mutex
 	recordings map[string]*Recording
@@ -36,10 +37,11 @@ type RecordingManager struct {
 	dones      map[string]chan struct{} // done channel for each recording
 	Logger     *logger.Logger           // Add logger field
 	dir        string                   // Recordings directory
+	RelayMgr   *RelayManager            // Reference to RelayManager for local relay
 }
 
 // NewRecordingManager creates a RecordingManager and ensures the directory exists
-func NewRecordingManager(l *logger.Logger, dir string) *RecordingManager {
+func NewRecordingManager(l *logger.Logger, dir string, relayMgr *RelayManager) *RecordingManager {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		panic(fmt.Sprintf("Failed to create recordings directory: %v", err))
 	}
@@ -50,12 +52,18 @@ func NewRecordingManager(l *logger.Logger, dir string) *RecordingManager {
 		dones:      make(map[string]chan struct{}),
 		Logger:     l,
 		dir:        dir,
+		RelayMgr:   relayMgr,
 	}
 }
 
-// StartRecording starts recording a source to a file using ffmpeg
+// StartRecording starts recording a source to a file using ffmpeg, using local relay URL
 func (rm *RecordingManager) StartRecording(ctx context.Context, name, sourceURL string) error {
 	rm.Logger.Info("StartRecording called: name=%s, source=%s", name, sourceURL)
+	localRelayURL, err := rm.RelayMgr.StartInputRelay(name, sourceURL)
+	if err != nil {
+		rm.Logger.Error("Failed to start input relay for recording: %v", err)
+		return err
+	}
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
 	// Prevent multiple active recordings for the same input (name+source)
@@ -67,12 +75,14 @@ func (rm *RecordingManager) StartRecording(ctx context.Context, name, sourceURL 
 	}
 	filePath := fmt.Sprintf("%s/%s_%d.mp4", rm.dir, name, time.Now().Unix())
 	rm.Logger.Debug("Starting ffmpeg for recording: %s", filePath)
-	cmd := exec.CommandContext(ctx, "ffmpeg", "-y", "-i", sourceURL, "-c", "copy", filePath)
+	cmd := exec.CommandContext(ctx, "ffmpeg", "-y", "-i", localRelayURL, "-c", "copy", filePath)
 	var outBuf, errBuf bytes.Buffer
 	cmd.Stdout = &outBuf
 	cmd.Stderr = &errBuf
 	if err := cmd.Start(); err != nil {
 		rm.Logger.Error("Failed to start ffmpeg: %v", err)
+		// Decrement relay refcount if ffmpeg fails to start
+		rm.RelayMgr.StopInputRelay(name, sourceURL)
 		return err
 	}
 	timestamp := time.Now().Unix()
@@ -90,6 +100,7 @@ func (rm *RecordingManager) StartRecording(ctx context.Context, name, sourceURL 
 	done := make(chan struct{})
 	rm.dones[key] = done
 	go func(key string, done chan struct{}) {
+		defer rm.RelayMgr.StopInputRelay(name, sourceURL) // Decrement relay refcount when recording ends
 		select {
 		case err := <-waitCmd(cmd):
 			var filePath string

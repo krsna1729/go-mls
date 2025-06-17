@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"go-mls/internal/logger"
 	"go-mls/internal/process"
@@ -26,27 +27,35 @@ const (
 )
 
 type RelayEndpoint struct {
-	OutputURL  string
-	OutputName string
-	Cmd        *exec.Cmd
-	Status     Status
-	Bitrate    float64 // in kbits/s
-	mu         sync.Mutex
+	OutputURL      string
+	OutputName     string
+	Cmd            *exec.Cmd
+	Status         Status
+	Bitrate        float64        // in kbits/s
+	PlatformPreset string         // Store the preset name for persistence
+	FFmpegOptions  *FFmpegOptions // Store custom options for persistence
+	mu             sync.Mutex
 }
 
 // Relay manages all endpoints for a single input URL
+// Now also manages a single input relay process and refcount for outputs+recordings
 type Relay struct {
-	InputURL  string
-	InputName string
-	Endpoints map[string]*RelayEndpoint // key: output URL
-	mu        sync.Mutex
+	InputURL      string
+	InputName     string
+	Endpoints     map[string]*RelayEndpoint // key: output URL
+	LocalRelayURL string                    // e.g. rtsp://127.0.0.1:8554/relay/<inputName>
+	LocalRelayCmd *exec.Cmd                 // ffmpeg process for input relay
+	RefCount      int                       // number of outputs+recordings using this input
+	Status        Status                    // status of input relay
+	mu            sync.Mutex
 }
 
 // RelayManager manages all relays (per input URL)
 type RelayManager struct {
-	Relays map[string]*Relay // key: input URL
-	mu     sync.Mutex
-	Logger *logger.Logger
+	Relays     map[string]*Relay // key: input URL
+	mu         sync.Mutex
+	Logger     *logger.Logger
+	rtspServer *RTSPServerManager // RTSP server for local relays
 }
 
 func NewRelayManager(l *logger.Logger) *RelayManager {
@@ -54,6 +63,11 @@ func NewRelayManager(l *logger.Logger) *RelayManager {
 		Relays: make(map[string]*Relay),
 		Logger: l,
 	}
+}
+
+// SetRTSPServer sets the RTSP server instance
+func (rm *RelayManager) SetRTSPServer(server *RTSPServerManager) {
+	rm.rtspServer = server
 }
 
 // FFmpegOptions allows advanced control over output
@@ -112,11 +126,20 @@ var PlatformPresets = map[string]PlatformPreset{
 
 // buildFFmpegCmdWithOptions builds an ffmpeg command with advanced options and/or preset
 func buildFFmpegCmdWithOptions(inputURL, outputURL string, opts *FFmpegOptions, presetName string) *exec.Cmd {
-	args := []string{"-re", "-i", inputURL}
+	args := []string{"-re", "-i", inputURL, "-progress", "pipe:1"}
 	var o FFmpegOptions
+
+	// Apply preset if specified
 	if preset, ok := PlatformPresets[presetName]; ok {
 		o = preset.Options
+	} else if presetName == "" && opts == nil {
+		// If no preset and no options provided, use copy mode (no transcoding)
+		o = FFmpegOptions{
+			VideoCodec: "copy",
+			AudioCodec: "copy",
+		}
 	}
+
 	if opts != nil {
 		// opts override preset
 		if opts.VideoCodec != "" {
@@ -166,11 +189,6 @@ func buildFFmpegCmdWithOptions(inputURL, outputURL string, opts *FFmpegOptions, 
 	return exec.Command("ffmpeg", args...)
 }
 
-// buildFFmpegCmd is now a wrapper for backward compatibility
-func buildFFmpegCmd(inputURL, outputURL string) *exec.Cmd {
-	return buildFFmpegCmdWithOptions(inputURL, outputURL, nil, "")
-}
-
 // Helper to get a platform preset by name
 func GetPlatformPreset(name string) (PlatformPreset, bool) {
 	preset, ok := PlatformPresets[name]
@@ -178,111 +196,29 @@ func GetPlatformPreset(name string) (PlatformPreset, bool) {
 }
 
 // StartRelay starts a relay for an input/output URL and stores names
-func (rm *RelayManager) StartRelay(inputURL, outputURL, inputName, outputName string) error {
-	rm.Logger.Debug("StartRelay called: input=%s, output=%s, input_name=%s, output_name=%s", inputURL, outputURL, inputName, outputName)
-	rm.mu.Lock()
-	relay, exists := rm.Relays[inputURL]
-	if !exists {
-		relay = &Relay{
-			InputURL:  inputURL,
-			InputName: inputName,
-			Endpoints: make(map[string]*RelayEndpoint),
-		}
-		rm.Relays[inputURL] = relay
-	} else if relay.InputName == "" {
-		relay.InputName = inputName
-	}
-	rm.mu.Unlock()
-
-	// Remove Running from RelayEndpoint, use Status field
-	relay.mu.Lock()
-	if ep, exists := relay.Endpoints[outputURL]; exists && ep.Status == Running {
-		rm.Logger.Warn("Relay already running for %s [%s] -> %s [%s]", relay.InputName, inputURL, ep.OutputName, outputURL)
-		relay.mu.Unlock()
-		return fmt.Errorf("relay already running for %s -> %s", inputURL, outputURL)
-	}
-	cmd := buildFFmpegCmd(inputURL, outputURL)
-	rm.Logger.Debug("Starting ffmpeg process: %v", cmd.Args)
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		rm.Logger.Error("Failed to create stderr pipe for %s [%s] -> %s [%s]: %v", inputName, inputURL, outputName, outputURL, err)
-		relay.mu.Unlock()
-		return fmt.Errorf("failed to create stderr pipe: %v", err)
-	}
-	err = cmd.Start()
-	if err != nil {
-		rm.Logger.Error("Failed to start ffmpeg for %s [%s] -> %s [%s]: %v", inputName, inputURL, outputName, outputURL, err)
-		relay.mu.Unlock()
-		return fmt.Errorf("failed to start FFmpeg: %v", err)
-	}
-	rm.Logger.Info("Started relay: %s [%s] -> %s [%s] (pid=%d)", inputName, inputURL, outputName, outputURL, cmd.Process.Pid)
-	ep := &RelayEndpoint{
-		OutputURL:  outputURL,
-		OutputName: outputName,
-		Cmd:        cmd,
-		Bitrate:    0.0,
-		Status:     Running,
-	}
-	relay.Endpoints[outputURL] = ep
-	relay.mu.Unlock()
-
-	// Parse output in a goroutine
-	go func() {
-		rm.Logger.Debug("Goroutine started: parsing ffmpeg output for %s [%s] -> %s [%s]", inputName, inputURL, outputName, outputURL)
-		reader := bufio.NewReader(stderr)
-		bitrateRegex := regexp.MustCompile(`bitrate=\s*([\d.]+)\s*kbits/s`)
-		for {
-			line, err := reader.ReadString('\r')
-			if err != nil {
-				break
-			}
-			line = strings.Trim(line, "\r\n")
-			rm.Logger.Debug("ffmpeg [%s [%s] -> %s [%s]]: %s", inputName, inputURL, outputName, outputURL, line)
-			if matches := bitrateRegex.FindStringSubmatch(line); matches != nil {
-				if bitrate, err := strconv.ParseFloat(matches[1], 64); err == nil {
-					ep.mu.Lock()
-					ep.Bitrate = bitrate
-					ep.mu.Unlock()
-					rm.Logger.Debug("Updated bitrate for %s [%s] -> %s [%s]: %f", inputName, inputURL, outputName, outputURL, bitrate)
-					continue
-				}
-			}
-		}
-		rm.Logger.Debug("Goroutine exiting: ffmpeg output parsing for %s [%s] -> %s [%s]", inputName, inputURL, outputName, outputURL)
-	}()
-
-	// Monitor process
-	go func() {
-		rm.Logger.Debug("Goroutine started: monitoring ffmpeg process for %s [%s] -> %s [%s]", inputName, inputURL, outputName, outputURL)
-		err := cmd.Wait()
-		ep.mu.Lock()
-		// Reset state on exit
-		prevStatus := ep.Status
-		ep.Status = Stopped
-		ep.Bitrate = 0.0
-		ep.mu.Unlock()
-		if err != nil {
-			if prevStatus == Running {
-				rm.Logger.Error("ffmpeg exited with error for %s [%s] -> %s [%s]: %v", inputName, inputURL, outputName, outputURL, err)
-				ep.mu.Lock()
-				ep.Status = Error
-				ep.mu.Unlock()
-			} else {
-				rm.Logger.Info("ffmpeg process for %s [%s] -> %s [%s] was intentionally stopped", inputName, inputURL, outputName, outputURL)
-			}
-		} else {
-			rm.Logger.Info("ffmpeg exited normally for %s [%s] -> %s [%s]", inputName, inputURL, outputName, outputURL)
-		}
-		rm.Logger.Debug("Goroutine exiting: monitoring ffmpeg process for %s [%s] -> %s [%s]", inputName, inputURL, outputName, outputURL)
-	}()
-
-	rm.Logger.Debug("StartRelay finished: input=%s, output=%s", inputURL, outputURL)
-	return nil
-}
-
 // StartRelayWithOptions starts a relay with advanced ffmpeg options and/or platform preset
 func (rm *RelayManager) StartRelayWithOptions(inputURL, outputURL, inputName, outputName string, opts *FFmpegOptions, preset string) error {
 	rm.Logger.Debug("StartRelayWithOptions called: input=%s, output=%s, input_name=%s, output_name=%s, preset=%s", inputURL, outputURL, inputName, outputName, preset)
+
+	// Get or start the local relay for this input
+	localRelayURL, err := rm.StartInputRelay(inputName, inputURL)
+	if err != nil {
+		rm.Logger.Error("Failed to start input relay for output: %v", err)
+		return err
+	}
+
+	// Wait for the RTSP stream to become ready before starting output ffmpeg
+	if rm.rtspServer != nil {
+		relayPath := fmt.Sprintf("relay/%s", inputName)
+		rm.Logger.Info("Waiting for RTSP stream to become ready: %s", relayPath)
+		err = rm.rtspServer.WaitForStreamReady(relayPath, 30*time.Second)
+		if err != nil {
+			rm.Logger.Error("Failed to wait for RTSP stream to become ready for %s: %v", inputName, err)
+			rm.StopInputRelay(inputName, inputURL)
+			return fmt.Errorf("RTSP stream not ready: %v", err)
+		}
+		rm.Logger.Info("RTSP stream is ready for %s, starting output relay", inputName)
+	}
 	rm.mu.Lock()
 	relay, exists := rm.Relays[inputURL]
 	if !exists {
@@ -303,55 +239,104 @@ func (rm *RelayManager) StartRelayWithOptions(inputURL, outputURL, inputName, ou
 		relay.mu.Unlock()
 		return fmt.Errorf("relay already running for %s -> %s", inputURL, outputURL)
 	}
-	cmd := buildFFmpegCmdWithOptions(inputURL, outputURL, opts, preset)
-	rm.Logger.Debug("Starting ffmpeg process: %v", cmd.Args)
+	// Use local relay URL as input, but wait a moment for the input relay to establish
+	cmd := buildFFmpegCmdWithOptions(localRelayURL, outputURL, opts, preset)
+	rm.Logger.Debug("Starting ffmpeg process for output: %v", cmd.Args)
+
+	// Add a short delay to allow input relay to connect and start publishing
+	time.Sleep(2 * time.Second)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		rm.Logger.Error("Failed to create stdout pipe for %s [%s] -> %s [%s]: %v", inputName, inputURL, outputName, outputURL, err)
+		relay.mu.Unlock()
+		// Decrement input relay refcount on failure
+		rm.StopInputRelay(inputName, inputURL)
+		return fmt.Errorf("failed to create stdout pipe: %v", err)
+	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		rm.Logger.Error("Failed to create stderr pipe for %s [%s] -> %s [%s]: %v", inputName, inputURL, outputName, outputURL, err)
 		relay.mu.Unlock()
+		// Decrement input relay refcount on failure
+		rm.StopInputRelay(inputName, inputURL)
 		return fmt.Errorf("failed to create stderr pipe: %v", err)
 	}
 	err = cmd.Start()
 	if err != nil {
 		rm.Logger.Error("Failed to start ffmpeg for %s [%s] -> %s [%s]: %v", inputName, inputURL, outputName, outputURL, err)
 		relay.mu.Unlock()
+		// Decrement input relay refcount on failure
+		rm.StopInputRelay(inputName, inputURL)
 		return fmt.Errorf("failed to start FFmpeg: %v", err)
 	}
 	rm.Logger.Info("Started relay: %s [%s] -> %s [%s] (pid=%d)", inputName, inputURL, outputName, outputURL, cmd.Process.Pid)
 	ep := &RelayEndpoint{
-		OutputURL:  outputURL,
-		OutputName: outputName,
-		Cmd:        cmd,
-		Bitrate:    0.0,
-		Status:     Running,
+		OutputURL:      outputURL,
+		OutputName:     outputName,
+		Cmd:            cmd,
+		Bitrate:        0.0,
+		Status:         Running,
+		PlatformPreset: preset,
+		FFmpegOptions:  opts,
 	}
 	relay.Endpoints[outputURL] = ep
 	relay.mu.Unlock()
 
 	// Parse output in a goroutine (same as StartRelay)
-	go func() {
-		rm.Logger.Debug("Goroutine started: parsing ffmpeg output for %s [%s] -> %s [%s]", inputName, inputURL, outputName, outputURL)
-		reader := bufio.NewReader(stderr)
-		bitrateRegex := regexp.MustCompile(`bitrate=\s*([\d.]+)\s*kbits/s`)
-		for {
-			line, err := reader.ReadString('\r')
-			if err != nil {
-				break
-			}
-			line = strings.Trim(line, "\r\n")
-			rm.Logger.Debug("ffmpeg [%s [%s] -> %s [%s]]: %s", inputName, inputURL, outputName, outputURL, line)
-			if matches := bitrateRegex.FindStringSubmatch(line); matches != nil {
-				if bitrate, err := strconv.ParseFloat(matches[1], 64); err == nil {
-					ep.mu.Lock()
-					ep.Bitrate = bitrate
-					ep.mu.Unlock()
-					rm.Logger.Debug("Updated bitrate for %s [%s] -> %s [%s]: %f", inputName, inputURL, outputName, outputURL, bitrate)
-					continue
+	if stdout != nil {
+		go func() {
+			rm.Logger.Debug("Goroutine started: parsing ffmpeg output for %s [%s] -> %s [%s] (stdout)", inputName, inputURL, outputName, outputURL)
+			reader := bufio.NewReader(stdout)
+			bitrateRegex := regexp.MustCompile(`^bitrate=\s*([\d.]+)kbits/s`)
+			for {
+				line, err := reader.ReadString('\n')
+				if len(line) > 0 {
+					line = strings.TrimSpace(line)
+					rm.Logger.Debug("ffmpeg STDOUT [%s [%s] -> %s [%s]]: %s", inputName, inputURL, outputName, outputURL, line)
+
+					// Parse bitrate from progress output
+					if matches := bitrateRegex.FindStringSubmatch(line); matches != nil {
+						if bitrate, err := strconv.ParseFloat(matches[1], 64); err == nil {
+							ep.mu.Lock()
+							ep.Bitrate = bitrate
+							ep.mu.Unlock()
+							rm.Logger.Debug("Updated bitrate for %s [%s] -> %s [%s]: %f kbits/s", inputName, inputURL, outputName, outputURL, bitrate)
+						}
+					}
+				}
+				if err != nil {
+					break
 				}
 			}
-		}
-		rm.Logger.Debug("Goroutine exiting: ffmpeg output parsing for %s [%s] -> %s [%s]", inputName, inputURL, outputName, outputURL)
-	}()
+			rm.Logger.Debug("Goroutine exiting: ffmpeg output parsing for %s [%s] -> %s [%s] (stdout)", inputName, inputURL, outputName, outputURL)
+		}()
+	}
+	if stderr != nil {
+		go func() {
+			rm.Logger.Debug("Goroutine started: parsing ffmpeg output for %s [%s] -> %s [%s] (stderr)", inputName, inputURL, outputName, outputURL)
+			reader := bufio.NewReader(stderr)
+			bitrateRegex := regexp.MustCompile(`bitrate=\s*([\d.]+)\s*kbits/s`)
+			for {
+				line, err := reader.ReadString('\n')
+				if len(line) > 0 {
+					rm.Logger.Info("ffmpeg STDERR [%s [%s] -> %s [%s]]: %s", inputName, inputURL, outputName, outputURL, strings.TrimSpace(line))
+				}
+				if err != nil {
+					break
+				}
+				if matches := bitrateRegex.FindStringSubmatch(line); matches != nil {
+					if bitrate, err := strconv.ParseFloat(matches[1], 64); err == nil {
+						ep.mu.Lock()
+						ep.Bitrate = bitrate
+						ep.mu.Unlock()
+						rm.Logger.Debug("Updated bitrate for %s [%s] -> %s [%s]: %f", inputName, inputURL, outputName, outputURL, bitrate)
+						continue
+					}
+				}
+			}
+			rm.Logger.Debug("Goroutine exiting: ffmpeg output parsing for %s [%s] -> %s [%s] (stderr)", inputName, inputURL, outputName, outputURL)
+		}()
+	}
 
 	// Monitor process (same as StartRelay)
 	go func() {
@@ -362,6 +347,8 @@ func (rm *RelayManager) StartRelayWithOptions(inputURL, outputURL, inputName, ou
 		ep.Status = Stopped
 		ep.Bitrate = 0.0
 		ep.mu.Unlock()
+		// Decrement input relay refcount when output relay stops
+		rm.StopInputRelay(inputName, inputURL)
 		if err != nil {
 			if prevStatus == Running {
 				rm.Logger.Error("ffmpeg exited with error for %s [%s] -> %s [%s]: %v", inputName, inputURL, outputName, outputURL, err)
@@ -413,15 +400,17 @@ func (rm *RelayManager) StopRelay(inputURL, outputURL, inputName, outputName str
 	return nil
 }
 
-// ExportConfig saves the current relay configurations to a file (now includes names)
+// ExportConfig saves the current relay configurations to a file (now includes names and presets)
 func (rm *RelayManager) ExportConfig(filename string) error {
 	rm.Logger.Debug("ExportConfig called: filename=%s", filename)
 	type exportConfig struct {
 		InputURL  string `json:"input_url"`
 		InputName string `json:"input_name"`
 		Outputs   []struct {
-			OutputURL  string `json:"output_url"`
-			OutputName string `json:"output_name"`
+			OutputURL      string            `json:"output_url"`
+			OutputName     string            `json:"output_name"`
+			PlatformPreset string            `json:"platform_preset,omitempty"`
+			FFmpegOptions  map[string]string `json:"ffmpeg_options,omitempty"`
 		} `json:"outputs"`
 	}
 	var configs []exportConfig
@@ -429,14 +418,47 @@ func (rm *RelayManager) ExportConfig(filename string) error {
 	for _, relay := range rm.Relays {
 		relay.mu.Lock()
 		var outputs []struct {
-			OutputURL  string `json:"output_url"`
-			OutputName string `json:"output_name"`
+			OutputURL      string            `json:"output_url"`
+			OutputName     string            `json:"output_name"`
+			PlatformPreset string            `json:"platform_preset,omitempty"`
+			FFmpegOptions  map[string]string `json:"ffmpeg_options,omitempty"`
 		}
 		for _, ep := range relay.Endpoints {
-			outputs = append(outputs, struct {
-				OutputURL  string `json:"output_url"`
-				OutputName string `json:"output_name"`
-			}{ep.OutputURL, ep.OutputName})
+			output := struct {
+				OutputURL      string            `json:"output_url"`
+				OutputName     string            `json:"output_name"`
+				PlatformPreset string            `json:"platform_preset,omitempty"`
+				FFmpegOptions  map[string]string `json:"ffmpeg_options,omitempty"`
+			}{
+				OutputURL:      ep.OutputURL,
+				OutputName:     ep.OutputName,
+				PlatformPreset: ep.PlatformPreset,
+			}
+
+			// Convert FFmpegOptions to map for JSON serialization
+			if ep.FFmpegOptions != nil {
+				output.FFmpegOptions = make(map[string]string)
+				if ep.FFmpegOptions.VideoCodec != "" {
+					output.FFmpegOptions["video_codec"] = ep.FFmpegOptions.VideoCodec
+				}
+				if ep.FFmpegOptions.AudioCodec != "" {
+					output.FFmpegOptions["audio_codec"] = ep.FFmpegOptions.AudioCodec
+				}
+				if ep.FFmpegOptions.Resolution != "" {
+					output.FFmpegOptions["resolution"] = ep.FFmpegOptions.Resolution
+				}
+				if ep.FFmpegOptions.Framerate != "" {
+					output.FFmpegOptions["framerate"] = ep.FFmpegOptions.Framerate
+				}
+				if ep.FFmpegOptions.Bitrate != "" {
+					output.FFmpegOptions["bitrate"] = ep.FFmpegOptions.Bitrate
+				}
+				if ep.FFmpegOptions.Rotation != "" {
+					output.FFmpegOptions["rotation"] = ep.FFmpegOptions.Rotation
+				}
+			}
+
+			outputs = append(outputs, output)
 		}
 		configs = append(configs, exportConfig{
 			InputURL:  relay.InputURL,
@@ -502,6 +524,118 @@ func (rm *RelayManager) ImportConfig(filename string) error {
 	return nil
 }
 
+// StartInputRelay starts the input relay process if not running, increments refcount, returns local relay URL
+func (rm *RelayManager) StartInputRelay(inputName, inputURL string) (string, error) {
+	rm.Logger.Info("StartInputRelay: inputName=%s, inputURL=%s", inputName, inputURL)
+	rm.mu.Lock()
+	relay, exists := rm.Relays[inputURL]
+	if !exists {
+		rm.Logger.Info("Creating new relay for input: %s", inputURL)
+		relay = &Relay{
+			InputURL:  inputURL,
+			InputName: inputName,
+			Endpoints: make(map[string]*RelayEndpoint),
+			RefCount:  0,
+			Status:    Stopped,
+		}
+		rm.Relays[inputURL] = relay
+	}
+	relay.mu.Lock()
+	relay.RefCount++
+	rm.Logger.Info("Relay refcount for %s is now %d", inputURL, relay.RefCount)
+	if relay.LocalRelayCmd == nil || relay.Status != Running {
+		relayPath := fmt.Sprintf("relay/%s", inputName)
+		relay.LocalRelayURL = fmt.Sprintf("rtsp://127.0.0.1:8554/%s", relayPath)
+
+		// Create empty stream in RTSP server if available
+		if rm.rtspServer != nil {
+			streamURL, err := rm.rtspServer.CreateEmptyStream(relayPath)
+			if err != nil {
+				rm.Logger.Error("Failed to create RTSP stream: %v", err)
+				relay.RefCount--
+				relay.mu.Unlock()
+				rm.mu.Unlock()
+				return "", err
+			}
+			rm.Logger.Debug("Created RTSP stream: %s", streamURL)
+		}
+
+		rm.Logger.Info("Starting input relay ffmpeg: %s -> %s", inputURL, relay.LocalRelayURL)
+		// Use RTSP publishing format for ffmpeg to push to RTSP server
+		cmd := exec.Command("ffmpeg",
+			"-i", inputURL,
+			"-c", "copy",
+			"-f", "rtsp",
+			"-rtsp_transport", "tcp",
+			relay.LocalRelayURL)
+		relay.LocalRelayCmd = cmd
+		relay.Status = Running
+		go rm.RunInputRelay(relay)
+	}
+	localURL := relay.LocalRelayURL
+	relay.mu.Unlock()
+	rm.mu.Unlock()
+	return localURL, nil
+}
+
+// StopInputRelay decrements refcount and stops input relay if no outputs/recordings remain
+func (rm *RelayManager) StopInputRelay(inputName, inputURL string) {
+	rm.Logger.Info("StopInputRelay: inputName=%s, inputURL=%s", inputName, inputURL)
+	rm.mu.Lock()
+	relay, exists := rm.Relays[inputURL]
+	if !exists {
+		rm.Logger.Warn("StopInputRelay: relay for %s not found", inputURL)
+		rm.mu.Unlock()
+		return
+	}
+	relay.mu.Lock()
+	relay.RefCount--
+	rm.Logger.Info("Relay refcount for %s is now %d", inputURL, relay.RefCount)
+	if relay.RefCount <= 0 {
+		rm.Logger.Info("No more consumers, stopping input relay for %s", inputURL)
+		if relay.LocalRelayCmd != nil && relay.LocalRelayCmd.Process != nil {
+			err := relay.LocalRelayCmd.Process.Kill()
+			if err != nil {
+				rm.Logger.Error("Failed to kill input relay process for %s: %v", inputURL, err)
+			}
+		}
+
+		// Remove stream from RTSP server if available
+		if rm.rtspServer != nil {
+			relayPath := fmt.Sprintf("relay/%s", inputName)
+			rm.rtspServer.RemoveStream(relayPath)
+		}
+
+		relay.Status = Stopped
+		relay.LocalRelayCmd = nil
+	}
+	relay.mu.Unlock()
+	rm.mu.Unlock()
+}
+
+// RunInputRelay runs and monitors the input relay process, restarts on failure if still needed
+func (rm *RelayManager) RunInputRelay(relay *Relay) {
+	rm.Logger.Info("RunInputRelay: running ffmpeg for %s -> %s", relay.InputURL, relay.LocalRelayURL)
+	retryDelay := 5 // seconds
+	for {
+		err := relay.LocalRelayCmd.Run()
+		if err != nil {
+			rm.Logger.Error("Input relay process exited with error for %s: %v", relay.InputURL, err)
+		}
+		relay.mu.Lock()
+		if relay.Status == Stopped || relay.RefCount <= 0 {
+			rm.Logger.Info("Input relay for %s stopped or no consumers, exiting RunInputRelay", relay.InputURL)
+			relay.mu.Unlock()
+			return
+		}
+		rm.Logger.Warn("Input relay for %s exited unexpectedly, restarting in %ds", relay.InputURL, retryDelay)
+		relay.Status = Error
+		relay.LocalRelayCmd = exec.Command("ffmpeg", "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "10", "-i", relay.InputURL, "-c", "copy", "-f", "rtsp", relay.LocalRelayURL)
+		relay.mu.Unlock()
+		time.Sleep(time.Duration(retryDelay) * time.Second)
+	}
+}
+
 func (rm *RelayManager) Status() status.FullStatus {
 	srv, _ := process.GetSelfUsage()
 	serverStatus := status.ServerStatus{}
@@ -555,4 +689,24 @@ func (rm *RelayManager) Status() status.FullStatus {
 		Server: serverStatus,
 		Relays: relays,
 	}
+}
+
+// GetEndpointConfig retrieves the stored platform preset and ffmpeg options for an existing endpoint
+func (rm *RelayManager) GetEndpointConfig(inputURL, outputURL string) (string, *FFmpegOptions, error) {
+	rm.mu.Lock()
+	relay, exists := rm.Relays[inputURL]
+	rm.mu.Unlock()
+	if !exists {
+		return "", nil, fmt.Errorf("no relay for input %s", inputURL)
+	}
+
+	relay.mu.Lock()
+	defer relay.mu.Unlock()
+
+	ep, exists := relay.Endpoints[outputURL]
+	if !exists {
+		return "", nil, fmt.Errorf("no endpoint for output %s", outputURL)
+	}
+
+	return ep.PlatformPreset, ep.FFmpegOptions, nil
 }
