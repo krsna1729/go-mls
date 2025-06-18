@@ -7,13 +7,25 @@ import (
 	"sync"
 	"time"
 
+	"go-mls/internal/logger"
+
 	"github.com/bluenviron/gortsplib/v4"
 	"github.com/bluenviron/gortsplib/v4/pkg/base"
 	"github.com/bluenviron/gortsplib/v4/pkg/description"
 	"github.com/bluenviron/gortsplib/v4/pkg/format"
 	"github.com/pion/rtp"
-	"go-mls/internal/logger"
 )
+
+// RTSP server configuration constants
+const (
+	DefaultRTSPPort      = 8554
+	DefaultRTSPInterface = "127.0.0.1" // Listen locally by default
+)
+
+// GetRTSPServerURL returns the base RTSP server URL
+func GetRTSPServerURL() string {
+	return fmt.Sprintf("rtsp://%s:%d", DefaultRTSPInterface, DefaultRTSPPort)
+}
 
 // RTSPServerConfig contains the configuration for the RTSP server
 type RTSPServerConfig struct {
@@ -49,8 +61,8 @@ func NewRTSPServerManager(l *logger.Logger) *RTSPServerManager {
 
 	return &RTSPServerManager{
 		config: RTSPServerConfig{
-			Port:      8554,
-			Interface: "0.0.0.0",
+			Port:      DefaultRTSPPort,
+			Interface: DefaultRTSPInterface,
 		},
 		logger:      l,
 		streams:     make(map[string]*RTSPStreamInfo),
@@ -75,15 +87,27 @@ func (rm *RTSPServerManager) Start() error {
 	}
 
 	// Start the server
+	serverReady := make(chan bool, 1)
 	go func() {
 		err := rm.server.Start()
 		if err != nil {
 			rm.logger.Error("RTSP server error: %v", err)
+			serverReady <- false
+		} else {
+			serverReady <- true
 		}
 	}()
 
-	// Wait a moment for the server to start
-	time.Sleep(500 * time.Millisecond)
+	// Wait for server to be ready with timeout
+	select {
+	case ready := <-serverReady:
+		if !ready {
+			return fmt.Errorf("RTSP server failed to start")
+		}
+	case <-time.After(2 * time.Second):
+		// Give it a moment to start, but don't block indefinitely
+		rm.logger.Debug("RTSP server startup taking longer than expected, continuing...")
+	}
 
 	return nil
 }
@@ -287,26 +311,30 @@ func (rm *RTSPServerManager) CreateEmptyStream(name string) (string, error) {
 
 // WaitForStreamReady waits for a stream to become ready for reading (i.e., being published to)
 func (rm *RTSPServerManager) WaitForStreamReady(name string, timeout time.Duration) error {
-	// First check if the stream is already ready (for existing streams)
-	if rm.IsStreamReady(name) {
-		rm.logger.Debug("Stream %s is already ready for reading", name)
-		return nil
-	}
+	// Use polling approach to handle multiple waiters correctly
+	startTime := time.Now()
+	ticker := time.NewTicker(100 * time.Millisecond) // Check every 100ms
+	defer ticker.Stop()
 
-	rm.streamsMutex.Lock()
-	readyChan, exists := rm.streamReady[name]
-	rm.streamsMutex.Unlock()
+	for {
+		// Check if stream is ready
+		if rm.IsStreamReady(name) {
+			rm.logger.Debug("Stream %s is ready for reading", name)
+			return nil
+		}
 
-	if !exists {
-		return fmt.Errorf("stream %s not found or ready channel not created", name)
-	}
+		// Check timeout
+		if time.Since(startTime) >= timeout {
+			return fmt.Errorf("timeout waiting for stream %s to become ready", name)
+		}
 
-	select {
-	case <-readyChan:
-		rm.logger.Debug("Stream %s is ready for reading", name)
-		return nil
-	case <-time.After(timeout):
-		return fmt.Errorf("timeout waiting for stream %s to become ready", name)
+		// Wait for next check
+		select {
+		case <-ticker.C:
+			continue
+		case <-time.After(timeout - time.Since(startTime)):
+			return fmt.Errorf("timeout waiting for stream %s to become ready", name)
+		}
 	}
 }
 

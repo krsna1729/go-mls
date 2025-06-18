@@ -21,7 +21,8 @@ import (
 type Status int
 
 const (
-	Running Status = iota
+	Starting Status = iota
+	Running
 	Stopped
 	Error
 )
@@ -43,7 +44,7 @@ type Relay struct {
 	InputURL      string
 	InputName     string
 	Endpoints     map[string]*RelayEndpoint // key: output URL
-	LocalRelayURL string                    // e.g. rtsp://127.0.0.1:8554/relay/<inputName>
+	LocalRelayURL string                    // e.g. GetRTSPServerURL()/relay/<inputName>
 	LocalRelayCmd *exec.Cmd                 // ffmpeg process for input relay
 	RefCount      int                       // number of outputs+recordings using this input
 	Status        Status                    // status of input relay
@@ -126,7 +127,11 @@ var PlatformPresets = map[string]PlatformPreset{
 
 // buildFFmpegCmdWithOptions builds an ffmpeg command with advanced options and/or preset
 func buildFFmpegCmdWithOptions(inputURL, outputURL string, opts *FFmpegOptions, presetName string) *exec.Cmd {
-	args := []string{"-re", "-i", inputURL, "-progress", "pipe:1"}
+	args := []string{
+		"-hide_banner",       // Reduce verbose output
+		"-loglevel", "error", // Only show actual errors, suppress H.264 decoder warnings
+		"-re", "-i", inputURL, "-progress", "pipe:1",
+	}
 	var o FFmpegOptions
 
 	// Apply preset if specified
@@ -173,14 +178,36 @@ func buildFFmpegCmdWithOptions(inputURL, outputURL string, opts *FFmpegOptions, 
 	if o.Resolution != "" {
 		args = append(args, "-s", o.Resolution)
 	}
-	if o.Framerate != "" {
-		args = append(args, "-r", o.Framerate)
+
+	// Build video filter chain for better quality
+	var videoFilters []string
+	if o.Rotation != "" {
+		videoFilters = append(videoFilters, o.Rotation)
 	}
+	if o.Framerate != "" {
+		// Use fps filter for better frame rate conversion instead of just -r
+		videoFilters = append(videoFilters, "fps="+o.Framerate)
+		args = append(args, "-fps_mode", "cfr")
+	}
+
+	// Apply video filters if any
+	if len(videoFilters) > 0 {
+		filterString := ""
+		for i, filter := range videoFilters {
+			if i > 0 {
+				filterString += ","
+			}
+			filterString += filter
+		}
+		args = append(args, "-vf", filterString)
+	} else if o.Framerate != "" {
+		// If only framerate without other filters, use -r
+		args = append(args, "-r", o.Framerate)
+		args = append(args, "-fps_mode", "cfr")
+	}
+
 	if o.Bitrate != "" {
 		args = append(args, "-b:v", o.Bitrate)
-	}
-	if o.Rotation != "" {
-		args = append(args, "-vf", o.Rotation)
 	}
 	if len(o.ExtraArgs) > 0 {
 		args = append(args, o.ExtraArgs...)
@@ -211,13 +238,20 @@ func (rm *RelayManager) StartRelayWithOptions(inputURL, outputURL, inputName, ou
 	if rm.rtspServer != nil {
 		relayPath := fmt.Sprintf("relay/%s", inputName)
 		rm.Logger.Info("Waiting for RTSP stream to become ready: %s", relayPath)
+		// Use 30 second timeout to allow for network delays and connection establishment
 		err = rm.rtspServer.WaitForStreamReady(relayPath, 30*time.Second)
 		if err != nil {
 			rm.Logger.Error("Failed to wait for RTSP stream to become ready for %s: %v", inputName, err)
-			rm.StopInputRelay(inputName, inputURL)
-			return fmt.Errorf("RTSP stream not ready: %v", err)
+			rm.Logger.Debug("Stream readiness check failed for %s, checking if stream exists...", relayPath)
+			if rm.rtspServer.IsStreamReady(relayPath) {
+				rm.Logger.Warn("Stream %s appears ready but wait failed, continuing anyway", relayPath)
+			} else {
+				rm.StopInputRelay(inputName, inputURL)
+				return fmt.Errorf("RTSP stream not ready: %v", err)
+			}
+		} else {
+			rm.Logger.Info("RTSP stream is ready for %s, starting output relay", inputName)
 		}
-		rm.Logger.Info("RTSP stream is ready for %s, starting output relay", inputName)
 	}
 	rm.mu.Lock()
 	relay, exists := rm.Relays[inputURL]
@@ -239,12 +273,10 @@ func (rm *RelayManager) StartRelayWithOptions(inputURL, outputURL, inputName, ou
 		relay.mu.Unlock()
 		return fmt.Errorf("relay already running for %s -> %s", inputURL, outputURL)
 	}
-	// Use local relay URL as input, but wait a moment for the input relay to establish
+	// Use local relay URL as input, the RTSP stream is already confirmed ready
 	cmd := buildFFmpegCmdWithOptions(localRelayURL, outputURL, opts, preset)
 	rm.Logger.Debug("Starting ffmpeg process for output: %v", cmd.Args)
 
-	// Add a short delay to allow input relay to connect and start publishing
-	time.Sleep(2 * time.Second)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		rm.Logger.Error("Failed to create stdout pipe for %s [%s] -> %s [%s]: %v", inputName, inputURL, outputName, outputURL, err)
@@ -501,27 +533,60 @@ func (rm *RelayManager) ImportConfig(filename string) error {
 		rm.Logger.Error("Failed to unmarshal config: %v", err)
 		return err
 	}
+
+	// Start all relays in parallel for faster startup
+	var wg sync.WaitGroup
+	errorChan := make(chan error, 100) // Buffer for potential errors
+
 	for _, relayCfg := range configs {
 		for _, out := range relayCfg.Outputs {
-			var opts *FFmpegOptions
-			if out.FFmpegOptions != nil {
-				opts = &FFmpegOptions{
-					VideoCodec: out.FFmpegOptions["video_codec"],
-					AudioCodec: out.FFmpegOptions["audio_codec"],
-					Resolution: out.FFmpegOptions["resolution"],
-					Framerate:  out.FFmpegOptions["framerate"],
-					Bitrate:    out.FFmpegOptions["bitrate"],
-					Rotation:   out.FFmpegOptions["rotation"],
+			wg.Add(1)
+			go func(inputURL, inputName, outputURL, outputName, preset string, ffmpegOpts map[string]string) {
+				defer wg.Done()
+
+				var opts *FFmpegOptions
+				if ffmpegOpts != nil {
+					opts = &FFmpegOptions{
+						VideoCodec: ffmpegOpts["video_codec"],
+						AudioCodec: ffmpegOpts["audio_codec"],
+						Resolution: ffmpegOpts["resolution"],
+						Framerate:  ffmpegOpts["framerate"],
+						Bitrate:    ffmpegOpts["bitrate"],
+						Rotation:   ffmpegOpts["rotation"],
+					}
 				}
-			}
-			err := rm.StartRelayWithOptions(relayCfg.InputURL, out.OutputURL, relayCfg.InputName, out.OutputName, opts, out.PlatformPreset)
-			if err != nil {
-				rm.Logger.Error("Failed to start relay: %v", err)
-			}
+
+				err := rm.StartRelayWithOptions(inputURL, outputURL, inputName, outputName, opts, preset)
+				if err != nil {
+					rm.Logger.Error("Failed to start relay %s -> %s: %v", inputName, outputName, err)
+					select {
+					case errorChan <- err:
+					default: // Don't block if channel is full
+					}
+				}
+			}(relayCfg.InputURL, relayCfg.InputName, out.OutputURL, out.OutputName, out.PlatformPreset, out.FFmpegOptions)
 		}
 	}
-	rm.Logger.Info("Imported relay config from %s", filename)
-	return nil
+
+	// Wait for all relays to start
+	wg.Wait()
+	close(errorChan)
+
+	// Check if there were any errors
+	var lastErr error
+	errorCount := 0
+	for err := range errorChan {
+		rm.Logger.Error("Relay start error during import: %v", err)
+		lastErr = err
+		errorCount++
+	}
+
+	if errorCount > 0 {
+		rm.Logger.Error("Import completed with %d errors, last error: %v", errorCount, lastErr)
+	} else {
+		rm.Logger.Info("Imported relay config from %s successfully", filename)
+	}
+	return lastErr
 }
 
 // StartInputRelay starts the input relay process if not running, increments refcount, returns local relay URL
@@ -543,9 +608,21 @@ func (rm *RelayManager) StartInputRelay(inputName, inputURL string) (string, err
 	relay.mu.Lock()
 	relay.RefCount++
 	rm.Logger.Info("Relay refcount for %s is now %d", inputURL, relay.RefCount)
-	if relay.LocalRelayCmd == nil || relay.Status != Running {
+
+	// Check if input relay is already starting or running
+	if relay.Status == Starting {
+		// Another goroutine is already starting this relay, just wait
+		rm.Logger.Debug("Input relay for %s is already starting, waiting...", inputURL)
+		localURL := relay.LocalRelayURL
+		relay.mu.Unlock()
+		rm.mu.Unlock()
+		return localURL, nil
+	}
+
+	if relay.LocalRelayCmd == nil || relay.Status == Stopped {
+		relay.Status = Starting // Mark as starting to prevent race conditions
 		relayPath := fmt.Sprintf("relay/%s", inputName)
-		relay.LocalRelayURL = fmt.Sprintf("rtsp://127.0.0.1:8554/%s", relayPath)
+		relay.LocalRelayURL = fmt.Sprintf("%s/%s", GetRTSPServerURL(), relayPath)
 
 		// Create empty stream in RTSP server if available
 		if rm.rtspServer != nil {
@@ -616,23 +693,36 @@ func (rm *RelayManager) StopInputRelay(inputName, inputURL string) {
 // RunInputRelay runs and monitors the input relay process, restarts on failure if still needed
 func (rm *RelayManager) RunInputRelay(relay *Relay) {
 	rm.Logger.Info("RunInputRelay: running ffmpeg for %s -> %s", relay.InputURL, relay.LocalRelayURL)
-	retryDelay := 5 // seconds
+	retryDelay := 5     // seconds
+	maxRetryDelay := 60 // seconds
 	for {
 		err := relay.LocalRelayCmd.Run()
-		if err != nil {
-			rm.Logger.Error("Input relay process exited with error for %s: %v", relay.InputURL, err)
-		}
 		relay.mu.Lock()
 		if relay.Status == Stopped || relay.RefCount <= 0 {
+			if err != nil {
+				// Process was intentionally killed, this is expected
+				rm.Logger.Info("Input relay for %s stopped (signal: %v)", relay.InputURL, err)
+			} else {
+				rm.Logger.Info("Input relay for %s stopped cleanly", relay.InputURL)
+			}
 			rm.Logger.Info("Input relay for %s stopped or no consumers, exiting RunInputRelay", relay.InputURL)
 			relay.mu.Unlock()
 			return
 		}
+		if err != nil {
+			rm.Logger.Error("Input relay process exited with error for %s: %v", relay.InputURL, err)
+		}
 		rm.Logger.Warn("Input relay for %s exited unexpectedly, restarting in %ds", relay.InputURL, retryDelay)
 		relay.Status = Error
-		relay.LocalRelayCmd = exec.Command("ffmpeg", "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "10", "-i", relay.InputURL, "-c", "copy", "-f", "rtsp", relay.LocalRelayURL)
+		relay.LocalRelayCmd = exec.Command("ffmpeg",
+			"-hide_banner", "-loglevel", "error", // Only show actual errors
+			"-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "10",
+			"-i", relay.InputURL, "-c", "copy", "-f", "rtsp", relay.LocalRelayURL)
 		relay.mu.Unlock()
+
+		// Exponential backoff with jitter for retry delay
 		time.Sleep(time.Duration(retryDelay) * time.Second)
+		retryDelay = min(retryDelay*2, maxRetryDelay)
 	}
 }
 
@@ -660,6 +750,8 @@ func (rm *RelayManager) Status() status.FullStatus {
 			}
 			var statusStr string
 			switch ep.Status {
+			case Starting:
+				statusStr = "Starting"
 			case Running:
 				statusStr = "Running"
 			case Error:

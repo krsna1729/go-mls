@@ -15,6 +15,12 @@ import (
 	"go-mls/internal/stream"
 )
 
+// HTTP server configuration constants
+const (
+	DefaultHTTPPort = "8080"
+	DefaultHTTPHost = "0.0.0.0"
+)
+
 //go:embed web/*
 var webAssets embed.FS
 
@@ -236,9 +242,9 @@ func main() {
 	http.HandleFunc("/api/recording/download", stream.ApiDownloadRecording(recordingMgr))
 	http.HandleFunc("/api/recording/sse", stream.ApiRecordingsSSE())
 
-	logger.Info("Go-MLS relay manager running at http://localhost:8080 ...")
-	logger.Debug("main: server starting on :8080")
-	if err := http.ListenAndServe(":8080", nil); err != nil {
+	logger.Info("Go-MLS relay manager running at http://%s:%s ...", DefaultHTTPHost, DefaultHTTPPort)
+	logger.Debug("main: server starting on :%s", DefaultHTTPPort)
+	if err := http.ListenAndServe(":"+DefaultHTTPPort, nil); err != nil {
 		logger.Error("Server error: %v", err)
 	}
 	logger.Debug("main: server shutdown")
