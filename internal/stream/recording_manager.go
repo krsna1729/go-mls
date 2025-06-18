@@ -73,6 +73,26 @@ func (rm *RecordingManager) StartRecording(ctx context.Context, name, sourceURL 
 			return fmt.Errorf("active recording for name %s and source %s already exists", name, sourceURL)
 		}
 	}
+	// Wait for the RTSP stream to become ready before starting recording ffmpeg
+	rtspServer := rm.RelayMgr.GetRTSPServer()
+	if rtspServer != nil {
+		relayPath := fmt.Sprintf("relay/%s", name)
+		rm.Logger.Info("Waiting for RTSP stream to become ready for recording: %s", relayPath)
+		// Use 30 second timeout to allow for network delays and connection establishment
+		err = rtspServer.WaitForStreamReady(relayPath, 30*time.Second)
+		if err != nil {
+			rm.Logger.Error("Failed to wait for RTSP stream to become ready for recording %s: %v", name, err)
+			rm.Logger.Debug("Stream readiness check failed for %s, checking if stream exists...", relayPath)
+			if rtspServer.IsStreamReady(relayPath) {
+				rm.Logger.Warn("Stream %s appears ready but wait failed, continuing anyway", relayPath)
+			} else {
+				rm.RelayMgr.StopInputRelay(name, sourceURL)
+				return fmt.Errorf("RTSP stream not ready for recording: %v", err)
+			}
+		}
+		rm.Logger.Info("RTSP stream is ready for recording: %s", relayPath)
+	}
+
 	filePath := fmt.Sprintf("%s/%s_%d.mp4", rm.dir, name, time.Now().Unix())
 	rm.Logger.Debug("Starting ffmpeg for recording: %s", filePath)
 	cmd := exec.CommandContext(ctx, "ffmpeg", "-y", "-i", localRelayURL, "-c", "copy", filePath)

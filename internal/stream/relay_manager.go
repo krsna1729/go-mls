@@ -71,6 +71,11 @@ func (rm *RelayManager) SetRTSPServer(server *RTSPServerManager) {
 	rm.rtspServer = server
 }
 
+// GetRTSPServer returns the RTSP server instance
+func (rm *RelayManager) GetRTSPServer() *RTSPServerManager {
+	return rm.rtspServer
+}
+
 // FFmpegOptions allows advanced control over output
 // (codec, resolution, rotation, etc.)
 type FFmpegOptions struct {
