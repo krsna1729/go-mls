@@ -1,13 +1,15 @@
 # Go-MLS: Go Media Live Streamer
 
-Go-MLS is a single Go service for video streaming and relay, web UI control, process management, and static asset serving. All backend logic is implemented in Go, and the frontend uses static HTML, JavaScript, and CSS—no PHP, Nginx, or bash scripts required.
+Go-MLS is a Go-based service for live video relay, recording, and monitoring, with a web UI for control and observability. It is designed for multi-source, multi-destination streaming, with dynamic relay management and recording support.
 
 ## Features
-- RTMP relay and video streaming using ffmpeg
-- Web-based UI for controlling streams and relays
-- Process management for multiple concurrent ffmpeg relays
-- Real-time log streaming and status monitoring
-- Serves static frontend assets (HTML/JS/CSS) directly from Go
+- Relay multiple input streams to multiple output destinations (RTMP/RTSP)
+- Dynamic add/remove/update of relays and endpoints via web UI/API
+- Real-time relay/server status and statistics (CPU, memory, bitrate)
+- Recording of any input stream to disk, with browser download and delete
+- Web-based UI for control, search, and monitoring
+- Prometheus metrics and Grafana dashboards for observability
+- All backend logic in Go, frontend is static HTML/JS/CSS
 
 ## Getting Started
 
@@ -24,7 +26,13 @@ go build -o go-mls
 ```
 
 ### Usage
-- Access the web UI at `http://localhost:8080` (or the configured port)
-- Configure input and output RTMP URLs via the web interface
+- Access the web UI at `http://localhost:8080`
+- Add/edit relay endpoints (input/output pairs) via the web interface
+- Export/Import configuration of all relays
 - Start, stop, and update relays in real time
-- View relay status
+- Start/stop recordings and download completed files
+- View relay/server status and statistics
+
+---
+
+For implementation details, see `main.go` and `internal/stream/`.
