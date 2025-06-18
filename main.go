@@ -214,7 +214,7 @@ func main() {
 	}
 	defer rtspServer.Stop()
 
-	relayMgr := stream.NewRelayManager(logger)
+	relayMgr := stream.NewRelayManager(logger, absDir)
 	relayMgr.SetRTSPServer(rtspServer)
 	recordingMgr := stream.NewRecordingManager(logger, absDir, relayMgr)
 

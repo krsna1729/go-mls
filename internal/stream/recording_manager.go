@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"time"
 	"unsafe"
 
@@ -144,7 +145,15 @@ func (rm *RecordingManager) StartRecording(ctx context.Context, name, sourceURL 
 		case <-done:
 			// Stop requested
 			rm.Logger.Debug("Recording for %s stopped by done channel.", name)
-			_ = cmd.Process.Kill()
+			// Send SIGINT for graceful shutdown
+			if cmd.Process != nil {
+				err := cmd.Process.Signal(syscall.SIGINT)
+				if err != nil {
+					rm.Logger.Warn("Failed to send SIGINT to ffmpeg process: %v", err)
+				}
+			}
+			// Wait for ffmpeg to exit and finalize file
+			_ = cmd.Wait()
 			// No need for filePath here, already handled below
 			rm.mu.Lock()
 			if r, ok := rm.recordings[key]; ok {

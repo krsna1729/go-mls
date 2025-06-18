@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -57,12 +58,14 @@ type RelayManager struct {
 	mu         sync.Mutex
 	Logger     *logger.Logger
 	rtspServer *RTSPServerManager // RTSP server for local relays
+	recDir     string             // Directory for playing recordings from
 }
 
-func NewRelayManager(l *logger.Logger) *RelayManager {
+func NewRelayManager(l *logger.Logger, recDir string) *RelayManager {
 	return &RelayManager{
 		Relays: make(map[string]*Relay),
 		Logger: l,
+		recDir: recDir,
 	}
 }
 
@@ -594,9 +597,27 @@ func (rm *RelayManager) ImportConfig(filename string) error {
 	return lastErr
 }
 
+// resolveInputURL checks if the inputURL is a file:// URL and returns the correct path for ffmpeg
+func (rm *RelayManager) resolveInputURL(inputURL string) (string, error) {
+	if strings.HasPrefix(inputURL, "file://") {
+		relative := strings.TrimPrefix(inputURL, "file://")
+		filePath := filepath.Join(rm.recDir, relative)
+		if _, err := os.Stat(filePath); err != nil {
+			return "", fmt.Errorf("recording file not found: %s", filePath)
+		}
+		rm.Logger.Debug("Resolved input URL: %s -> %s", inputURL, filePath)
+		return filePath, nil
+	}
+	return inputURL, nil
+}
+
 // StartInputRelay starts the input relay process if not running, increments refcount, returns local relay URL
 func (rm *RelayManager) StartInputRelay(inputName, inputURL string) (string, error) {
 	rm.Logger.Info("StartInputRelay: inputName=%s, inputURL=%s", inputName, inputURL)
+	resolvedInput, err := rm.resolveInputURL(inputURL)
+	if err != nil {
+		return "", err
+	}
 	rm.mu.Lock()
 	relay, exists := rm.Relays[inputURL]
 	if !exists {
@@ -645,7 +666,8 @@ func (rm *RelayManager) StartInputRelay(inputName, inputURL string) (string, err
 		rm.Logger.Info("Starting input relay ffmpeg: %s -> %s", inputURL, relay.LocalRelayURL)
 		// Use RTSP publishing format for ffmpeg to push to RTSP server
 		cmd := exec.Command("ffmpeg",
-			"-i", inputURL,
+			"-re",               // Read input at native frame rate to accomodate file:// inputs
+			"-i", resolvedInput, // Use resolved input URL to handle file:// paths transparently
 			"-c", "copy",
 			"-f", "rtsp",
 			"-rtsp_transport", "tcp",
@@ -701,6 +723,11 @@ func (rm *RelayManager) RunInputRelay(relay *Relay) {
 	retryDelay := 5     // seconds
 	maxRetryDelay := 60 // seconds
 	for {
+		// Check if command is nil to prevent panics
+		if relay.LocalRelayCmd == nil {
+			rm.Logger.Error("Input relay command is nil for %s, exiting", relay.InputURL)
+			return
+		}
 		err := relay.LocalRelayCmd.Run()
 		relay.mu.Lock()
 		if relay.Status == Stopped || relay.RefCount <= 0 {
@@ -714,15 +741,30 @@ func (rm *RelayManager) RunInputRelay(relay *Relay) {
 			relay.mu.Unlock()
 			return
 		}
+		if err == nil && rm.isFileInput(relay.InputURL) {
+			// File input finished normally, do not restart
+			rm.Logger.Info("Input relay for file input %s finished, not restarting.", relay.InputURL)
+			relay.Status = Stopped
+			relay.LocalRelayCmd = nil
+			relay.mu.Unlock()
+			return
+		}
 		if err != nil {
 			rm.Logger.Error("Input relay process exited with error for %s: %v", relay.InputURL, err)
 		}
 		rm.Logger.Warn("Input relay for %s exited unexpectedly, restarting in %ds", relay.InputURL, retryDelay)
 		relay.Status = Error
+		// Resolve input URL again for consistency with initial start
+		resolvedInput, resolveErr := rm.resolveInputURL(relay.InputURL)
+		if resolveErr != nil {
+			rm.Logger.Error("Failed to resolve input URL on restart for %s: %v", relay.InputURL, resolveErr)
+			relay.mu.Unlock()
+			return
+		}
 		relay.LocalRelayCmd = exec.Command("ffmpeg",
 			"-hide_banner", "-loglevel", "error", // Only show actual errors
 			"-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "10",
-			"-i", relay.InputURL, "-c", "copy", "-f", "rtsp", relay.LocalRelayURL)
+			"-re", "-i", resolvedInput, "-c", "copy", "-f", "rtsp", "-rtsp_transport", "tcp", relay.LocalRelayURL)
 		relay.mu.Unlock()
 
 		// Exponential backoff with jitter for retry delay
@@ -806,4 +848,9 @@ func (rm *RelayManager) GetEndpointConfig(inputURL, outputURL string) (string, *
 	}
 
 	return ep.PlatformPreset, ep.FFmpegOptions, nil
+}
+
+// isFileInput checks if the inputURL is a file:// URL
+func (rm *RelayManager) isFileInput(inputURL string) bool {
+	return strings.HasPrefix(inputURL, "file://")
 }
