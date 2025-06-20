@@ -21,6 +21,11 @@ func ApiStartRecording(rm *RecordingManager) http.HandlerFunc {
 			httputil.WriteError(w, http.StatusBadRequest, "Name and source required")
 			return
 		}
+		// Additional validation to prevent "undefined" values
+		if req.Name == "undefined" || req.Source == "undefined" {
+			httputil.WriteError(w, http.StatusBadRequest, "Invalid name or source: cannot be 'undefined'")
+			return
+		}
 		if err := rm.StartRecording(context.Background(), req.Name, req.Source); err != nil {
 			httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -41,6 +46,11 @@ func ApiStopRecording(rm *RecordingManager) http.HandlerFunc {
 		}
 		if req.Name == "" || req.Source == "" {
 			httputil.WriteError(w, http.StatusBadRequest, "Name and source required")
+			return
+		}
+		// Additional validation to prevent "undefined" values
+		if req.Name == "undefined" || req.Source == "undefined" {
+			httputil.WriteError(w, http.StatusBadRequest, "Invalid name or source: cannot be 'undefined'")
 			return
 		}
 		if err := rm.StopRecording(req.Name, req.Source); err != nil {

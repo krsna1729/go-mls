@@ -111,7 +111,7 @@ func apiStopRelay(relayMgr *stream.RelayManager) http.HandlerFunc {
 func apiRelayStatus(relayMgr *stream.RelayManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		relayMgr.Logger.Debug("apiRelayStatus called")
-		httputil.WriteJSON(w, http.StatusOK, relayMgr.Status())
+		httputil.WriteJSON(w, http.StatusOK, relayMgr.StatusV2())
 		relayMgr.Logger.Debug("apiRelayStatus: status returned")
 	}
 }

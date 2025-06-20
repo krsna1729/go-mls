@@ -35,19 +35,31 @@ document.addEventListener('DOMContentLoaded', function () {
     function fetchInputUrls() {
         // Try to get all recordings from window if available
         const allRecordings = window.allRecordingsList || [];
+        // Support new relay status API ({server, relays: [{input, outputs}]})
         if (window.latestRelayStatus && window.latestRelayStatus.relays) {
-            renderInputUrls(window.latestRelayStatus.relays, allRecordings);
+            renderInputUrlsV2(window.latestRelayStatus.relays, allRecordings);
         } else {
             fetch('/api/relay/status')
                 .then(r => r.json())
-                .then(data => renderInputUrls(data.relays || [], allRecordings));
+                .then(data => {
+                    if (data && data.relays) {
+                        renderInputUrlsV2(data.relays, allRecordings);
+                    } else {
+                        console.warn('No relay data found in status response');
+                        renderInputUrlsV2([], allRecordings);
+                    }
+                })
+                .catch(err => {
+                    console.error('Failed to fetch relay status:', err);
+                    renderInputUrlsV2([], allRecordings);
+                });
         }
     }
     // Listen for relayStatusUpdated event from app.js
     window.addEventListener('relayStatusUpdated', function () {
         const allRecordings = window.allRecordingsList || [];
         if (window.latestRelayStatus && window.latestRelayStatus.relays) {
-            renderInputUrls(window.latestRelayStatus.relays, allRecordings);
+            renderInputUrlsV2(window.latestRelayStatus.relays, allRecordings);
         }
     });
 
@@ -56,37 +68,53 @@ document.addEventListener('DOMContentLoaded', function () {
         window.allRecordingsList = list;
         // Also update input table if relays are present
         if (window.latestRelayStatus && window.latestRelayStatus.relays) {
-            renderInputUrls(window.latestRelayStatus.relays, list);
+            renderInputUrlsV2(window.latestRelayStatus.relays, list);
         }
     };
 
-    function renderInputUrls(relays, allRecordings) {
-        // Sort by input_name (fallback input_url), case-insensitive, natural order
+    function renderInputUrlsV2(relays, allRecordings) {
+        // relays: [{input, outputs}]
+        if (!Array.isArray(relays)) {
+            console.warn('renderInputUrlsV2: relays is not an array', relays);
+            relays = [];
+        }
+        
         relays.sort((a, b) => {
-            const aName = a.input_name || a.input_url || '';
-            const bName = b.input_name || b.input_url || '';
+            const aName = (a.input && a.input.input_name) || (a.input && a.input.input_url) || '';
+            const bName = (b.input && b.input.input_name) || (b.input && b.input.input_url) || '';
             return aName.localeCompare(bName, undefined, { numeric: true, sensitivity: 'base' });
         });
+        
         const search = document.getElementById('inputSearchBox').value.trim().toLowerCase();
-        let html = '<table style="width:100%"><thead><tr><th>Name</th><th>URL</th><th>Action</th></tr></thead><tbody>';
+        let html = '<table style="width:100%"><thead><tr><th>Name</th><th>URL</th><th>Status</th><th>Action</th></tr></thead><tbody>';
+        
         for (const relay of relays) {
-            if (search && !relay.input_name.toLowerCase().includes(search) && !relay.input_url.toLowerCase().includes(search)) continue;
+            const input = relay.input;
+            if (!input || !input.input_name || !input.input_url) {
+                console.warn('Skipping relay with invalid input data:', relay);
+                continue;
+            }
+            
+            if (search && !input.input_name.toLowerCase().includes(search) && !input.input_url.toLowerCase().includes(search)) continue;
+            
             // Find all recordings for this input, sorted by started_at descending
             let latestActive = null;
             let latestCompleted = null;
             if (Array.isArray(allRecordings)) {
-                const matches = allRecordings.filter(r => r.name === relay.input_name && r.source === relay.input_url)
+                const matches = allRecordings.filter(r => r.name === input.input_name && r.source === input.input_url)
                     .sort((a, b) => new Date(b.started_at) - new Date(a.started_at));
                 latestActive = matches.find(r => r.active);
                 latestCompleted = matches.find(r => !r.active);
             }
+            
             // Toggle button logic
             let toggleBtn = '';
             if (latestActive) {
-                toggleBtn = `<button class=\"toggleRecBtn active\" data-name=\"${relay.input_name}\" data-url=\"${relay.input_url}\"><span class=\"rec-dot\"></span>Stop</button>`;
+                toggleBtn = `<button class=\"toggleRecBtn active\" data-name=\"${input.input_name}\" data-url=\"${input.input_url}\"><span class=\"rec-dot\"></span>Stop</button>`;
             } else {
-                toggleBtn = `<button class=\"toggleRecBtn\" data-name=\"${relay.input_name}\" data-url=\"${relay.input_url}\"><span class=\"material-icons\">fiber_manual_record</span>Start</button>`;
+                toggleBtn = `<button class=\"toggleRecBtn\" data-name=\"${input.input_name}\" data-url=\"${input.input_url}\"><span class=\"material-icons\">fiber_manual_record</span>Start</button>`;
             }
+            
             // Download button logic
             let downloadBtn = '';
             if (latestCompleted) {
@@ -94,9 +122,11 @@ document.addEventListener('DOMContentLoaded', function () {
             } else {
                 downloadBtn = `<button class=\"downloadLatestBtn\" disabled style=\"opacity:0.5;cursor:not-allowed;\"><span class=\"material-icons\">download</span>Download</button>`;
             }
+            
             html += `<tr>
-                <td>${relay.input_name}</td>
-                <td>${relay.input_url}</td>
+                <td>${input.input_name}</td>
+                <td>${input.input_url}</td>
+                <td>${input.status || 'Unknown'}${input.last_error ? `<br><span style='color:red'>${input.last_error}</span>` : ''}</td>
                 <td>
                     ${toggleBtn}
                     ${downloadBtn}
@@ -113,20 +143,40 @@ document.addEventListener('DOMContentLoaded', function () {
             btn.onclick = function () {
                 const name = btn.getAttribute('data-name');
                 const url = btn.getAttribute('data-url');
+                
+                // Add validation to prevent undefined values
+                if (!name || !url || name === 'undefined' || url === 'undefined') {
+                    console.error('Invalid recording data: name=' + name + ', url=' + url);
+                    alert('Cannot start recording: Invalid input data');
+                    return;
+                }
+                
                 if (btn.classList.contains('active')) {
                     // Stop
                     fetch('/api/recording/stop', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ name, source: url })
-                    }).then(fetchInputUrls);
+                    }).then(() => {
+                        // Wait a bit for the recording to actually stop, then refresh
+                        setTimeout(() => {
+                            fetchInputUrls();
+                            fetchAllRecordings();
+                        }, 500);
+                    });
                 } else {
                     // Start
                     fetch('/api/recording/start', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ name, source: url })
-                    }).then(fetchInputUrls);
+                    }).then(() => {
+                        // Wait a bit for the recording to actually start, then refresh
+                        setTimeout(() => {
+                            fetchInputUrls();
+                            fetchAllRecordings();
+                        }, 500);
+                    });
                 }
             };
         });
@@ -159,9 +209,9 @@ document.addEventListener('DOMContentLoaded', function () {
         // Sort by started_at (latest first)
         list.sort((a, b) => new Date(b.started_at) - new Date(a.started_at));
         const search = document.getElementById('recordingSearchBox').value.trim().toLowerCase();
-        let html = '<table style="width:100%"><thead><tr><th>Name</th><th>Source</th><th>Started</th><th>Size</th><th>Status</th><th>Action</th></tr></thead><tbody>';
+        let html = '<table style="width:100%"><thead><tr><th>Filename</th><th>Started</th><th>Size</th><th>Status</th><th>Action</th></tr></thead><tbody>';
         for (const rec of list) {
-            if (search && !rec.name.toLowerCase().includes(search) && !rec.source.toLowerCase().includes(search) && !new Date(rec.started_at).toLocaleString().toLowerCase().includes(search)) continue;
+            if (search && !rec.filename.toLowerCase().includes(search) && !rec.name.toLowerCase().includes(search) && !new Date(rec.started_at).toLocaleString().toLowerCase().includes(search)) continue;
             let sizeStr = rec.file_size ? (rec.file_size / (1024 * 1024)).toFixed(2) + ' MB' : '';
             let downloadBtn = '';
             let deleteBtn = '';
@@ -174,9 +224,10 @@ document.addEventListener('DOMContentLoaded', function () {
                 downloadBtn = `<button class=\"downloadRecordingBtn\" data-filename=\"${encodeURIComponent(rec.filename)}\"><span class=\"material-icons\">download</span></button>`;
                 deleteBtn = `<button class=\"deleteRecordingBtn\" data-filename=\"${encodeURIComponent(rec.filename)}\"><span class=\"material-icons\">delete</span></button>`;
             }
+            // Show source on hover if available
+            const titleAttr = rec.source ? `title="Source: ${rec.source}"` : '';
             html += `<tr>
-                <td>${rec.name}</td>
-                <td>${rec.source}</td>
+                <td ${titleAttr}>${rec.filename || rec.name}</td>
                 <td>${new Date(rec.started_at).toLocaleString()}</td>
                 <td>${sizeStr}</td>
                 <td>${rec.active ? '<span style=\"color:red;\">Active</span>' : 'Stopped'}</td>

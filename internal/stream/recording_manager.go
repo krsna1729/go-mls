@@ -60,7 +60,11 @@ func NewRecordingManager(l *logger.Logger, dir string, relayMgr *RelayManager) *
 // StartRecording starts recording a source to a file using ffmpeg, using local relay URL
 func (rm *RecordingManager) StartRecording(ctx context.Context, name, sourceURL string) error {
 	rm.Logger.Info("StartRecording called: name=%s, source=%s", name, sourceURL)
-	localRelayURL, err := rm.RelayMgr.StartInputRelay(name, sourceURL)
+	// Compose local RTSP relay path and URL
+	relayPath := fmt.Sprintf("relay/%s", name)
+	localRelayURL := fmt.Sprintf("rtsp://127.0.0.1:8554/%s", relayPath) // or use GetRTSPServerURL if available
+	inputTimeout := 30 * time.Second                                    // match relay_manager.go
+	_, err := rm.RelayMgr.InputRelays.StartInputRelay(name, sourceURL, localRelayURL, inputTimeout)
 	if err != nil {
 		rm.Logger.Error("Failed to start input relay for recording: %v", err)
 		return err
@@ -77,9 +81,7 @@ func (rm *RecordingManager) StartRecording(ctx context.Context, name, sourceURL 
 	// Wait for the RTSP stream to become ready before starting recording ffmpeg
 	rtspServer := rm.RelayMgr.GetRTSPServer()
 	if rtspServer != nil {
-		relayPath := fmt.Sprintf("relay/%s", name)
 		rm.Logger.Info("Waiting for RTSP stream to become ready for recording: %s", relayPath)
-		// Use 30 second timeout to allow for network delays and connection establishment
 		err = rtspServer.WaitForStreamReady(relayPath, 30*time.Second)
 		if err != nil {
 			rm.Logger.Error("Failed to wait for RTSP stream to become ready for recording %s: %v", name, err)
@@ -87,7 +89,7 @@ func (rm *RecordingManager) StartRecording(ctx context.Context, name, sourceURL 
 			if rtspServer.IsStreamReady(relayPath) {
 				rm.Logger.Warn("Stream %s appears ready but wait failed, continuing anyway", relayPath)
 			} else {
-				rm.RelayMgr.StopInputRelay(name, sourceURL)
+				rm.RelayMgr.InputRelays.StopInputRelay(sourceURL)
 				return fmt.Errorf("RTSP stream not ready for recording: %v", err)
 			}
 		}
@@ -97,15 +99,16 @@ func (rm *RecordingManager) StartRecording(ctx context.Context, name, sourceURL 
 	filePath := fmt.Sprintf("%s/%s_%d.mp4", rm.dir, name, time.Now().Unix())
 	rm.Logger.Debug("Starting ffmpeg for recording: %s", filePath)
 	cmd := exec.CommandContext(ctx, "ffmpeg", "-y", "-i", localRelayURL, "-c", "copy", filePath)
+	rm.Logger.Debug("RecordingManager: Starting ffmpeg command: %v", cmd.Args)
 	var outBuf, errBuf bytes.Buffer
 	cmd.Stdout = &outBuf
 	cmd.Stderr = &errBuf
 	if err := cmd.Start(); err != nil {
 		rm.Logger.Error("Failed to start ffmpeg: %v", err)
-		// Decrement relay refcount if ffmpeg fails to start
-		rm.RelayMgr.StopInputRelay(name, sourceURL)
+		rm.RelayMgr.InputRelays.StopInputRelay(sourceURL)
 		return err
 	}
+	rm.Logger.Info("RecordingManager: Started ffmpeg process PID %d for recording %s", cmd.Process.Pid, filePath)
 	timestamp := time.Now().Unix()
 	rec := &Recording{
 		Name:      name,
@@ -121,7 +124,7 @@ func (rm *RecordingManager) StartRecording(ctx context.Context, name, sourceURL 
 	done := make(chan struct{})
 	rm.dones[key] = done
 	go func(key string, done chan struct{}) {
-		defer rm.RelayMgr.StopInputRelay(name, sourceURL) // Decrement relay refcount when recording ends
+		defer rm.RelayMgr.InputRelays.StopInputRelay(sourceURL) // Decrement relay when recording ends
 		select {
 		case err := <-waitCmd(cmd):
 			var filePath string
@@ -147,9 +150,11 @@ func (rm *RecordingManager) StartRecording(ctx context.Context, name, sourceURL 
 			rm.Logger.Debug("Recording for %s stopped by done channel.", name)
 			// Send SIGINT for graceful shutdown
 			if cmd.Process != nil {
+				pid := cmd.Process.Pid
+				rm.Logger.Info("RecordingManager: Gracefully terminating ffmpeg process PID %d for recording %s", pid, name)
 				err := cmd.Process.Signal(syscall.SIGINT)
 				if err != nil {
-					rm.Logger.Warn("Failed to send SIGINT to ffmpeg process: %v", err)
+					rm.Logger.Warn("Failed to send SIGINT to ffmpeg process PID %d: %v", pid, err)
 				}
 			}
 			// Wait for ffmpeg to exit and finalize file
