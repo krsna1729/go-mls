@@ -1,11 +1,14 @@
 package stream
 
 import (
+	"bufio"
 	"fmt"
 	"go-mls/internal/logger"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -33,7 +36,9 @@ type InputRelay struct {
 	LastError string
 	StartTime time.Time
 	Timeout   time.Duration
-	RefCount  int // Number of consumers (output relays + recordings)
+	RefCount  int       // Number of consumers (output relays + recordings)
+	Speed     float64   // Current speed (e.g., 1.01x)
+	LastSpeed time.Time // Last time speed was updated
 	mu        sync.Mutex
 }
 
@@ -43,7 +48,7 @@ type InputRelayManager struct {
 	Relays     map[string]*InputRelay // key: input URL
 	mu         sync.Mutex
 	Logger     *logger.Logger
-	recDir     string // Directory for playing recordings from
+	recDir     string             // Directory for playing recordings from
 	rtspServer *RTSPServerManager // RTSP server for cleanup
 }
 
@@ -108,10 +113,25 @@ func (irm *InputRelayManager) StartInputRelay(inputName, inputURL, localURL stri
 	relay.Status = InputStarting
 	relay.LocalURL = localURL
 	cmd := exec.Command("ffmpeg",
-		"-re", "-i", resolvedInputURL, "-c", "copy", "-f", "rtsp", "-rtsp_transport", "tcp", localURL)
+		"-re", "-i", resolvedInputURL, "-c", "copy", "-f", "rtsp", "-rtsp_transport", "tcp",
+		"-progress", "pipe:1", // Use progress output for easier parsing
+		localURL,
+	)
 	relay.Cmd = cmd
 	relay.Status = InputRunning
 	relay.StartTime = time.Now()
+
+	// Set up stdout pipe for progress monitoring (prefer progress over stderr)
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		relay.Status = InputError
+		relay.LastError = err.Error()
+		relay.RefCount-- // Decrement on failure
+		relay.mu.Unlock()
+		irm.mu.Unlock()
+		irm.Logger.Error("Failed to create stdout pipe for input relay: %v", err)
+		return "", err
+	}
 
 	// Log the ffmpeg command and start it
 	irm.Logger.Debug("InputRelayManager: Starting ffmpeg command: %v", cmd.Args)
@@ -125,6 +145,9 @@ func (irm *InputRelayManager) StartInputRelay(inputName, inputURL, localURL stri
 		return "", err
 	}
 	irm.Logger.Info("InputRelayManager: Started ffmpeg process PID %d for %s -> %s (refcount: %d)", cmd.Process.Pid, inputURL, localURL, relay.RefCount)
+
+	// Start bitrate monitoring
+	go irm.monitorFFmpegProgress(relay, stdoutPipe)
 
 	go irm.RunInputRelay(relay)
 	local := relay.LocalURL
@@ -181,16 +204,16 @@ func (irm *InputRelayManager) StopInputRelay(inputURL string) bool {
 	relay.Cmd = nil
 	inputName := relay.InputName // Store input name for RTSP cleanup
 	relay.mu.Unlock()
-	
+
 	// Clean up RTSP stream when input relay is fully stopped
 	if irm.rtspServer != nil && inputName != "" {
 		relayPath := "relay/" + inputName
 		irm.Logger.Debug("InputRelayManager: Cleaning up RTSP stream for stopped input relay: %s", relayPath)
 		irm.rtspServer.RemoveStream(relayPath)
 	}
-	
+
 	irm.mu.Unlock()
-	
+
 	return true
 }
 
@@ -233,9 +256,37 @@ func (irm *InputRelayManager) SetRTSPServer(server *RTSPServerManager) {
 func (irm *InputRelayManager) GetInputNameForURL(inputURL string) string {
 	irm.mu.Lock()
 	defer irm.mu.Unlock()
-	
+
 	if relay, exists := irm.Relays[inputURL]; exists {
 		return relay.InputName
 	}
 	return ""
+}
+
+// monitorFFmpegProgress monitors ffmpeg -progress output for speed information
+func (irm *InputRelayManager) monitorFFmpegProgress(relay *InputRelay, progressReader io.Reader) {
+	scanner := bufio.NewScanner(progressReader)
+	for scanner.Scan() {
+		line := scanner.Text()
+		// irm.Logger.Debug("InputRelay ffmpeg progress line: %s", line)
+		if strings.HasPrefix(line, "speed=") {
+			val := strings.TrimPrefix(line, "speed=")
+			// Remove 'x' suffix (e.g., "1.01x" -> "1.01")
+			val = strings.TrimSuffix(val, "x")
+			val = strings.TrimSpace(val)
+			if val == "N/A" || val == "" {
+				irm.Logger.Debug("InputRelay speed N/A for %s", relay.InputURL)
+				continue // Do not update speed if N/A
+			}
+			if speed, err := strconv.ParseFloat(val, 64); err == nil {
+				relay.mu.Lock()
+				relay.Speed = speed
+				relay.LastSpeed = time.Now()
+				relay.mu.Unlock()
+				irm.Logger.Debug("InputRelay speed updated: %s -> %.2fx", relay.InputURL, speed)
+			} else {
+				irm.Logger.Warn("Failed to parse InputRelay speed for %s: %s (error: %v)", relay.InputURL, val, err)
+			}
+		}
+	}
 }

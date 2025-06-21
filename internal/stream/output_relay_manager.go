@@ -1,10 +1,14 @@
 package stream
 
 import (
+	"bufio"
 	"fmt"
 	"go-mls/internal/logger"
+	"io"
 	"os"
 	"os/exec"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -35,6 +39,8 @@ type OutputRelay struct {
 	PlatformPreset string            // Store platform preset
 	FFmpegOptions  map[string]string // Store ffmpeg options
 	FFmpegArgs     []string          // Store ffmpeg arguments
+	Bitrate        float64           // Current bitrate in kbps
+	LastBitrate    time.Time         // Last time bitrate was updated
 	mu             sync.Mutex
 }
 
@@ -53,9 +59,9 @@ type OutputRelayConfig struct {
 // OutputRelayManager manages all output relays
 // (local RTSP server -> output URL)
 type OutputRelayManager struct {
-	Relays        map[string]*OutputRelay // key: output URL
-	mu            sync.Mutex
-	Logger        *logger.Logger
+	Relays          map[string]*OutputRelay // key: output URL
+	mu              sync.Mutex
+	Logger          *logger.Logger
 	FailureCallback func(inputURL, outputURL string) // Called when output relay fails
 }
 
@@ -81,7 +87,7 @@ func (orm *OutputRelayManager) StartOutputRelay(config OutputRelayConfig) error 
 		orm.mu.Unlock()
 		return nil
 	}
-	cmd := exec.Command("ffmpeg", config.FFmpegArgs...)
+	cmd := exec.Command("ffmpeg", append(config.FFmpegArgs, "-progress", "pipe:1")...)
 	relay = &OutputRelay{
 		OutputURL:      config.OutputURL,
 		OutputName:     config.OutputName,
@@ -97,7 +103,18 @@ func (orm *OutputRelayManager) StartOutputRelay(config OutputRelayConfig) error 
 	}
 	orm.Relays[config.OutputURL] = relay
 	orm.mu.Unlock()
-	
+
+	// Set up stdout pipe for progress monitoring (prefer progress over stderr)
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		orm.mu.Lock()
+		relay.Status = OutputError
+		relay.LastError = err.Error()
+		orm.mu.Unlock()
+		orm.Logger.Error("Failed to create stdout pipe for output relay: %v", err)
+		return err
+	}
+
 	// Log the ffmpeg command and start it
 	orm.Logger.Debug("OutputRelayManager: Starting ffmpeg command: %v", cmd.Args)
 	if err := cmd.Start(); err != nil {
@@ -109,7 +126,10 @@ func (orm *OutputRelayManager) StartOutputRelay(config OutputRelayConfig) error 
 		return err
 	}
 	orm.Logger.Info("OutputRelayManager: Started ffmpeg process PID %d for %s -> %s", cmd.Process.Pid, config.LocalURL, config.OutputURL)
-	
+
+	// Start bitrate monitoring
+	go orm.monitorFFmpegProgress(relay, stdoutPipe)
+
 	go orm.RunOutputRelay(relay)
 	return nil
 }
@@ -167,7 +187,7 @@ func (orm *OutputRelayManager) RunOutputRelay(relay *OutputRelay) {
 		relay.Status = OutputError
 		relay.LastError = err.Error()
 		orm.Logger.Error("Output relay process PID %s exited with error for %s: %v", pid, relay.OutputURL, err)
-		
+
 		// Call failure callback to clean up input relay refcount
 		inputURL := relay.InputURL
 		outputURL := relay.OutputURL
@@ -183,4 +203,35 @@ func (orm *OutputRelayManager) RunOutputRelay(relay *OutputRelay) {
 	}
 	relay.Cmd = nil
 	relay.mu.Unlock()
+}
+
+// monitorFFmpegProgress monitors ffmpeg -progress output for bitrate information
+func (orm *OutputRelayManager) monitorFFmpegProgress(relay *OutputRelay, progressReader io.Reader) {
+	scanner := bufio.NewScanner(progressReader)
+	for scanner.Scan() {
+		line := scanner.Text()
+		// orm.Logger.Debug("OutputRelay ffmpeg progress line: %s", line)
+		if strings.HasPrefix(line, "bitrate=") {
+			val := strings.TrimPrefix(line, "bitrate=")
+			val = strings.TrimSpace(val)
+			// ffmpeg emits e.g. "1621.2kbits/s"; strip suffix for parsing
+			if strings.HasSuffix(val, "kbits/s") {
+				val = strings.TrimSuffix(val, "kbits/s")
+				val = strings.TrimSpace(val)
+			}
+			if val == "N/A" || val == "" {
+				orm.Logger.Debug("OutputRelay bitrate N/A for %s", relay.OutputName)
+				continue // Do not update bitrate if N/A
+			}
+			if bitrate, err := strconv.ParseFloat(val, 64); err == nil {
+				relay.mu.Lock()
+				relay.Bitrate = bitrate
+				relay.LastBitrate = time.Now()
+				relay.mu.Unlock()
+				orm.Logger.Debug("OutputRelay bitrate updated: %s -> %.2f kbps", relay.OutputName, bitrate)
+			} else {
+				orm.Logger.Warn("Failed to parse bitrate from ffmpeg progress: '%s' (err: %v)", val, err)
+			}
+		}
+	}
 }

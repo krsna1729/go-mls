@@ -400,7 +400,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 if (relay.input) {
                     if (typeof relay.input.cpu === 'number') totalCpu += relay.input.cpu;
                     if (typeof relay.input.mem === 'number') totalMem += relay.input.mem;
-                    if (typeof relay.input.bitrate === 'number') totalBitrate += relay.input.bitrate;
+                    // Input speed is not included in total bitrate (it's a different metric)
                     if (relay.input.status === 'Error') health = 'Warning';
                 }
                 if (relay.outputs && Array.isArray(relay.outputs)) {
@@ -481,7 +481,7 @@ document.addEventListener('DOMContentLoaded', function () {
                         <th style="text-align:left; padding:6px 8px;">Status</th>
                         <th style="text-align:left; padding:6px 8px;">CPU (%)</th>
                         <th style="text-align:left; padding:6px 8px;">Mem (MB)</th>
-                        <th style="text-align:left; padding:6px 8px;">Bitrate (kbps)</th>
+                        <th style="text-align:left; padding:6px 8px;">Speed (x)</th>
                         <th style="text-align:left; padding:6px 8px;">Name</th>
                         <th style="text-align:left; padding:6px 8px;">Status</th>
                         <th style="text-align:left; padding:6px 8px;">CPU (%)</th>
@@ -503,7 +503,7 @@ document.addEventListener('DOMContentLoaded', function () {
                         <td style="padding:6px 8px;">${getStatusBadge(inputStatus)}${inputError ? `<br><span style='color:red'>${inputError}</span>` : ''}</td>
                         <td style="padding:6px 8px;">${relay.input.cpu?.toFixed(1) || '-'}</td>
                         <td style="padding:6px 8px;">${relay.input.mem ? (relay.input.mem / (1024 * 1024)).toFixed(1) : '-'}</td>
-                        <td style="padding:6px 8px;">${relay.input.bitrate ? relay.input.bitrate : '-'}</td>
+                        <td style="padding:6px 8px;">${relay.input.speed ? relay.input.speed.toFixed(2) + 'x' : '-'}</td>
                         <td colspan="6" style="padding:6px 8px; background:#fff;"><i>No outputs</i></td>
                     </tr>`;
                 } else {
@@ -518,7 +518,7 @@ document.addEventListener('DOMContentLoaded', function () {
                             html += `<td rowspan="${relay.outputs.length}" style="padding:6px 8px;">${getStatusBadge(inputStatus)}${inputError ? `<br><span style='color:red'>${inputError}</span>` : ''}</td>`;
                             html += `<td rowspan="${relay.outputs.length}" style="padding:6px 8px;">${relay.input.cpu?.toFixed(1) || '-'}</td>`;
                             html += `<td rowspan="${relay.outputs.length}" style="padding:6px 8px;">${relay.input.mem ? (relay.input.mem / (1024 * 1024)).toFixed(1) : '-'}</td>`;
-                            html += `<td rowspan="${relay.outputs.length}" style="padding:6px 8px;">${relay.input.bitrate ? relay.input.bitrate : '-'}</td>`;
+                            html += `<td rowspan="${relay.outputs.length}" style="padding:6px 8px;">${relay.input.speed ? relay.input.speed.toFixed(2) + 'x' : '-'}</td>`;
                         }
                         html += `<td style="word-break:break-all; padding:6px 8px;" data-label="Output">
                                 <span class="centered-cell" title="${out.output_url}"><span>${out.output_name || out.output_url}</span></span>

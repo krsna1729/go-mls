@@ -9,14 +9,12 @@ import (
 
 	"go-mls/internal/logger"
 	"go-mls/internal/process"
-	"go-mls/internal/status"
 )
 
 // RelayManager manages all relays (per input URL)
 type RelayManager struct {
 	InputRelays  *InputRelayManager
 	OutputRelays *OutputRelayManager
-	mu           sync.Mutex
 	Logger       *logger.Logger
 	rtspServer   *RTSPServerManager // RTSP server for local relays
 	recDir       string             // Directory for playing recordings from
@@ -31,13 +29,13 @@ func NewRelayManager(l *logger.Logger, recDir string) *RelayManager {
 		Logger:       l,
 		recDir:       recDir,
 	}
-	
+
 	// Set up failure callback for output relays to clean up input relay refcount
 	orm.SetFailureCallback(func(inputURL, outputURL string) {
 		l.Debug("Output relay failure callback: cleaning up input relay refcount for inputURL=%s", inputURL)
 		irm.StopInputRelay(inputURL) // RTSP cleanup is handled internally
 	})
-	
+
 	return rm
 }
 
@@ -140,7 +138,7 @@ func (rm *RelayManager) StartRelayWithOptions(inputURL, outputURL, inputName, ou
 	}
 
 	// Build ffmpeg args for output relay
-	args := []string{"-hide_banner", "-loglevel", "error", "-re", "-i", localRelayURL}
+	args := []string{"-hide_banner", "-loglevel", "info", "-stats", "-re", "-i", localRelayURL}
 	if opts != nil {
 		if opts.VideoCodec != "" {
 			args = append(args, "-c:v", opts.VideoCodec)
@@ -203,13 +201,13 @@ func (rm *RelayManager) StartRelayWithOptions(inputURL, outputURL, inputName, ou
 // StopRelay stops a relay endpoint for an input/output URL
 func (rm *RelayManager) StopRelay(inputURL, outputURL, inputName, outputName string) error {
 	rm.Logger.Debug("StopRelay called: input=%s, output=%s, input_name=%s, output_name=%s", inputURL, outputURL, inputName, outputName)
-	
+
 	// Stop the output relay first
 	rm.OutputRelays.StopOutputRelay(outputURL)
-	
+
 	// Decrement the input relay reference count (RTSP cleanup is handled internally)
 	rm.InputRelays.StopInputRelay(inputURL)
-	
+
 	return nil
 }
 
@@ -348,49 +346,6 @@ func (rm *RelayManager) ImportConfig(filename string) error {
 	return lastErr
 }
 
-// Status returns the legacy status.FullStatus for backward compatibility
-func (rm *RelayManager) Status() status.FullStatus {
-	srv, _ := process.GetSelfUsage()
-	serverStatus := status.ServerStatus{}
-	if srv != nil {
-		serverStatus = status.ServerStatus{CPU: srv.CPU, Mem: srv.Mem}
-	}
-
-	relays := []status.RelayStatus{}
-	rm.InputRelays.mu.Lock()
-	for _, in := range rm.InputRelays.Relays {
-		in.mu.Lock()
-		endpoints := []status.EndpointStatus{}
-		rm.OutputRelays.mu.Lock()
-		for _, out := range rm.OutputRelays.Relays {
-			if out.InputURL == in.InputURL {
-				out.mu.Lock()
-				endpoints = append(endpoints, status.EndpointStatus{
-					OutputURL:  out.OutputURL,
-					OutputName: out.OutputName,
-					Status:     outputRelayStatusString(out.Status),
-					Bitrate:    0, // Not tracked in new model
-					CPU:        0, // Not tracked in new model
-					Mem:        0, // Not tracked in new model
-				})
-				out.mu.Unlock()
-			}
-		}
-		rm.OutputRelays.mu.Unlock()
-		relays = append(relays, status.RelayStatus{
-			InputURL:  in.InputURL,
-			InputName: in.InputName,
-			Endpoints: endpoints,
-		})
-		in.mu.Unlock()
-	}
-	rm.InputRelays.mu.Unlock()
-	return status.FullStatus{
-		Server: serverStatus,
-		Relays: relays,
-	}
-}
-
 // GetEndpointConfig retrieves the stored platform preset and ffmpeg options for an existing output relay
 func (rm *RelayManager) GetEndpointConfig(inputURL, outputURL string) (string, *FFmpegOptions, error) {
 	rm.OutputRelays.mu.Lock()
@@ -430,7 +385,7 @@ type InputRelayStatusV2 struct {
 	LastError string  `json:"last_error,omitempty"`
 	CPU       float64 `json:"cpu"`
 	Mem       uint64  `json:"mem"`
-	Bitrate   float64 `json:"bitrate"`
+	Speed     float64 `json:"speed"`
 }
 
 type OutputRelayStatusV2 struct {
@@ -445,19 +400,25 @@ type OutputRelayStatusV2 struct {
 	Bitrate    float64 `json:"bitrate"`
 }
 
+// ServerStatus represents server resource usage
+type ServerStatus struct {
+	CPU float64 `json:"cpu"`
+	Mem uint64  `json:"mem"`
+}
+
 // StatusV2Response is the new status API response with server and relay stats
 // Used for both backend and frontend
 type StatusV2Response struct {
-	Server status.ServerStatus `json:"server"`
-	Relays []RelayStatusV2     `json:"relays"`
+	Server ServerStatus    `json:"server"`
+	Relays []RelayStatusV2 `json:"relays"`
 }
 
 // StatusV2 returns a struct with server stats and relay statuses for UI
 func (rm *RelayManager) StatusV2() StatusV2Response {
 	srv, _ := process.GetSelfUsage()
-	serverStatus := status.ServerStatus{}
+	serverStatus := ServerStatus{}
 	if srv != nil {
-		serverStatus = status.ServerStatus{CPU: srv.CPU, Mem: srv.Mem}
+		serverStatus = ServerStatus{CPU: srv.CPU, Mem: srv.Mem}
 	}
 	statuses := []RelayStatusV2{}
 	// Gather input relays
@@ -479,8 +440,9 @@ func (rm *RelayManager) StatusV2() StatusV2Response {
 			LastError: in.LastError,
 			CPU:       cpu,
 			Mem:       mem,
-			Bitrate:   0, // TODO: parse from ffmpeg or RTSP stats
+			Speed:     in.Speed, // Now using speed instead of bitrate
 		}
+		rm.Logger.Debug("StatusV2: Input relay %s speed: %.2fx", in.InputURL, in.Speed)
 		// Gather outputs for this input
 		outputs := []OutputRelayStatusV2{}
 		rm.OutputRelays.mu.Lock()
@@ -503,8 +465,9 @@ func (rm *RelayManager) StatusV2() StatusV2Response {
 					LastError:  out.LastError,
 					CPU:        cpuO,
 					Mem:        memO,
-					Bitrate:    0, // TODO: parse from ffmpeg or RTSP stats
+					Bitrate:    out.Bitrate, // Now using actual tracked bitrate
 				})
+				rm.Logger.Debug("StatusV2: Output relay %s bitrate: %.2f kbps", out.OutputURL, out.Bitrate)
 				out.mu.Unlock()
 			}
 		}
