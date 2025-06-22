@@ -138,6 +138,10 @@ document.addEventListener('DOMContentLoaded', function () {
         attachInputUrlHandlers();
     }
 
+    // Add debouncing to prevent rapid successive requests
+    const recordingRequestTimestamps = new Map();
+    const REQUEST_DEBOUNCE_MS = 1000; // 1 second debounce
+
     function attachInputUrlHandlers() {
         document.querySelectorAll('.toggleRecBtn').forEach(btn => {
             btn.onclick = function () {
@@ -151,31 +155,106 @@ document.addEventListener('DOMContentLoaded', function () {
                     return;
                 }
                 
+                // Check for rapid successive requests (debouncing)
+                const requestKey = `${name}_${url}`;
+                const now = Date.now();
+                const lastRequest = recordingRequestTimestamps.get(requestKey);
+                if (lastRequest && (now - lastRequest) < REQUEST_DEBOUNCE_MS) {
+                    console.log('Ignoring rapid successive request for:', requestKey);
+                    return;
+                }
+                recordingRequestTimestamps.set(requestKey, now);
+                
+                // Prevent double-clicks by disabling the button temporarily
+                if (btn.disabled) {
+                    return;
+                }
+                btn.disabled = true;
+                
+                // Store original button text to restore later
+                const originalText = btn.innerHTML;
+                
                 if (btn.classList.contains('active')) {
-                    // Stop
+                    // Stop recording
+                    btn.innerHTML = '<span class="material-icons">hourglass_empty</span>Stopping...';
                     fetch('/api/recording/stop', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ name, source: url })
+                    }).then(response => {
+                        if (!response.ok) {
+                            return response.text().then(text => {
+                                throw new Error(`HTTP ${response.status}: ${text || response.statusText}`);
+                            });
+                        }
+                        return response.json();
                     }).then(() => {
                         // Wait a bit for the recording to actually stop, then refresh
                         setTimeout(() => {
                             fetchInputUrls();
                             fetchAllRecordings();
                         }, 500);
+                    }).catch((error) => {
+                        console.error('Error stopping recording:', error);
+                        // Always refresh the UI even if there was an error
+                        // This helps when the recording has already finished naturally
+                        setTimeout(() => {
+                            fetchInputUrls();
+                            fetchAllRecordings();
+                        }, 200);
+                        
+                        if (error.message.includes('already exists')) {
+                            // Recording is already running - just refresh UI silently
+                            console.log('Recording is already running, refreshing UI');
+                            setTimeout(() => {
+                                fetchInputUrls();
+                                fetchAllRecordings();
+                            }, 100);
+                        } else if (error.message.includes('no active recording') || error.message.includes('already finished') || error.message.includes('finished naturally')) {
+                            // Don't show an error for recordings that have already finished
+                            console.log('Recording has already finished');
+                        } else {
+                            alert('Failed to stop recording: ' + error.message);
+                        }
+                        btn.innerHTML = originalText;
+                    }).finally(() => {
+                        btn.disabled = false;
                     });
                 } else {
-                    // Start
+                    // Start recording
+                    btn.innerHTML = '<span class="material-icons">hourglass_empty</span>Starting...';
                     fetch('/api/recording/start', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ name, source: url })
+                    }).then(response => {
+                        if (!response.ok) {
+                            return response.text().then(text => {
+                                throw new Error(`HTTP ${response.status}: ${text || response.statusText}`);
+                            });
+                        }
+                        return response.json();
                     }).then(() => {
                         // Wait a bit for the recording to actually start, then refresh
                         setTimeout(() => {
                             fetchInputUrls();
                             fetchAllRecordings();
                         }, 500);
+                    }).catch((error) => {
+                        console.error('Error starting recording:', error);
+                        if (error.message.includes('already exists')) {
+                            // Recording is already running - just refresh UI silently  
+                            console.log('Recording is already running, refreshing UI');
+                            setTimeout(() => {
+                                fetchInputUrls();
+                                fetchAllRecordings();
+                            }, 100);
+                        } else {
+                            alert('Failed to start recording: ' + error.message);
+                        }
+                        btn.innerHTML = originalText;
+                    }).finally(() => {
+                        btn.disabled = false;
                     });
                 }
             };

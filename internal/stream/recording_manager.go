@@ -74,6 +74,34 @@ func NewRecordingManager(l *logger.Logger, dir string, relayMgr *RelayManager) *
 // StartRecording starts recording a source to a file using ffmpeg, using local relay URL
 func (rm *RecordingManager) StartRecording(ctx context.Context, name, sourceURL string) error {
 	rm.Logger.Info("StartRecording called: name=%s, source=%s", name, sourceURL)
+	
+	// Use a more robust approach to prevent duplicate recordings
+	// Create a deterministic key for the recording based on name and source
+	recordingKey := fmt.Sprintf("%s_%s", name, sourceURL)
+	
+	rm.mu.Lock()
+	// Check for existing active recordings by name and source
+	for _, rec := range rm.recordings {
+		if rec.Name == name && rec.Source == sourceURL && rec.Active {
+			rm.mu.Unlock()
+			rm.Logger.Warn("Active recording for name %s and source %s already exists", name, sourceURL)
+			return fmt.Errorf("active recording for name %s and source %s already exists", name, sourceURL)
+		}
+	}
+	
+	// Create a placeholder recording entry to prevent race conditions
+	currentTime := time.Now()
+	timestamp := currentTime.Unix()
+	uniqueKey := fmt.Sprintf("%s_%d", recordingKey, timestamp)
+	placeholderRec := &Recording{
+		Name:      name,
+		Source:    sourceURL,
+		StartedAt: currentTime,
+		Active:    true, // Mark as active immediately
+	}
+	rm.recordings[uniqueKey] = placeholderRec
+	rm.mu.Unlock()
+
 	// Compose local RTSP relay path and URL
 	relayPath := fmt.Sprintf("relay/%s", name)
 	localRelayURL := fmt.Sprintf("rtsp://127.0.0.1:8554/%s", relayPath) // or use GetRTSPServerURL if available
@@ -81,17 +109,15 @@ func (rm *RecordingManager) StartRecording(ctx context.Context, name, sourceURL 
 	_, err := rm.RelayMgr.InputRelays.StartInputRelay(name, sourceURL, localRelayURL, inputTimeout)
 	if err != nil {
 		rm.Logger.Error("Failed to start input relay for recording: %v", err)
+		// Clean up the placeholder recording entry
+		rm.mu.Lock()
+		delete(rm.recordings, uniqueKey)
+		rm.mu.Unlock()
 		return err
 	}
-	rm.mu.Lock()
-	defer rm.mu.Unlock()
-	// Prevent multiple active recordings for the same input (name+source)
-	for _, rec := range rm.recordings {
-		if rec.Name == name && rec.Source == sourceURL && rec.Active {
-			rm.Logger.Warn("Active recording for name %s and source %s already exists", name, sourceURL)
-			return fmt.Errorf("active recording for name %s and source %s already exists", name, sourceURL)
-		}
-	}
+
+	// Double-check logic is no longer needed since we have a placeholder entry
+	
 	// Wait for the RTSP stream to become ready before starting recording ffmpeg
 	rtspServer := rm.RelayMgr.GetRTSPServer()
 	if rtspServer != nil {
@@ -104,13 +130,20 @@ func (rm *RecordingManager) StartRecording(ctx context.Context, name, sourceURL 
 				rm.Logger.Warn("Stream %s appears ready but wait failed, continuing anyway", relayPath)
 			} else {
 				rm.RelayMgr.InputRelays.StopInputRelay(sourceURL)
+				// Clean up the placeholder recording entry
+				rm.mu.Lock()
+				delete(rm.recordings, uniqueKey)
+				rm.mu.Unlock()
 				return fmt.Errorf("RTSP stream not ready for recording: %v", err)
 			}
 		}
 		rm.Logger.Info("RTSP stream is ready for recording: %s", relayPath)
 	}
 
-	filePath := fmt.Sprintf("%s/%s_%d.mp4", rm.dir, name, time.Now().Unix())
+	rm.mu.Lock()
+	defer rm.mu.Unlock()
+
+	filePath := fmt.Sprintf("%s/%s_%d.mp4", rm.dir, name, timestamp)
 	rm.Logger.Debug("Starting ffmpeg for recording: %s", filePath)
 	cmd := exec.CommandContext(ctx, "ffmpeg", "-y", "-i", localRelayURL, "-c", "copy", filePath)
 	rm.Logger.Debug("RecordingManager: Starting ffmpeg command: %v", cmd.Args)
@@ -120,23 +153,18 @@ func (rm *RecordingManager) StartRecording(ctx context.Context, name, sourceURL 
 	if err := cmd.Start(); err != nil {
 		rm.Logger.Error("Failed to start ffmpeg: %v", err)
 		rm.RelayMgr.InputRelays.StopInputRelay(sourceURL)
+		// Clean up the placeholder recording entry
+		delete(rm.recordings, uniqueKey)
 		return err
 	}
 	rm.Logger.Info("RecordingManager: Started ffmpeg process PID %d for recording %s", cmd.Process.Pid, filePath)
-	timestamp := time.Now().Unix()
-	rec := &Recording{
-		Name:      name,
-		Source:    sourceURL,
-		FilePath:  filePath,
-		Filename:  fmt.Sprintf("%s_%d.mp4", name, timestamp),
-		StartedAt: time.Now(),
-		Active:    true,
-	}
-	key := fmt.Sprintf("%s_%s_%d", name, sourceURL, timestamp)
-	rm.recordings[key] = rec
-	rm.processes[key] = cmd
+	
+	// Update the placeholder recording with actual file information
+	placeholderRec.FilePath = filePath
+	placeholderRec.Filename = fmt.Sprintf("%s_%d.mp4", name, timestamp)
+	rm.processes[uniqueKey] = cmd
 	done := make(chan struct{})
-	rm.dones[key] = done
+	rm.dones[uniqueKey] = done
 	go func(key string, done chan struct{}) {
 		defer rm.RelayMgr.InputRelays.StopInputRelay(sourceURL) // Decrement relay when recording ends
 		select {
@@ -187,7 +215,7 @@ func (rm *RecordingManager) StartRecording(ctx context.Context, name, sourceURL 
 		delete(rm.processes, key)
 		delete(rm.dones, key)
 		rm.mu.Unlock()
-	}(key, done)
+	}(uniqueKey, done)
 	sseBroker.NotifyAll("update")
 	return nil
 }
@@ -224,9 +252,19 @@ func (rm *RecordingManager) StopRecording(name string, source string) error {
 	}
 	done, ok := rm.dones[latestKey]
 	if !ok {
+		// Check if the recording is still active - if not, it likely finished naturally
+		if rec, exists := rm.recordings[latestKey]; exists && !rec.Active {
+			rm.mu.Unlock()
+			rm.Logger.Info("Recording for %s has already finished naturally", name)
+			// Trigger UI update since recording is already stopped
+			sseBroker.NotifyAll("update")
+			return nil // Not an error, just already finished
+		}
 		rm.mu.Unlock()
-		rm.Logger.Warn("No done channel for active recording with name %s and source %s", name, source)
-		return fmt.Errorf("no done channel for active recording with name %s and source %s", name, source)
+		rm.Logger.Info("Recording for %s appears to have finished naturally (no done channel found)", name)
+		// Trigger UI update in case the recording finished but UI wasn't updated
+		sseBroker.NotifyAll("update")
+		return nil // Don't treat this as an error anymore
 	}
 	close(done)
 	delete(rm.dones, latestKey)
