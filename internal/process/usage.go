@@ -30,34 +30,67 @@ func GetProcUsage(pid int) (*ProcUsage, error) {
 	statmPath := fmt.Sprintf("/proc/%d/statm", pid)
 	cmdlinePath := fmt.Sprintf("/proc/%d/cmdline", pid)
 
+	// Check if the process still exists by trying to read its stat file
 	stat, err := os.ReadFile(statPath)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("process %d not found or inaccessible: %w", pid, err)
 	}
+
+	// Ensure we have valid stat data
+	if len(stat) == 0 {
+		return nil, fmt.Errorf("process %d stat file is empty", pid)
+	}
+
 	statm, err := os.ReadFile(statmPath)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to read statm file for process %d: %w", pid, err)
 	}
 	cmdline, _ := os.ReadFile(cmdlinePath)
 
 	fields := strings.Fields(string(stat))
 	if len(fields) < 24 {
-		return nil, fmt.Errorf("unexpected stat fields")
+		return nil, fmt.Errorf("unexpected stat fields for process %d: got %d, need at least 24", pid, len(fields))
 	}
-	utime, _ := strconv.ParseFloat(fields[13], 64)
-	stime, _ := strconv.ParseFloat(fields[14], 64)
-	cutime, _ := strconv.ParseFloat(fields[15], 64)
-	cstime, _ := strconv.ParseFloat(fields[16], 64)
+
+	// Parse CPU times safely
+	utime, err := strconv.ParseFloat(fields[13], 64)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse utime for process %d: %w", pid, err)
+	}
+	stime, err := strconv.ParseFloat(fields[14], 64)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse stime for process %d: %w", pid, err)
+	}
+	cutime, err := strconv.ParseFloat(fields[15], 64)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse cutime for process %d: %w", pid, err)
+	}
+	cstime, err := strconv.ParseFloat(fields[16], 64)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse cstime for process %d: %w", pid, err)
+	}
 	totalTime := utime + stime + cutime + cstime
 
+	// Handle uptime reading with robust error checking
 	uptimeBytes, err := os.ReadFile("/proc/uptime")
 	if err != nil {
+		// During shutdown, /proc/uptime might be inaccessible
 		uptimeBytes = []byte("0 0")
 	}
 	uptimeFields := strings.Fields(string(uptimeBytes))
-	uptime, _ := strconv.ParseFloat(uptimeFields[0], 64)
+	uptime := 0.0
+	if len(uptimeFields) > 0 {
+		parsed, err := strconv.ParseFloat(uptimeFields[0], 64)
+		if err == nil {
+			uptime = parsed
+		}
+		// If parsing fails, uptime remains 0.0
+	}
 
-	starttime, _ := strconv.ParseFloat(fields[21], 64)
+	starttime, err := strconv.ParseFloat(fields[21], 64)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse starttime for process %d: %w", pid, err)
+	}
 	clkTck := float64(100) // Linux default
 	seconds := uptime - (starttime / clkTck)
 	cpuPercent := 0.0
@@ -68,8 +101,11 @@ func GetProcUsage(pid int) (*ProcUsage, error) {
 	memFields := strings.Fields(string(statm))
 	mem := uint64(0)
 	if len(memFields) > 1 {
-		pages, _ := strconv.ParseUint(memFields[1], 10, 64)
-		mem = pages * 4096 // page size
+		pages, err := strconv.ParseUint(memFields[1], 10, 64)
+		if err == nil {
+			mem = pages * 4096 // page size
+		}
+		// If parsing fails, mem remains 0
 	}
 
 	return &ProcUsage{

@@ -74,11 +74,11 @@ func NewRecordingManager(l *logger.Logger, dir string, relayMgr *RelayManager) *
 // StartRecording starts recording a source to a file using ffmpeg, using local relay URL
 func (rm *RecordingManager) StartRecording(ctx context.Context, name, sourceURL string) error {
 	rm.Logger.Info("StartRecording called: name=%s, source=%s", name, sourceURL)
-	
+
 	// Use a more robust approach to prevent duplicate recordings
 	// Create a deterministic key for the recording based on name and source
 	recordingKey := fmt.Sprintf("%s_%s", name, sourceURL)
-	
+
 	rm.mu.Lock()
 	// Check for existing active recordings by name and source
 	for _, rec := range rm.recordings {
@@ -88,7 +88,7 @@ func (rm *RecordingManager) StartRecording(ctx context.Context, name, sourceURL 
 			return fmt.Errorf("active recording for name %s and source %s already exists", name, sourceURL)
 		}
 	}
-	
+
 	// Create a placeholder recording entry to prevent race conditions
 	currentTime := time.Now()
 	timestamp := currentTime.Unix()
@@ -117,7 +117,7 @@ func (rm *RecordingManager) StartRecording(ctx context.Context, name, sourceURL 
 	}
 
 	// Double-check logic is no longer needed since we have a placeholder entry
-	
+
 	// Wait for the RTSP stream to become ready before starting recording ffmpeg
 	rtspServer := rm.RelayMgr.GetRTSPServer()
 	if rtspServer != nil {
@@ -146,6 +146,10 @@ func (rm *RecordingManager) StartRecording(ctx context.Context, name, sourceURL 
 	filePath := fmt.Sprintf("%s/%s_%d.mp4", rm.dir, name, timestamp)
 	rm.Logger.Debug("Starting ffmpeg for recording: %s", filePath)
 	cmd := exec.CommandContext(ctx, "ffmpeg", "-y", "-i", localRelayURL, "-c", "copy", filePath)
+	// Set up process group to prevent child processes from receiving SIGINT on Ctrl+C
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Setpgid: true,
+	}
 	rm.Logger.Debug("RecordingManager: Starting ffmpeg command: %v", cmd.Args)
 	var outBuf, errBuf bytes.Buffer
 	cmd.Stdout = &outBuf
@@ -158,7 +162,7 @@ func (rm *RecordingManager) StartRecording(ctx context.Context, name, sourceURL 
 		return err
 	}
 	rm.Logger.Info("RecordingManager: Started ffmpeg process PID %d for recording %s", cmd.Process.Pid, filePath)
-	
+
 	// Update the placeholder recording with actual file information
 	placeholderRec.FilePath = filePath
 	placeholderRec.Filename = fmt.Sprintf("%s_%d.mp4", name, timestamp)
@@ -167,14 +171,28 @@ func (rm *RecordingManager) StartRecording(ctx context.Context, name, sourceURL 
 	rm.dones[uniqueKey] = done
 	go func(key string, done chan struct{}) {
 		defer rm.RelayMgr.InputRelays.StopInputRelay(sourceURL) // Decrement relay when recording ends
+
+		// Create a channel to handle the command completion
+		cmdDone := make(chan error, 1)
+		go func() {
+			cmdDone <- cmd.Wait()
+		}()
+
 		select {
-		case err := <-waitCmd(cmd):
+		case err := <-cmdDone:
 			var filePath string
 			rm.mu.Lock()
 			if r, ok := rm.recordings[key]; ok {
 				r.Active = false
 				r.StoppedAt = time.Now()
 				filePath = r.FilePath
+				// Update file size when recording finishes
+				if info, statErr := os.Stat(r.FilePath); statErr == nil {
+					r.FileSize = info.Size()
+					rm.Logger.Debug("Updated file size for finished recording %s: %d bytes", name, r.FileSize)
+				} else {
+					rm.Logger.Warn("Could not get file size for finished recording %s: %v", name, statErr)
+				}
 			} else {
 				filePath = "(unknown)"
 			}
@@ -200,12 +218,18 @@ func (rm *RecordingManager) StartRecording(ctx context.Context, name, sourceURL 
 				}
 			}
 			// Wait for ffmpeg to exit and finalize file
-			_ = cmd.Wait()
-			// No need for filePath here, already handled below
+			<-cmdDone // Wait for the command to finish
 			rm.mu.Lock()
 			if r, ok := rm.recordings[key]; ok {
 				r.Active = false
 				r.StoppedAt = time.Now()
+				// Update file size when recording is stopped
+				if info, statErr := os.Stat(r.FilePath); statErr == nil {
+					r.FileSize = info.Size()
+					rm.Logger.Debug("Updated file size for stopped recording %s: %d bytes", name, r.FileSize)
+				} else {
+					rm.Logger.Warn("Could not get file size for stopped recording %s: %v", name, statErr)
+				}
 			}
 			rm.mu.Unlock()
 			sseBroker.NotifyAll("update")
@@ -218,15 +242,6 @@ func (rm *RecordingManager) StartRecording(ctx context.Context, name, sourceURL 
 	}(uniqueKey, done)
 	sseBroker.NotifyAll("update")
 	return nil
-}
-
-// Helper to wait for cmd.Wait() in a channel
-func waitCmd(cmd *exec.Cmd) <-chan error {
-	ch := make(chan error, 1)
-	go func() {
-		ch <- cmd.Wait()
-	}()
-	return ch
 }
 
 // StopRecording stops the latest active recording for a given name+source
@@ -278,27 +293,24 @@ func (rm *RecordingManager) StopAllRecordings() {
 	rm.Logger.Info("RecordingManager: Stopping all active recordings...")
 
 	rm.mu.Lock()
-	activeRecordings := make([]string, 0)
-	for name, recording := range rm.recordings {
+	activeRecordings := make([]struct{ name, source string }, 0)
+	for _, recording := range rm.recordings {
 		if recording.Active {
-			activeRecordings = append(activeRecordings, name)
+			activeRecordings = append(activeRecordings, struct{ name, source string }{recording.Name, recording.Source})
 		}
 	}
 	rm.mu.Unlock()
 
-	// Stop each active recording
-	for _, name := range activeRecordings {
-		rm.mu.Lock()
-		recording := rm.recordings[name]
-		var source string
-		if recording != nil {
-			source = recording.Source
-		}
-		rm.mu.Unlock()
+	if len(activeRecordings) == 0 {
+		rm.Logger.Info("RecordingManager: No active recordings to stop")
+		return
+	}
 
-		rm.Logger.Info("RecordingManager: Stopping recording %s", name)
-		if err := rm.StopRecording(name, source); err != nil {
-			rm.Logger.Error("RecordingManager: Failed to stop recording %s: %v", name, err)
+	// Stop each active recording
+	for _, rec := range activeRecordings {
+		rm.Logger.Info("RecordingManager: Stopping recording %s", rec.name)
+		if err := rm.StopRecording(rec.name, rec.source); err != nil {
+			rm.Logger.Debug("RecordingManager: Stop recording %s result: %v", rec.name, err)
 		}
 	}
 
@@ -331,15 +343,32 @@ func (rm *RecordingManager) ListRecordings() []*Recording {
 	recs := make([]*Recording, 0, len(rm.recordings))
 	fileSet := make(map[string]struct{})
 	for _, r := range rm.recordings {
+		// Create a copy of the recording to avoid race conditions
+		recCopy := &Recording{
+			Name:      r.Name,
+			Source:    r.Source,
+			FilePath:  r.FilePath,
+			Filename:  r.Filename,
+			FileSize:  r.FileSize,
+			StartedAt: r.StartedAt,
+			StoppedAt: r.StoppedAt,
+			Active:    r.Active,
+		}
+
 		// For active/in-process, update file size from disk
-		if r.Active && r.FilePath != "" {
-			if info, err := os.Stat(r.FilePath); err == nil {
-				r.FileSize = info.Size()
+		if recCopy.Active && recCopy.FilePath != "" {
+			if info, err := os.Stat(recCopy.FilePath); err == nil {
+				recCopy.FileSize = info.Size()
+			}
+		} else if !recCopy.Active && recCopy.FilePath != "" && recCopy.FileSize == 0 {
+			// For inactive recordings with zero file size, try to get actual size
+			if info, err := os.Stat(recCopy.FilePath); err == nil {
+				recCopy.FileSize = info.Size()
 			}
 		}
-		recs = append(recs, r)
-		if r.Filename != "" {
-			fileSet[r.Filename] = struct{}{}
+		recs = append(recs, recCopy)
+		if recCopy.Filename != "" {
+			fileSet[recCopy.Filename] = struct{}{}
 		}
 	}
 	rm.mu.Unlock()
@@ -396,25 +425,28 @@ func (rm *RecordingManager) DeleteRecording(key string) error {
 	rm.Logger.Info("DeleteRecording called: key=%s", key)
 	rm.mu.Lock()
 	r, ok := rm.recordings[key]
-	rm.mu.Unlock()
 	if ok {
-		rm.mu.Lock()
 		if r.Active {
 			rm.mu.Unlock()
 			rm.Logger.Warn("Cannot delete active recording: %s", key)
 			return fmt.Errorf("cannot delete active recording")
 		}
-		if err := exec.Command("rm", "-f", r.FilePath).Run(); err != nil {
-			rm.Logger.Error("Failed to delete file %s: %v", r.FilePath, err)
-			rm.mu.Unlock()
+		filePath := r.FilePath
+		rm.mu.Unlock()
+
+		if err := exec.Command("rm", "-f", filePath).Run(); err != nil {
+			rm.Logger.Error("Failed to delete file %s: %v", filePath, err)
 			return err
 		}
+
+		rm.mu.Lock()
 		delete(rm.recordings, key)
-		rm.Logger.Info("Deleted recording %s", key)
 		rm.mu.Unlock()
+		rm.Logger.Info("Deleted recording %s", key)
 		sseBroker.NotifyAll("update")
 		return nil
 	}
+	rm.mu.Unlock()
 	// Fallback: try to delete by filename for on-disk-only recordings
 	filename := key + ".mp4"
 	filePath := filepath.Join(rm.dir, filename)

@@ -314,9 +314,18 @@ func main() {
 	http.HandleFunc("/api/input/delete", apiDeleteInput(relayMgr))
 	http.HandleFunc("/api/output/delete", apiDeleteOutput(relayMgr))
 
-	// Create HTTP server with proper shutdown support
+	// Create HTTP server with proper shutdown support and timeout configuration
 	server := &http.Server{
 		Addr: ":" + DefaultHTTPPort,
+
+		// Connection timeouts
+		ReadTimeout:       10 * time.Second, // Time to read request headers and body
+		WriteTimeout:      30 * time.Second, // Time to write response (important for SSE)
+		IdleTimeout:       60 * time.Second, // Time to keep connections alive between requests
+		ReadHeaderTimeout: 5 * time.Second,  // Time to read request headers only
+
+		// Maximum header size (default 1MB is usually fine)
+		MaxHeaderBytes: 1 << 20, // 1 MB
 	}
 
 	// Channel to listen for interrupt signal
@@ -337,7 +346,8 @@ func main() {
 	logger.Info("Received interrupt signal, initiating graceful shutdown...")
 
 	// Create a context with timeout for graceful shutdown
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// Increased timeout to allow SSE connections and long-running requests to close properly
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	// Shutdown HTTP server
@@ -346,13 +356,13 @@ func main() {
 		logger.Error("Server shutdown error: %v", err)
 	}
 
-	// Stop all active relays
-	logger.Info("Stopping all active relays...")
-	relayMgr.StopAllRelays()
-
 	// Stop all recordings and shut down recording manager
 	logger.Info("Shutting down recording manager...")
 	recordingMgr.Shutdown()
+
+	// Stop all active relays
+	logger.Info("Stopping all active relays...")
+	relayMgr.StopAllRelays()
 
 	// Stop RTSP server
 	logger.Info("Stopping RTSP server...")

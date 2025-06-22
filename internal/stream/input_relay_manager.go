@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -108,13 +109,14 @@ func (irm *InputRelayManager) StartInputRelay(inputName, inputURL, localURL stri
 
 	// Increment reference count
 	relay.RefCount++
-	irm.Logger.Debug("InputRelayManager: Incremented refcount for %s to %d", inputURL, relay.RefCount)
+	currentRefCount := relay.RefCount // Capture while holding lock
+	irm.Logger.Debug("InputRelayManager: Incremented refcount for %s to %d", inputURL, currentRefCount)
 
 	if relay.Status == InputStarting || relay.Status == InputRunning {
 		local := relay.LocalURL
 		relay.mu.Unlock()
 		irm.mu.Unlock()
-		irm.Logger.Debug("InputRelayManager: Reusing existing relay for %s (refcount: %d)", inputURL, relay.RefCount)
+		irm.Logger.Debug("InputRelayManager: Reusing existing relay for %s (refcount: %d)", inputURL, currentRefCount)
 		return local, nil
 	}
 	relay.Status = InputStarting
@@ -124,6 +126,10 @@ func (irm *InputRelayManager) StartInputRelay(inputName, inputURL, localURL stri
 		"-progress", "pipe:1", // Use progress output for easier parsing
 		localURL,
 	)
+	// Set up process group to prevent child processes from receiving SIGINT on Ctrl+C
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Setpgid: true,
+	}
 	relay.Cmd = cmd
 	relay.Status = InputRunning
 	relay.StartTime = time.Now()
@@ -151,7 +157,7 @@ func (irm *InputRelayManager) StartInputRelay(inputName, inputURL, localURL stri
 		irm.Logger.Error("Failed to start input relay ffmpeg: %v", err)
 		return "", err
 	}
-	irm.Logger.Info("InputRelayManager: Started ffmpeg process PID %d for %s -> %s (refcount: %d)", cmd.Process.Pid, inputURL, localURL, relay.RefCount)
+	irm.Logger.Info("InputRelayManager: Started ffmpeg process PID %d for %s -> %s (refcount: %d)", cmd.Process.Pid, inputURL, localURL, currentRefCount)
 
 	// Start bitrate monitoring with context
 	relay.wg.Add(1)
@@ -187,14 +193,19 @@ func (irm *InputRelayManager) StopInputRelay(inputURL string) bool {
 	// Decrement reference count
 	if relay.RefCount > 0 {
 		relay.RefCount--
-		irm.Logger.Debug("InputRelayManager: Decremented refcount for %s to %d", inputURL, relay.RefCount)
+		currentRefCount := relay.RefCount // Capture while holding lock
+		irm.Logger.Debug("InputRelayManager: Decremented refcount for %s to %d", inputURL, currentRefCount)
 	} else {
 		irm.Logger.Warn("InputRelayManager: refcount for %s is already 0, cannot decrement", inputURL)
+		relay.mu.Unlock()
+		irm.mu.Unlock()
+		return false
 	}
 
 	// Only stop if no more consumers
 	if relay.RefCount > 0 {
-		irm.Logger.Info("InputRelayManager: Not stopping relay for %s, still has %d consumers", inputURL, relay.RefCount)
+		currentRefCount := relay.RefCount // Capture while holding lock
+		irm.Logger.Info("InputRelayManager: Not stopping relay for %s, still has %d consumers", inputURL, currentRefCount)
 		relay.mu.Unlock()
 		irm.mu.Unlock()
 		return false
@@ -245,15 +256,83 @@ func (irm *InputRelayManager) StopInputRelay(inputURL string) bool {
 	return true
 }
 
+// ForceStopInputRelay forcefully stops an input relay without regard to reference count
+// This should only be used during shutdown or when there are refcount inconsistencies
+func (irm *InputRelayManager) ForceStopInputRelay(inputURL string) bool {
+	irm.Logger.Warn("InputRelayManager: ForceStopInputRelay: inputURL=%s (ignoring refcount)", inputURL)
+	irm.mu.Lock()
+	relay, exists := irm.Relays[inputURL]
+	if !exists {
+		irm.Logger.Warn("InputRelayManager: relay for %s not found", inputURL)
+		irm.mu.Unlock()
+		return false
+	}
+	relay.mu.Lock()
+
+	currentRefCount := relay.RefCount // Capture current refcount for logging
+	irm.Logger.Warn("InputRelayManager: Force stopping relay %s (previous refcount: %d)", inputURL, currentRefCount)
+
+	// Force refcount to 0 to ensure cleanup
+	relay.RefCount = 0
+
+	// Stop the relay process
+	if relay.Cmd != nil && relay.Cmd.Process != nil {
+		pid := relay.Cmd.Process.Pid
+		irm.Logger.Info("InputRelayManager: Force terminating ffmpeg process PID %d for %s", pid, inputURL)
+		// Try SIGTERM first for graceful shutdown
+		err := relay.Cmd.Process.Signal(os.Interrupt)
+		if err != nil {
+			irm.Logger.Warn("Failed to send SIGTERM to input relay process PID %d: %v", pid, err)
+			// Fallback to SIGKILL
+			err = relay.Cmd.Process.Kill()
+			if err != nil {
+				irm.Logger.Error("Failed to kill input relay process PID %d: %v", pid, err)
+			}
+		}
+	}
+
+	// Cancel context to stop monitoring goroutines
+	if relay.cancel != nil {
+		relay.cancel()
+	}
+
+	relay.Status = InputStopped
+	relay.Cmd = nil
+
+	// Wait for all goroutines to finish before continuing
+	relay.mu.Unlock()
+	irm.Logger.Debug("InputRelayManager: Waiting for goroutines to finish for %s", inputURL)
+	relay.wg.Wait()
+	relay.mu.Lock()
+
+	inputName := relay.InputName // Store input name for RTSP cleanup
+	relay.mu.Unlock()
+
+	// Clean up RTSP stream when input relay is fully stopped
+	if irm.rtspServer != nil && inputName != "" {
+		relayPath := "relay/" + inputName
+		irm.Logger.Debug("InputRelayManager: Cleaning up RTSP stream for force-stopped input relay: %s", relayPath)
+		irm.rtspServer.RemoveStream(relayPath)
+	}
+
+	irm.mu.Unlock()
+
+	return true
+}
+
 // RunInputRelay runs and monitors the input relay process
 func (irm *InputRelayManager) RunInputRelay(relay *InputRelay) {
 	irm.Logger.Info("InputRelayManager: RunInputRelay: running ffmpeg for %s -> %s", relay.InputURL, relay.LocalURL)
-	err := relay.Cmd.Wait()
-	relay.mu.Lock()
-	pid := "unknown"
+
+	// Capture PID at the beginning for consistent logging
+	var pid string = "unknown"
 	if relay.Cmd != nil && relay.Cmd.Process != nil {
 		pid = fmt.Sprintf("%d", relay.Cmd.Process.Pid)
 	}
+
+	err := relay.Cmd.Wait()
+	relay.mu.Lock()
+
 	if relay.Status == InputStopped {
 		if err != nil {
 			irm.Logger.Info("Input relay PID %s for %s stopped (signal: %v)", pid, relay.InputURL, err)

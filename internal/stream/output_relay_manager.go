@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -42,6 +43,7 @@ type OutputRelay struct {
 	FFmpegArgs     []string          // Store ffmpeg arguments
 	Bitrate        float64           // Current bitrate in kbps
 	LastBitrate    time.Time         // Last time bitrate was updated
+	shuttingDown   bool              // Flag to indicate graceful shutdown in progress
 	mu             sync.Mutex
 	ctx            context.Context    // Context for cancellation
 	cancel         context.CancelFunc // Cancel function for graceful shutdown
@@ -92,6 +94,10 @@ func (orm *OutputRelayManager) StartOutputRelay(config OutputRelayConfig) error 
 		return nil
 	}
 	cmd := exec.Command("ffmpeg", append(config.FFmpegArgs, "-progress", "pipe:1")...)
+	// Set up process group to prevent child processes from receiving SIGINT on Ctrl+C
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Setpgid: true,
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	relay = &OutputRelay{
 		OutputURL:      config.OutputURL,
@@ -160,6 +166,10 @@ func (orm *OutputRelayManager) StopOutputRelay(outputURL string) {
 		return
 	}
 	relay.mu.Lock()
+
+	// Mark as shutting down to prevent failure callback on process exit
+	relay.shuttingDown = true
+
 	if relay.Cmd != nil && relay.Cmd.Process != nil {
 		pid := relay.Cmd.Process.Pid
 		orm.Logger.Info("OutputRelayManager: Gracefully terminating ffmpeg process PID %d for %s", pid, outputURL)
@@ -182,6 +192,10 @@ func (orm *OutputRelayManager) StopOutputRelay(outputURL string) {
 
 	relay.Status = OutputStopped
 	relay.Cmd = nil
+	inputURL := relay.InputURL // Store for callback
+
+	// Store shuttingDown flag before unlocking
+	shuttingDown := relay.shuttingDown
 
 	// Wait for all goroutines to finish before continuing
 	relay.mu.Unlock()
@@ -189,17 +203,30 @@ func (orm *OutputRelayManager) StopOutputRelay(outputURL string) {
 	relay.wg.Wait()
 
 	orm.mu.Unlock()
+
+	// Only call failure callback if this is NOT a graceful shutdown
+	// During graceful shutdown, the RelayManager handles the refcount cleanup explicitly
+	if !shuttingDown && orm.FailureCallback != nil {
+		orm.Logger.Debug("OutputRelayManager: Calling failure callback for failed output inputURL=%s, outputURL=%s", inputURL, outputURL)
+		orm.FailureCallback(inputURL, outputURL)
+	} else if shuttingDown {
+		orm.Logger.Debug("OutputRelayManager: Graceful shutdown for %s, not calling failure callback", outputURL)
+	}
 }
 
 // RunOutputRelay runs and monitors the output relay process
 func (orm *OutputRelayManager) RunOutputRelay(relay *OutputRelay) {
 	orm.Logger.Info("OutputRelayManager: RunOutputRelay: running ffmpeg for %s -> %s", relay.LocalURL, relay.OutputURL)
-	err := relay.Cmd.Wait()
-	relay.mu.Lock()
-	pid := "unknown"
+
+	// Capture PID at the beginning for consistent logging
+	var pid string = "unknown"
 	if relay.Cmd != nil && relay.Cmd.Process != nil {
 		pid = fmt.Sprintf("%d", relay.Cmd.Process.Pid)
 	}
+
+	err := relay.Cmd.Wait()
+	relay.mu.Lock()
+
 	if relay.Status == OutputStopped {
 		if err != nil {
 			orm.Logger.Info("Output relay PID %s for %s stopped (signal: %v)", pid, relay.OutputURL, err)
@@ -214,15 +241,21 @@ func (orm *OutputRelayManager) RunOutputRelay(relay *OutputRelay) {
 		relay.LastError = err.Error()
 		orm.Logger.Error("Output relay process PID %s exited with error for %s: %v", pid, relay.OutputURL, err)
 
-		// Call failure callback to clean up input relay refcount
-		inputURL := relay.InputURL
-		outputURL := relay.OutputURL
-		relay.mu.Unlock()
-		if orm.FailureCallback != nil {
-			orm.Logger.Debug("OutputRelayManager: Calling failure callback for inputURL=%s, outputURL=%s", inputURL, outputURL)
-			orm.FailureCallback(inputURL, outputURL)
+		// Only call failure callback if this is NOT a graceful shutdown
+		// During graceful shutdown, StopOutputRelay already handles the cleanup
+		if !relay.shuttingDown {
+			// Call failure callback to clean up input relay refcount
+			inputURL := relay.InputURL
+			outputURL := relay.OutputURL
+			relay.mu.Unlock()
+			if orm.FailureCallback != nil {
+				orm.Logger.Debug("OutputRelayManager: Calling failure callback for inputURL=%s, outputURL=%s", inputURL, outputURL)
+				orm.FailureCallback(inputURL, outputURL)
+			}
+			return
+		} else {
+			orm.Logger.Debug("Output relay PID %s exited with error during graceful shutdown for %s, skipping failure callback", pid, relay.OutputURL)
 		}
-		return
 	} else {
 		relay.Status = OutputStopped
 		orm.Logger.Info("Output relay process PID %s for %s completed successfully", pid, relay.OutputURL)
@@ -282,6 +315,9 @@ func (orm *OutputRelayManager) DeleteOutput(outputURL string) error {
 	}
 	relay.mu.Lock()
 
+	// Mark as shutting down to prevent failure callback on process exit
+	relay.shuttingDown = true
+
 	// Force stop the relay process
 	if relay.Cmd != nil && relay.Cmd.Process != nil {
 		pid := relay.Cmd.Process.Pid
@@ -316,7 +352,8 @@ func (orm *OutputRelayManager) DeleteOutput(outputURL string) error {
 	delete(orm.Relays, outputURL)
 	orm.mu.Unlock()
 
-	// Call failure callback to clean up input relay refcount
+	// Always call failure callback for deleted outputs to decrement input relay refcount
+	// The shuttingDown flag only prevents the callback from process exit, not from explicit deletion
 	if orm.FailureCallback != nil {
 		orm.Logger.Debug("OutputRelayManager: Calling failure callback for deleted output inputURL=%s, outputURL=%s", inputURL, outputURL)
 		orm.FailureCallback(inputURL, outputURL)

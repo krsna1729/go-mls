@@ -18,6 +18,10 @@ type RelayManager struct {
 	Logger       *logger.Logger
 	rtspServer   *RTSPServerManager // RTSP server for local relays
 	recDir       string             // Directory for playing recordings from
+
+	// Mutex map for serializing concurrent starts of the same input URL
+	startMutexes   map[string]*sync.Mutex
+	startMutexesMu sync.Mutex
 }
 
 func NewRelayManager(l *logger.Logger, recDir string) *RelayManager {
@@ -28,6 +32,7 @@ func NewRelayManager(l *logger.Logger, recDir string) *RelayManager {
 		OutputRelays: orm,
 		Logger:       l,
 		recDir:       recDir,
+		startMutexes: make(map[string]*sync.Mutex),
 	}
 
 	// Set up failure callback for output relays to clean up input relay refcount
@@ -108,6 +113,11 @@ var PlatformPresets = map[string]PlatformPreset{
 // StartRelayWithOptions starts a relay with advanced ffmpeg options and/or platform preset
 func (rm *RelayManager) StartRelayWithOptions(inputURL, outputURL, inputName, outputName string, opts *FFmpegOptions, preset string) error {
 	rm.Logger.Debug("StartRelayWithOptions called: input=%s, output=%s, input_name=%s, output_name=%s, preset=%s", inputURL, outputURL, inputName, outputName, preset)
+
+	// Get mutex for this input URL to serialize concurrent starts
+	startMutex := rm.getStartMutex(inputURL)
+	startMutex.Lock()
+	defer startMutex.Unlock()
 
 	// Compose local RTSP relay path and URL
 	relayPath := fmt.Sprintf("relay/%s", inputName)
@@ -563,31 +573,97 @@ func outputRelayStatusString(s OutputRelayStatus) string {
 func (rm *RelayManager) StopAllRelays() {
 	rm.Logger.Info("RelayManager: Stopping all active relays...")
 
-	// Get all active relays from status
-	status := rm.StatusV2()
+	// Stop all output relays first by iterating directly over the map
+	// This is more efficient than using StatusV2() during shutdown
+	rm.OutputRelays.mu.Lock()
+	var outputsToStop []struct {
+		inputURL, outputURL, outputName string
+	}
 
-	// Stop all output relays first
-	for _, relay := range status.Relays {
-		for _, output := range relay.Outputs {
-			rm.Logger.Info("RelayManager: Stopping output relay %s -> %s", relay.Input.InputName, output.OutputName)
-			if err := rm.StopRelay(relay.Input.InputURL, output.OutputURL, relay.Input.InputName, output.OutputName); err != nil {
-				rm.Logger.Error("RelayManager: Failed to stop output relay %s -> %s: %v", relay.Input.InputName, output.OutputName, err)
-			}
+	// Collect outputs to stop while holding the lock
+	for _, output := range rm.OutputRelays.Relays {
+		output.mu.Lock()
+		// Only stop relays that are actually running or starting
+		if output.Status == OutputRunning || output.Status == OutputStarting {
+			outputsToStop = append(outputsToStop, struct {
+				inputURL, outputURL, outputName string
+			}{
+				inputURL:   output.InputURL,
+				outputURL:  output.OutputURL,
+				outputName: output.OutputName,
+			})
+		} else {
+			rm.Logger.Debug("RelayManager: Skipping output relay %s (status: %s)",
+				output.OutputName, outputRelayStatusString(output.Status))
+		}
+		output.mu.Unlock()
+	}
+	rm.OutputRelays.mu.Unlock()
+
+	// Now stop the collected outputs without holding the main lock
+	for _, toStop := range outputsToStop {
+		// Look up input name for logging
+		var inputName string
+		rm.InputRelays.mu.Lock()
+		if inputRelay, exists := rm.InputRelays.Relays[toStop.inputURL]; exists {
+			inputName = inputRelay.InputName
+		} else {
+			inputName = toStop.inputURL // fallback to URL if name not found
+		}
+		rm.InputRelays.mu.Unlock()
+
+		rm.Logger.Info("RelayManager: Stopping output relay %s -> %s", inputName, toStop.outputName)
+		if err := rm.StopRelay(toStop.inputURL, toStop.outputURL, inputName, toStop.outputName); err != nil {
+			rm.Logger.Error("RelayManager: Failed to stop output relay %s -> %s: %v", inputName, toStop.outputName, err)
 		}
 	}
 
-	// Stop all remaining input relays
+	// Verify that all input relays have been stopped due to reference counting
+	// If any are still active, it indicates a bug in the reference counting logic
 	rm.InputRelays.mu.Lock()
-	inputURLs := make([]string, 0, len(rm.InputRelays.Relays))
-	for inputURL := range rm.InputRelays.Relays {
-		inputURLs = append(inputURLs, inputURL)
+	activeInputs := 0
+	var inputsToForceStop []string
+	for inputURL, inputRelay := range rm.InputRelays.Relays {
+		inputRelay.mu.Lock()
+		if inputRelay.Status == InputRunning || inputRelay.Status == InputStarting {
+			activeInputs++
+			rm.Logger.Error("RelayManager: Input relay %s [%s] is still active after stopping all outputs (refcount: %d, status: %s)",
+				inputRelay.InputName, inputURL, inputRelay.RefCount, inputRelayStatusString(inputRelay.Status))
+			inputsToForceStop = append(inputsToForceStop, inputURL)
+		}
+		inputRelay.mu.Unlock()
 	}
 	rm.InputRelays.mu.Unlock()
 
-	for _, inputURL := range inputURLs {
-		rm.Logger.Info("RelayManager: Stopping input relay %s", inputURL)
-		rm.InputRelays.StopInputRelay(inputURL)
+	// Force stop any remaining active input relays
+	if len(inputsToForceStop) > 0 {
+		rm.Logger.Warn("RelayManager: Force stopping %d remaining input relays due to refcount issues", len(inputsToForceStop))
+		for _, inputURL := range inputsToForceStop {
+			rm.Logger.Warn("RelayManager: Force stopping remaining input relay %s", inputURL)
+			rm.InputRelays.ForceStopInputRelay(inputURL)
+		}
+	}
+
+	if activeInputs > 0 {
+		rm.Logger.Error("RelayManager: Found %d input relays still active after stopping all outputs - forced shutdown applied", activeInputs)
+	} else {
+		rm.Logger.Info("RelayManager: All input relays properly stopped via reference counting")
 	}
 
 	rm.Logger.Info("RelayManager: All relays stopped")
+}
+
+// getStartMutex returns a mutex for the given input URL to serialize concurrent starts
+func (rm *RelayManager) getStartMutex(inputURL string) *sync.Mutex {
+	rm.startMutexesMu.Lock()
+	defer rm.startMutexesMu.Unlock()
+
+	if mutex, exists := rm.startMutexes[inputURL]; exists {
+		return mutex
+	}
+
+	// Create new mutex for this input URL
+	mutex := &sync.Mutex{}
+	rm.startMutexes[inputURL] = mutex
+	return mutex
 }

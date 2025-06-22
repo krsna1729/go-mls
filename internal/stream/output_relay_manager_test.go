@@ -16,7 +16,7 @@ func TestOutputRelayManager_StartAndStopOutputRelay(t *testing.T) {
 	outputName := "test_output"
 	ffmpegArgs := []string{"-re", "-i", localURL, "-c", "copy", "-f", "flv", outputURL}
 	timeout := 1 * time.Second
-	
+
 	config := OutputRelayConfig{
 		OutputURL:      outputURL,
 		OutputName:     outputName,
