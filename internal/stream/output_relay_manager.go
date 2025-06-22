@@ -2,6 +2,7 @@ package stream
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"go-mls/internal/logger"
 	"io"
@@ -42,6 +43,9 @@ type OutputRelay struct {
 	Bitrate        float64           // Current bitrate in kbps
 	LastBitrate    time.Time         // Last time bitrate was updated
 	mu             sync.Mutex
+	ctx            context.Context    // Context for cancellation
+	cancel         context.CancelFunc // Cancel function for graceful shutdown
+	wg             sync.WaitGroup     // Wait group for goroutines
 }
 
 // OutputRelayConfig contains the configuration for starting an output relay
@@ -88,6 +92,7 @@ func (orm *OutputRelayManager) StartOutputRelay(config OutputRelayConfig) error 
 		return nil
 	}
 	cmd := exec.Command("ffmpeg", append(config.FFmpegArgs, "-progress", "pipe:1")...)
+	ctx, cancel := context.WithCancel(context.Background())
 	relay = &OutputRelay{
 		OutputURL:      config.OutputURL,
 		OutputName:     config.OutputName,
@@ -100,6 +105,8 @@ func (orm *OutputRelayManager) StartOutputRelay(config OutputRelayConfig) error 
 		PlatformPreset: config.PlatformPreset,
 		FFmpegOptions:  config.FFmpegOptions,
 		FFmpegArgs:     config.FFmpegArgs,
+		ctx:            ctx,
+		cancel:         cancel,
 	}
 	orm.Relays[config.OutputURL] = relay
 	orm.mu.Unlock()
@@ -127,10 +134,18 @@ func (orm *OutputRelayManager) StartOutputRelay(config OutputRelayConfig) error 
 	}
 	orm.Logger.Info("OutputRelayManager: Started ffmpeg process PID %d for %s -> %s", cmd.Process.Pid, config.LocalURL, config.OutputURL)
 
-	// Start bitrate monitoring
-	go orm.monitorFFmpegProgress(relay, stdoutPipe)
+	// Start bitrate monitoring with context
+	relay.wg.Add(1)
+	go func() {
+		defer relay.wg.Done()
+		orm.monitorFFmpegProgress(relay, stdoutPipe)
+	}()
 
-	go orm.RunOutputRelay(relay)
+	relay.wg.Add(1)
+	go func() {
+		defer relay.wg.Done()
+		orm.RunOutputRelay(relay)
+	}()
 	return nil
 }
 
@@ -159,9 +174,20 @@ func (orm *OutputRelayManager) StopOutputRelay(outputURL string) {
 			}
 		}
 	}
+
+	// Cancel context to stop monitoring goroutines
+	if relay.cancel != nil {
+		relay.cancel()
+	}
+
 	relay.Status = OutputStopped
 	relay.Cmd = nil
+
+	// Wait for all goroutines to finish before continuing
 	relay.mu.Unlock()
+	orm.Logger.Debug("OutputRelayManager: Waiting for goroutines to finish for %s", outputURL)
+	relay.wg.Wait()
+
 	orm.mu.Unlock()
 }
 
@@ -209,6 +235,14 @@ func (orm *OutputRelayManager) RunOutputRelay(relay *OutputRelay) {
 func (orm *OutputRelayManager) monitorFFmpegProgress(relay *OutputRelay, progressReader io.Reader) {
 	scanner := bufio.NewScanner(progressReader)
 	for scanner.Scan() {
+		// Check if context was cancelled
+		select {
+		case <-relay.ctx.Done():
+			orm.Logger.Debug("OutputRelay progress monitoring cancelled for %s", relay.OutputURL)
+			return
+		default:
+		}
+
 		line := scanner.Text()
 		// orm.Logger.Debug("OutputRelay ffmpeg progress line: %s", line)
 		if strings.HasPrefix(line, "bitrate=") {
@@ -234,4 +268,60 @@ func (orm *OutputRelayManager) monitorFFmpegProgress(relay *OutputRelay, progres
 			}
 		}
 	}
+}
+
+// DeleteOutput completely removes an output relay
+func (orm *OutputRelayManager) DeleteOutput(outputURL string) error {
+	orm.Logger.Info("OutputRelayManager: DeleteOutput: outputURL=%s", outputURL)
+	orm.mu.Lock()
+	relay, exists := orm.Relays[outputURL]
+	if !exists {
+		orm.Logger.Warn("OutputRelayManager: relay for %s not found", outputURL)
+		orm.mu.Unlock()
+		return fmt.Errorf("output relay not found: %s", outputURL)
+	}
+	relay.mu.Lock()
+
+	// Force stop the relay process
+	if relay.Cmd != nil && relay.Cmd.Process != nil {
+		pid := relay.Cmd.Process.Pid
+		orm.Logger.Info("OutputRelayManager: Force terminating ffmpeg process PID %d for %s", pid, outputURL)
+		// Try SIGTERM first for graceful shutdown
+		err := relay.Cmd.Process.Signal(os.Interrupt)
+		if err != nil {
+			orm.Logger.Warn("Failed to send SIGTERM to output relay process PID %d: %v", pid, err)
+			// Fallback to SIGKILL
+			err = relay.Cmd.Process.Kill()
+			if err != nil {
+				orm.Logger.Error("Failed to kill output relay process PID %d: %v", pid, err)
+			}
+		}
+	}
+
+	// Cancel context to stop monitoring goroutines
+	if relay.cancel != nil {
+		relay.cancel()
+	}
+
+	relay.Status = OutputStopped
+	relay.Cmd = nil
+	inputURL := relay.InputURL // Store for callback
+
+	// Wait for all goroutines to finish
+	relay.mu.Unlock()
+	orm.Logger.Debug("OutputRelayManager: Waiting for goroutines to finish for %s", outputURL)
+	relay.wg.Wait()
+
+	// Remove from map
+	delete(orm.Relays, outputURL)
+	orm.mu.Unlock()
+
+	// Call failure callback to clean up input relay refcount
+	if orm.FailureCallback != nil {
+		orm.Logger.Debug("OutputRelayManager: Calling failure callback for deleted output inputURL=%s, outputURL=%s", inputURL, outputURL)
+		orm.FailureCallback(inputURL, outputURL)
+	}
+
+	orm.Logger.Info("OutputRelayManager: Output relay %s deleted successfully", outputURL)
+	return nil
 }

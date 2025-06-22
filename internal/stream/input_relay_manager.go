@@ -2,6 +2,7 @@ package stream
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"go-mls/internal/logger"
 	"io"
@@ -40,6 +41,9 @@ type InputRelay struct {
 	Speed     float64   // Current speed (e.g., 1.01x)
 	LastSpeed time.Time // Last time speed was updated
 	mu        sync.Mutex
+	ctx       context.Context    // Context for cancellation
+	cancel    context.CancelFunc // Cancel function for graceful shutdown
+	wg        sync.WaitGroup     // Wait group for goroutines
 }
 
 // InputRelayManager manages all input relays
@@ -87,6 +91,7 @@ func (irm *InputRelayManager) StartInputRelay(inputName, inputURL, localURL stri
 	irm.mu.Lock()
 	relay, exists := irm.Relays[inputURL]
 	if !exists {
+		ctx, cancel := context.WithCancel(context.Background())
 		relay = &InputRelay{
 			InputURL:  inputURL,
 			InputName: inputName,
@@ -94,6 +99,8 @@ func (irm *InputRelayManager) StartInputRelay(inputName, inputURL, localURL stri
 			Status:    InputStopped,
 			Timeout:   timeout,
 			RefCount:  0,
+			ctx:       ctx,
+			cancel:    cancel,
 		}
 		irm.Relays[inputURL] = relay
 	}
@@ -146,10 +153,18 @@ func (irm *InputRelayManager) StartInputRelay(inputName, inputURL, localURL stri
 	}
 	irm.Logger.Info("InputRelayManager: Started ffmpeg process PID %d for %s -> %s (refcount: %d)", cmd.Process.Pid, inputURL, localURL, relay.RefCount)
 
-	// Start bitrate monitoring
-	go irm.monitorFFmpegProgress(relay, stdoutPipe)
+	// Start bitrate monitoring with context
+	relay.wg.Add(1)
+	go func() {
+		defer relay.wg.Done()
+		irm.monitorFFmpegProgress(relay, stdoutPipe)
+	}()
 
-	go irm.RunInputRelay(relay)
+	relay.wg.Add(1)
+	go func() {
+		defer relay.wg.Done()
+		irm.RunInputRelay(relay)
+	}()
 	local := relay.LocalURL
 	relay.mu.Unlock()
 	irm.mu.Unlock()
@@ -200,8 +215,21 @@ func (irm *InputRelayManager) StopInputRelay(inputURL string) bool {
 			}
 		}
 	}
+
+	// Cancel context to stop monitoring goroutines
+	if relay.cancel != nil {
+		relay.cancel()
+	}
+
 	relay.Status = InputStopped
 	relay.Cmd = nil
+
+	// Wait for all goroutines to finish before continuing
+	relay.mu.Unlock()
+	irm.Logger.Debug("InputRelayManager: Waiting for goroutines to finish for %s", inputURL)
+	relay.wg.Wait()
+	relay.mu.Lock()
+
 	inputName := relay.InputName // Store input name for RTSP cleanup
 	relay.mu.Unlock()
 
@@ -263,10 +291,77 @@ func (irm *InputRelayManager) GetInputNameForURL(inputURL string) string {
 	return ""
 }
 
+// DeleteInput completely removes an input relay and all associated outputs
+func (irm *InputRelayManager) DeleteInput(inputURL string) error {
+	irm.Logger.Info("InputRelayManager: DeleteInput: inputURL=%s", inputURL)
+	irm.mu.Lock()
+	relay, exists := irm.Relays[inputURL]
+	if !exists {
+		irm.Logger.Warn("InputRelayManager: relay for %s not found", inputURL)
+		irm.mu.Unlock()
+		return fmt.Errorf("input relay not found: %s", inputURL)
+	}
+	relay.mu.Lock()
+
+	// Force stop the relay process regardless of reference count
+	if relay.Cmd != nil && relay.Cmd.Process != nil {
+		pid := relay.Cmd.Process.Pid
+		irm.Logger.Info("InputRelayManager: Force terminating ffmpeg process PID %d for %s", pid, inputURL)
+		// Try SIGTERM first for graceful shutdown
+		err := relay.Cmd.Process.Signal(os.Interrupt)
+		if err != nil {
+			irm.Logger.Warn("Failed to send SIGTERM to input relay process PID %d: %v", pid, err)
+			// Fallback to SIGKILL
+			err = relay.Cmd.Process.Kill()
+			if err != nil {
+				irm.Logger.Error("Failed to kill input relay process PID %d: %v", pid, err)
+			}
+		}
+	}
+
+	// Cancel context to stop monitoring goroutines
+	if relay.cancel != nil {
+		relay.cancel()
+	}
+
+	relay.Status = InputStopped
+	relay.Cmd = nil
+	inputName := relay.InputName // Store input name for RTSP cleanup
+
+	// Wait for all goroutines to finish
+	relay.mu.Unlock()
+	irm.Logger.Debug("InputRelayManager: Waiting for goroutines to finish for %s", inputURL)
+	relay.wg.Wait()
+	relay.mu.Lock()
+
+	// Remove from map
+	delete(irm.Relays, inputURL)
+	relay.mu.Unlock()
+
+	// Clean up RTSP stream
+	if irm.rtspServer != nil && inputName != "" {
+		relayPath := "relay/" + inputName
+		irm.Logger.Debug("InputRelayManager: Cleaning up RTSP stream for deleted input relay: %s", relayPath)
+		irm.rtspServer.RemoveStream(relayPath)
+	}
+
+	irm.mu.Unlock()
+	irm.Logger.Info("InputRelayManager: Input relay %s deleted successfully", inputURL)
+	return nil
+}
+
 // monitorFFmpegProgress monitors ffmpeg -progress output for speed information
 func (irm *InputRelayManager) monitorFFmpegProgress(relay *InputRelay, progressReader io.Reader) {
 	scanner := bufio.NewScanner(progressReader)
 	for scanner.Scan() {
+		// Check if context was cancelled
+		select {
+		case <-relay.ctx.Done():
+			irm.Logger.Debug("InputRelay progress monitoring cancelled for %s", relay.InputURL)
+			return
+		default:
+		}
+
 		line := scanner.Text()
 		// irm.Logger.Debug("InputRelay ffmpeg progress line: %s", line)
 		if strings.HasPrefix(line, "speed=") {

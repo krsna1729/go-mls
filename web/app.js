@@ -268,6 +268,70 @@ document.addEventListener('DOMContentLoaded', function () {
                 alert('URL: ' + btn.getAttribute('data-url'));
             };
         });
+        
+        // Add delete input button handlers
+        document.querySelectorAll('.deleteInputBtn').forEach(btn => {
+            btn.onclick = function () {
+                const input = btn.getAttribute('data-input');
+                const inputName = btn.getAttribute('data-input-name') || '';
+                
+                if (confirm(`Are you sure you want to delete input "${inputName}" and all its outputs? This action cannot be undone.`)) {
+                    fetch('/api/relay/delete-input', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            input_url: input,
+                            input_name: inputName
+                        })
+                    }).then(response => {
+                        if (response.ok) {
+                            fetchStatus();
+                        } else {
+                            response.text().then(text => {
+                                alert('Failed to delete input: ' + text);
+                            });
+                        }
+                    }).catch(err => {
+                        console.error('Delete input error:', err);
+                        alert('Failed to delete input: ' + err.message);
+                    });
+                }
+            };
+        });
+        
+        // Add delete output button handlers
+        document.querySelectorAll('.deleteOutputBtn').forEach(btn => {
+            btn.onclick = function () {
+                const input = btn.getAttribute('data-input');
+                const output = btn.getAttribute('data-output');
+                const inputName = btn.getAttribute('data-input-name') || '';
+                const outputName = btn.getAttribute('data-output-name') || '';
+                
+                if (confirm(`Are you sure you want to delete output "${outputName}"? This action cannot be undone.`)) {
+                    fetch('/api/relay/delete-output', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            input_url: input,
+                            output_url: output,
+                            input_name: inputName,
+                            output_name: outputName
+                        })
+                    }).then(response => {
+                        if (response.ok) {
+                            fetchStatus();
+                        } else {
+                            response.text().then(text => {
+                                alert('Failed to delete output: ' + text);
+                            });
+                        }
+                    }).catch(err => {
+                        console.error('Delete output error:', err);
+                        alert('Failed to delete output: ' + err.message);
+                    });
+                }
+            };
+        });
         // Add ripple effect to all buttons
         document.querySelectorAll('button').forEach(btn => {
             btn.addEventListener('click', function (e) {
@@ -470,70 +534,91 @@ document.addEventListener('DOMContentLoaded', function () {
                     relay.outputs.sort((a, b) => (a.output_name || '').localeCompare(b.output_name || ''));
                 }
             });
+            // In the relay table header, add an Actions column under Input
             html += `<table class="relay-table" style="width:100%;border-collapse:separate;border-spacing:0; font-size:1rem;">
-                <thead>
-                    <tr style="background:#eaf2fb;">
-                        <th colspan="5" style="text-align:center; padding:6px 8px; border-bottom:1px solid #b6d0f7;">Input</th>
-                        <th colspan="6" style="text-align:center; padding:6px 8px; border-bottom:1px solid #b6d0f7;">Output</th>
-                    </tr>
-                    <tr style="background:#eaf2fb;">
-                        <th style="text-align:left; padding:6px 8px;">Name</th>
-                        <th style="text-align:left; padding:6px 8px;">Status</th>
-                        <th style="text-align:left; padding:6px 8px;">CPU (%)</th>
-                        <th style="text-align:left; padding:6px 8px;">Mem (MB)</th>
-                        <th style="text-align:left; padding:6px 8px;">Speed (x)</th>
-                        <th style="text-align:left; padding:6px 8px;">Name</th>
-                        <th style="text-align:left; padding:6px 8px;">Status</th>
-                        <th style="text-align:left; padding:6px 8px;">CPU (%)</th>
-                        <th style="text-align:left; padding:6px 8px;">Mem (MB)</th>
-                        <th style="text-align:left; padding:6px 8px;">Bitrate (kbps)</th>
-                        <th style="text-align:left; padding:6px 8px;">Action</th>
-                    </tr>
-                </thead><tbody>`;
+<thead>
+    <tr style="background:#eaf2fb;">
+        <th colspan="6" style="text-align:center; padding:6px 8px; border-bottom:1px solid #b6d0f7;">Input</th>
+        <th colspan="6" style="text-align:center; padding:6px 8px; border-bottom:1px solid #b6d0f7;">Output</th>
+    </tr>
+    <tr style="background:#eaf2fb;">
+        <th style="text-align:center; padding:6px 4px; width:140px;">Name</th>
+        <th style="text-align:center; padding:6px 4px; width:70px;">Status</th>
+        <th style="text-align:center; padding:6px 4px; width:60px;">CPU (%)</th>
+        <th style="text-align:center; padding:6px 4px; width:70px;">Mem (MB)</th>
+        <th style="text-align:center; padding:6px 4px; width:65px;">Speed (x)</th>
+        <th style="text-align:center; padding:6px 4px; width:60px;">Actions</th>
+        <th style="text-align:center; padding:6px 4px; width:130px;">Name</th>
+        <th style="text-align:center; padding:6px 4px; width:70px;">Status</th>
+        <th style="text-align:center; padding:6px 4px; width:60px;">CPU (%)</th>
+        <th style="text-align:center; padding:6px 4px; width:70px;">Mem (MB)</th>
+        <th style="text-align:center; padding:6px 4px; width:90px;">Bitrate (kbps)</th>
+        <th style="text-align:center; padding:6px 4px; width:90px;">Actions</th>
+    </tr>
+</thead><tbody>`;
             filtered.relays.forEach((relay, relayIdx) => {
                 const input = relay.input.input_url;
                 const inputName = relay.input.input_name || '';
                 const inputStatus = relay.input.status || 'Stopped';
                 const inputError = relay.input.last_error || '';
                 const inputBg = relayIdx % 2 === 0 ? '#f7fafd' : '#f0f4fa';
-                const inputGroupBorder = 'border-top: 3px solid #b6d0f7;';
+                
                 if (!relay.outputs || relay.outputs.length === 0) {
+                    // No outputs - single row with consistent structure
+                    // For input rows (no outputs)
                     html += `<tr data-input-group="group-${relayIdx}">
-                        <td class="input-group-row" data-input-group="group-${relayIdx}" style="word-break:break-all; color:#1976d2; font-weight:bold; padding:6px 8px; background:${inputBg};">${inputName}</td>
-                        <td style="padding:6px 8px;">${getStatusBadge(inputStatus)}${inputError ? `<br><span style='color:red'>${inputError}</span>` : ''}</td>
-                        <td style="padding:6px 8px;">${relay.input.cpu?.toFixed(1) || '-'}</td>
-                        <td style="padding:6px 8px;">${relay.input.mem ? (relay.input.mem / (1024 * 1024)).toFixed(1) : '-'}</td>
-                        <td style="padding:6px 8px;">${relay.input.speed ? relay.input.speed.toFixed(2) + 'x' : '-'}</td>
-                        <td colspan="6" style="padding:6px 8px; background:#fff;"><i>No outputs</i></td>
+                        <td class="input-group-row" data-input-group="group-${relayIdx}" title="${input}" style="word-break:break-all; color:#1976d2; font-weight:bold; padding:6px 8px; background:${inputBg}; text-align:center;">${inputName}</td>
+                        <td style="padding:6px 8px; background:${inputBg}; text-align:center;">${getStatusBadge(inputStatus)}</td>
+                        <td style="padding:6px 8px; background:${inputBg}; text-align:center;">${relay.input.cpu?.toFixed(1) || '-'}</td>
+                        <td style="padding:6px 8px; background:${inputBg}; text-align:center;">${relay.input.mem ? Math.round(relay.input.mem / (1024 * 1024)) : '-'}</td>
+                        <td style="padding:6px 8px; background:${inputBg}; text-align:center;">${relay.input.speed ? relay.input.speed.toFixed(2) + 'x' : '-'}</td>
+                        <td style="padding:6px 8px; background:${inputBg}; text-align:center;">
+        <button class="deleteInputBtn" data-input="${input}" data-input-name="${inputName}" title="Delete Input" style="padding:4px 6px; min-width:auto; min-height:auto; background:#dc3545; color:white; border:none; border-radius:3px; font-size:0.8em;"><span class="material-icons" style="font-size:16px;">delete</span></button>
+    </td>
+                        <td style="padding:6px 8px; font-style:italic; color:#999; text-align:center;">${inputError ? `<div style='color:red; font-size:0.85em; margin-top:2px; text-align:center;'>${inputError}</div>` : '<i>No outputs</i>'}</td>
+                        <td style="padding:6px 8px; text-align:center;">-</td>
+                        <td style="padding:6px 8px; text-align:center;">-</td>
+                        <td style="padding:6px 8px; text-align:center;">-</td>
+                        <td style="padding:6px 8px; text-align:center;">-</td>
+                        <td style="padding:6px 8px; text-align:center;">-</td>
                     </tr>`;
                 } else {
+                    // Has outputs - create one row per output
                     relay.outputs.forEach((out, i) => {
                         const outputStatus = out.status || 'Stopped';
                         const outputError = out.last_error || '';
+                        const isFirstOutput = i === 0;
                         html += `<tr data-input-group="group-${relayIdx}">`;
-                        if (i === 0) {
-                            html += `<td class="input-group-row" data-input-group="group-${relayIdx}" rowspan="${relay.outputs.length}" style="word-break:break-all; color:#1976d2; font-weight:bold; vertical-align:middle; padding:6px 8px; background:${inputBg}; border:none;" data-label="Input">
-                                <span class="centered-cell" title="${input}"><span>${inputName}</span></span>
-                            </td>`;
-                            html += `<td rowspan="${relay.outputs.length}" style="padding:6px 8px;">${getStatusBadge(inputStatus)}${inputError ? `<br><span style='color:red'>${inputError}</span>` : ''}</td>`;
-                            html += `<td rowspan="${relay.outputs.length}" style="padding:6px 8px;">${relay.input.cpu?.toFixed(1) || '-'}</td>`;
-                            html += `<td rowspan="${relay.outputs.length}" style="padding:6px 8px;">${relay.input.mem ? (relay.input.mem / (1024 * 1024)).toFixed(1) : '-'}</td>`;
-                            html += `<td rowspan="${relay.outputs.length}" style="padding:6px 8px;">${relay.input.speed ? relay.input.speed.toFixed(2) + 'x' : '-'}</td>`;
+                        // For input rows with outputs, update the first output row to include the input actions column with rowspan
+                        if (isFirstOutput) {
+                            html += `<td class="input-group-row" data-input-group="group-${relayIdx}" rowspan="${relay.outputs.length}" title="${input}" style="word-break:break-all; color:#1976d2; font-weight:bold; vertical-align:middle; padding:6px 8px; background:${inputBg}; border:none; text-align:center;">${inputName}</td>`;
+                            html += `<td rowspan="${relay.outputs.length}" style="padding:6px 8px; background:${inputBg}; vertical-align:middle; text-align:center;">${getStatusBadge(inputStatus)}</td>`;
+                            html += `<td rowspan="${relay.outputs.length}" style="padding:6px 8px; background:${inputBg}; vertical-align:middle; text-align:center;">${relay.input.cpu?.toFixed(1) || '-'}</td>`;
+                            html += `<td rowspan="${relay.outputs.length}" style="padding:6px 8px; background:${inputBg}; vertical-align:middle; text-align:center;">${relay.input.mem ? Math.round(relay.input.mem / (1024 * 1024)) : '-'}</td>`;
+                            html += `<td rowspan="${relay.outputs.length}" style="padding:6px 8px; background:${inputBg}; vertical-align:middle; text-align:center;">${relay.input.speed ? relay.input.speed.toFixed(2) + 'x' : '-'}</td>`;
+                            html += `<td rowspan="${relay.outputs.length}" style="padding:6px 8px; background:${inputBg}; vertical-align:middle; text-align:center;">
+        <button class="deleteInputBtn" data-input="${input}" data-input-name="${inputName}" title="Delete Input" style="padding:4px 6px; min-width:auto; min-height:auto; background:#dc3545; color:white; border:none; border-radius:3px; font-size:0.8em;"><span class="material-icons" style="font-size:16px;">delete</span></button>
+    </td>`;
                         }
-                        html += `<td style="word-break:break-all; padding:6px 8px;" data-label="Output">
-                                <span class="centered-cell" title="${out.output_url}"><span>${out.output_name || out.output_url}</span></span>
+                        // Output columns
+                        html += `<td class="output-cell" style="word-break:break-all;">
+                                <div style="display:flex; flex-direction:column; align-items:center; gap:8px;">
+                                    <div title="${out.output_url}" style="font-weight:bold; color:#1976d2;">${out.output_name || out.output_url}</div>
+                                </div>
                             </td>
-                            <td style="padding:6px 8px;" data-label="Output Status">${getStatusBadge(outputStatus)}${outputError ? `<br><span style='color:red'>${outputError}</span>` : ''}</td>
-                            <td style="padding:6px 8px;">${out.cpu?.toFixed(1) || '-'}</td>
-                            <td style="padding:6px 8px;">${out.mem ? (out.mem / (1024 * 1024)).toFixed(1) : '-'}</td>
-                            <td style="padding:6px 8px;">${out.bitrate ? out.bitrate : '-'}</td>
-                            <td style="padding:6px 8px;" data-label="Action">
-                                ${outputStatus === 'Running'
-                                ? `<button class="stopRelayBtn" data-input="${input}" data-output="${out.output_url}" data-input-name="${inputName}" data-output-name="${out.output_name || ''}"><span class="material-icons">stop</span>Stop</button>`
-                                : `<button class="startRelayBtn" data-input="${input}" data-output="${out.output_url}" data-input-name="${inputName}" data-output-name="${out.output_name || ''}"><span class="material-icons">play_arrow</span>Start</button>`
-                            }
-                            </td>
-                        </tr>`;
+                            <td class="output-cell">${getStatusBadge(outputStatus)}</td>
+                            <td class="output-cell">${out.cpu?.toFixed(1) || '-'}</td>
+                            <td class="output-cell">${out.mem ? Math.round(out.mem / (1024 * 1024)) : '-'}</td>
+                            <td class="output-cell">${out.bitrate ? Math.round(out.bitrate) : '-'}</td>
+                            <td class="output-cell">
+                                <div style="display:flex; flex-direction:row; align-items:center; justify-content:center; gap:8px; flex-wrap:nowrap;">
+                                    ${outputStatus === 'Running'
+                                    ? `<button class="stopRelayBtn relay-action-btn" data-input="${input}" data-output="${out.output_url}" data-input-name="${inputName}" data-output-name="${out.output_name || ''}" title="Stop Output"><span class="material-icons" style="font-size:16px;">stop</span></button>`
+                                    : `<button class="startRelayBtn relay-action-btn" data-input="${input}" data-output="${out.output_url}" data-input-name="${inputName}" data-output-name="${out.output_name || ''}" title="Start Output"><span class="material-icons" style="font-size:16px;">play_arrow</span></button>`
+                                    }
+                                    <button class="deleteOutputBtn" data-input="${input}" data-output="${out.output_url}" data-input-name="${inputName}" data-output-name="${out.output_name || ''}" title="Delete Output"><span class="material-icons" style="font-size:16px;">delete</span></button>
+                                </div>
+                            </td>`;
                     });
                 }
             });
@@ -545,21 +630,87 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     function addInputHighlightHandlers() {
-        // Remove previous listeners if any
-        document.querySelectorAll('.input-group-row').forEach(cell => {
-            cell.onmouseenter = null;
-            cell.onmouseleave = null;
+        // Remove previous handlers to avoid stacking
+        document.querySelectorAll('tr[data-input-group], .input-group-row').forEach(el => {
+            el.onmouseenter = null;
+            el.onmouseleave = null;
         });
+
+        // --- INPUT HOVER: highlight all input columns and all corresponding outputs ---
+        document.querySelectorAll('.input-group-row').forEach(inputCell => {
+            const group = inputCell.getAttribute('data-input-group');
+            inputCell.onmouseenter = function () {
+                // Highlight all input columns for this group (the input row)
+                const groupRows = document.querySelectorAll(`tr[data-input-group="${group}"]`);
+                // Find the input row (rowspan cell)
+                const inputRow = document.querySelector(`.input-group-row[data-input-group="${group}"]`);
+                if (inputRow) {
+                    // Highlight all input columns (first 5 cells)
+                    const inputCells = inputRow.parentElement.querySelectorAll('td');
+                    for (let i = 0; i < 5 && i < inputCells.length; i++) {
+                        inputCells[i].classList.add('input-highlight');
+                    }
+                }
+                // Highlight all output rows for this group (all columns for each output row)
+                groupRows.forEach(row => {
+                    // For output rows, highlight all output columns (columns 5+)
+                    const cells = row.querySelectorAll('td');
+                    for (let j = 5; j < cells.length; j++) {
+                        cells[j].classList.add('output-highlight');
+                    }
+                });
+            };
+            inputCell.onmouseleave = function () {
+                const groupRows = document.querySelectorAll(`tr[data-input-group="${group}"]`);
+                const inputRow = document.querySelector(`.input-group-row[data-input-group="${group}"]`);
+                if (inputRow) {
+                    const inputCells = inputRow.parentElement.querySelectorAll('td');
+                    for (let i = 0; i < 5 && i < inputCells.length; i++) {
+                        inputCells[i].classList.remove('input-highlight');
+                    }
+                }
+                groupRows.forEach(row => {
+                    const cells = row.querySelectorAll('td');
+                    for (let j = 5; j < cells.length; j++) {
+                        cells[j].classList.remove('output-highlight');
+                    }
+                });
+            };
+        });
+
+        // --- OUTPUT HOVER: highlight all output columns and all corresponding input columns ---
         document.querySelectorAll('tr[data-input-group]').forEach(row => {
             const group = row.getAttribute('data-input-group');
-            row.onmouseenter = function () {
-                const inputCell = document.querySelector(`.input-group-row[data-input-group="${group}"]`);
-                if (inputCell) inputCell.classList.add('input-highlight');
-            };
-            row.onmouseleave = function () {
-                const inputCell = document.querySelector(`.input-group-row[data-input-group="${group}"]`);
-                if (inputCell) inputCell.classList.remove('input-highlight');
-            };
+            const cells = row.querySelectorAll('td');
+            // Output columns are 5+
+            for (let i = 5; i < cells.length; i++) {
+                cells[i].onmouseenter = function () {
+                    // Highlight all output columns for this row
+                    for (let j = 5; j < cells.length; j++) {
+                        cells[j].classList.add('output-highlight');
+                    }
+                    // Highlight all input columns for the input row
+                    const inputRow = document.querySelector(`.input-group-row[data-input-group="${group}"]`);
+                    if (inputRow) {
+                        const inputCells = inputRow.parentElement.querySelectorAll('td');
+                        for (let k = 0; k < 5 && k < inputCells.length; k++) {
+                            inputCells[k].classList.add('input-highlight');
+                        }
+                    }
+                };
+                cells[i].onmouseleave = function () {
+                    for (let j = 5; j < cells.length; j++) {
+                        cells[j].classList.remove('output-highlight');
+                    }
+                    const inputRow = document.querySelector(`.input-group-row[data-input-group="${group}"]`);
+                    if (inputRow) {
+                        const inputCells = inputRow.parentElement.querySelectorAll('td');
+                        for (let k = 0; k < 5 && k < inputCells.length; k++) {
+                            inputCells[k].classList.remove('input-highlight');
+                        }
+                    }
+                };
+            }
         });
     }
 

@@ -39,6 +39,11 @@ type RecordingManager struct {
 	Logger     *logger.Logger           // Add logger field
 	dir        string                   // Recordings directory
 	RelayMgr   *RelayManager            // Reference to RelayManager for local relay
+
+	// Shutdown support
+	ctx       context.Context
+	cancel    context.CancelFunc
+	watcherWg sync.WaitGroup
 }
 
 // NewRecordingManager creates a RecordingManager and ensures the directory exists
@@ -46,15 +51,24 @@ func NewRecordingManager(l *logger.Logger, dir string, relayMgr *RelayManager) *
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		panic(fmt.Sprintf("Failed to create recordings directory: %v", err))
 	}
-	go watchRecordingsDir(dir)
-	return &RecordingManager{
+
+	ctx, cancel := context.WithCancel(context.Background())
+	rm := &RecordingManager{
 		recordings: make(map[string]*Recording),
 		processes:  make(map[string]*exec.Cmd),
 		dones:      make(map[string]chan struct{}),
 		Logger:     l,
 		dir:        dir,
 		RelayMgr:   relayMgr,
+		ctx:        ctx,
+		cancel:     cancel,
 	}
+
+	// Start the directory watcher with proper shutdown support
+	rm.watcherWg.Add(1)
+	go rm.watchRecordingsDir()
+
+	return rm
 }
 
 // StartRecording starts recording a source to a file using ffmpeg, using local relay URL
@@ -221,6 +235,58 @@ func (rm *RecordingManager) StopRecording(name string, source string) error {
 	return nil
 }
 
+// StopAllRecordings stops all active recordings gracefully
+func (rm *RecordingManager) StopAllRecordings() {
+	rm.Logger.Info("RecordingManager: Stopping all active recordings...")
+
+	rm.mu.Lock()
+	activeRecordings := make([]string, 0)
+	for name, recording := range rm.recordings {
+		if recording.Active {
+			activeRecordings = append(activeRecordings, name)
+		}
+	}
+	rm.mu.Unlock()
+
+	// Stop each active recording
+	for _, name := range activeRecordings {
+		rm.mu.Lock()
+		recording := rm.recordings[name]
+		var source string
+		if recording != nil {
+			source = recording.Source
+		}
+		rm.mu.Unlock()
+
+		rm.Logger.Info("RecordingManager: Stopping recording %s", name)
+		if err := rm.StopRecording(name, source); err != nil {
+			rm.Logger.Error("RecordingManager: Failed to stop recording %s: %v", name, err)
+		}
+	}
+
+	rm.Logger.Info("RecordingManager: All recordings stopped")
+}
+
+// Shutdown gracefully shuts down the RecordingManager
+func (rm *RecordingManager) Shutdown() {
+	rm.Logger.Info("RecordingManager: Shutting down...")
+
+	// Stop all active recordings first
+	rm.StopAllRecordings()
+
+	// Shutdown SSE broker to close all active SSE connections
+	rm.Logger.Debug("RecordingManager: Shutting down SSE broker...")
+	sseBroker.Shutdown()
+
+	// Cancel the context to signal the directory watcher to stop
+	rm.cancel()
+
+	// Wait for the directory watcher to exit
+	rm.watcherWg.Wait()
+
+	rm.Logger.Info("RecordingManager: Shutdown complete")
+}
+
 // ListRecordings returns all recordings
 func (rm *RecordingManager) ListRecordings() []*Recording {
 	rm.mu.Lock()
@@ -367,12 +433,15 @@ func lastUnderscore(s string) int {
 
 // SSEBroker manages Server-Sent Events clients
 var sseBroker = &SSEBroker{
-	clients: make(map[chan string]struct{}),
+	clients:  make(map[chan string]struct{}),
+	shutdown: make(chan struct{}),
 }
 
 type SSEBroker struct {
-	clients map[chan string]struct{}
-	mu      sync.Mutex
+	clients  map[chan string]struct{}
+	mu       sync.Mutex
+	shutdown chan struct{}
+	once     sync.Once
 }
 
 func (b *SSEBroker) NotifyAll(msg string) {
@@ -398,6 +467,21 @@ func (b *SSEBroker) RemoveClient(ch chan string) {
 	b.mu.Unlock()
 }
 
+// Shutdown closes all active SSE connections
+func (b *SSEBroker) Shutdown() {
+	b.once.Do(func() {
+		close(b.shutdown)
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		// Close all client channels to force connections to end
+		for ch := range b.clients {
+			close(ch)
+		}
+		// Clear clients map
+		b.clients = make(map[chan string]struct{})
+	})
+}
+
 // SSE handler
 func ApiRecordingsSSE() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -415,42 +499,90 @@ func ApiRecordingsSSE() http.HandlerFunc {
 		w.WriteHeader(http.StatusOK)
 		for {
 			select {
-			case msg := <-ch:
+			case msg, ok := <-ch:
+				if !ok {
+					// Channel was closed, exit gracefully
+					return
+				}
 				w.Write([]byte("data: " + msg + "\n\n"))
 				flusher.Flush()
 			case <-r.Context().Done():
+				return
+			case <-sseBroker.shutdown:
 				return
 			}
 		}
 	}
 }
 
-// Refactor watcher to accept dir
-func watchRecordingsDir(dir string) {
+// watchRecordingsDir watches for changes in the recordings directory and notifies via SSE
+func (rm *RecordingManager) watchRecordingsDir() {
+	defer rm.watcherWg.Done()
+	rm.Logger.Debug("RecordingManager: Starting directory watcher for %s", rm.dir)
+
 	fd, err := unix.InotifyInit()
 	if err != nil {
+		rm.Logger.Error("RecordingManager: Failed to initialize inotify: %v", err)
 		return
 	}
 	defer unix.Close(fd)
-	wd, err := unix.InotifyAddWatch(fd, dir, unix.IN_CREATE|unix.IN_MODIFY|unix.IN_DELETE|unix.IN_MOVED_FROM|unix.IN_MOVED_TO|unix.IN_CLOSE_WRITE)
+
+	wd, err := unix.InotifyAddWatch(fd, rm.dir, unix.IN_CREATE|unix.IN_MODIFY|unix.IN_DELETE|unix.IN_MOVED_FROM|unix.IN_MOVED_TO|unix.IN_CLOSE_WRITE)
 	if err != nil {
+		rm.Logger.Error("RecordingManager: Failed to add inotify watch: %v", err)
 		return
 	}
 	defer unix.InotifyRmWatch(fd, uint32(wd))
-	buf := make([]byte, 4096)
-	for {
-		n, err := unix.Read(fd, buf)
-		if err != nil {
-			return
-		}
-		var offset uint32
-		for offset <= uint32(n-unix.SizeofInotifyEvent) {
-			raw := (*unix.InotifyEvent)(unsafe.Pointer(&buf[offset]))
-			mask := raw.Mask
-			if mask&(unix.IN_CREATE|unix.IN_MODIFY|unix.IN_DELETE|unix.IN_MOVED_FROM|unix.IN_MOVED_TO|unix.IN_CLOSE_WRITE) != 0 {
-				sseBroker.NotifyAll("update")
+
+	// Use a goroutine to handle the blocking read and communicate via channels
+	eventCh := make(chan []byte, 1)
+	errCh := make(chan error, 1)
+
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, err := unix.Read(fd, buf)
+			if err != nil {
+				select {
+				case errCh <- err:
+				case <-rm.ctx.Done():
+					return
+				}
+				return
 			}
-			offset += unix.SizeofInotifyEvent + raw.Len
+
+			// Make a copy of the buffer to send
+			eventData := make([]byte, n)
+			copy(eventData, buf[:n])
+
+			select {
+			case eventCh <- eventData:
+			case <-rm.ctx.Done():
+				return
+			}
+		}
+	}()
+
+	for {
+		select {
+		case <-rm.ctx.Done():
+			rm.Logger.Debug("RecordingManager: Directory watcher shutting down")
+			return
+		case err := <-errCh:
+			rm.Logger.Error("RecordingManager: Error reading inotify events: %v", err)
+			return
+		case eventData := <-eventCh:
+			// Process the events
+			var offset uint32
+			n := len(eventData)
+			for offset <= uint32(n-unix.SizeofInotifyEvent) {
+				raw := (*unix.InotifyEvent)(unsafe.Pointer(&eventData[offset]))
+				mask := raw.Mask
+				if mask&(unix.IN_CREATE|unix.IN_MODIFY|unix.IN_DELETE|unix.IN_MOVED_FROM|unix.IN_MOVED_TO|unix.IN_CLOSE_WRITE) != 0 {
+					sseBroker.NotifyAll("update")
+				}
+				offset += unix.SizeofInotifyEvent + raw.Len
+			}
 		}
 	}
 }

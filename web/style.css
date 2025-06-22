@@ -157,6 +157,18 @@ tr.selected-row td {
     transition: background 0.2s;
 }
 
+/* Highlight input columns when hovering over output rows */
+td.input-highlight {
+    background: #e0e7ef !important;
+    transition: background 0.2s;
+}
+
+/* Highlight specific output row */
+tr.output-row-highlight td {
+    background: #e0e7ef !important;
+    transition: background 0.2s;
+}
+
 /* === Stats Card and Grid Styles === */
 #serverStats {
     background: #eaf4ff;
@@ -385,11 +397,15 @@ td .centered-cell, th .centered-cell {
 }
 .badge {
     display: inline-block;
-    padding: 0.2em 0.7em;
+    padding: 0.3em 0.8em;
     border-radius: 1em;
-    font-size: 0.95em;
+    font-size: 0.85em;
     font-weight: 600;
     color: #fff;
+    white-space: nowrap;
+    min-width: fit-content;
+    text-align: center;
+    line-height: 1.2;
 }
 .badge-running { background: #43a047; }
 .badge-stopped { background: #bdbdbd; color: #333; }
@@ -447,28 +463,65 @@ td .centered-cell, th .centered-cell {
     vertical-align: middle;
     font-size: 1.1em;
 }
-#recordingsTab button {
-    background: #4a80e8;
-    color: #fff;
-    border: none;
-    border-radius: 6px;
-    padding: 8px 18px;
-    font-size: 1rem;
-    font-family: inherit;
-    font-weight: 500;
-    box-shadow: 0 1px 3px rgba(25,118,210,0.08);
-    cursor: pointer;
-    transition: background 0.2s, box-shadow 0.2s;
-    outline: none;
-    margin-right: 8px;
-    margin-bottom: 4px;
-}
+/* Override any conflicting button styles that might affect delete buttons */
+/* Removed - this rule will be handled by specific selectors below */
 #recordingsTab button:hover {
     background: #2563c7;
 }
+
+/* Specific overrides for delete buttons to ensure proper styling */
+#recordingsTab .deleteRecordingBtn,
+#relaysTab .deleteRecordingBtn {
+    background: #e53935;
+    color: #fff;
+    border: none;
+    border-radius: 4px;
+    width: 32px;
+    height: 32px;
+    min-width: 32px;
+    min-height: 32px;
+    padding: 0;
+    margin: 0 2px;
+    font-size: 0;
+    box-shadow: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+/* Download buttons in recordings tab */
+#recordingsTab .downloadRecordingBtn,
+#relaysTab .downloadRecordingBtn {
+    background: #1976d2;
+    color: #fff;
+    border: none;
+    border-radius: 4px;
+    width: 32px;
+    height: 32px;
+    min-width: 32px;
+    min-height: 32px;
+    padding: 0;
+    margin: 0 2px;
+    font-size: 0;
+    box-shadow: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+/* Override for delete buttons in recordings tab */
+#recordingsTab .deleteRecordingBtn:hover,
+#relaysTab .deleteRecordingBtn:hover {
+    background: #c62828;
+}
+
+#recordingsTab .downloadRecordingBtn:hover,
+#relaysTab .downloadRecordingBtn:hover {
+    background: #1565c0;
+}
 .md-btn {
     background: #4a80e8;
-    color: #fff;
+    color: #ffffff; /* Consistent white for text on primary */
     border: none;
     border-radius: 6px;
     padding: 10px 28px;
@@ -481,7 +534,7 @@ td .centered-cell, th .centered-cell {
     outline: none;
     margin-right: 8px;
 }
-.md-btn.active, .md-btn:focus {
+.md-btn.active, .md-btn:focus, .md-btn:hover { /* Hover effect uses the primary color */
     background: #2563c7;
     box-shadow: 0 4px 12px rgba(25,118,210,0.13);
 }
@@ -489,7 +542,7 @@ td .centered-cell, th .centered-cell {
     min-width: 120px;
 }
 .tab-btn:not(.active) {
-    background: #e3eaf5;
+    background: #e3eaf5; /* Light background for inactive tabs */
     color: #2563c7;
 }
 .tab-btn:not(.active):hover {
@@ -507,7 +560,7 @@ td .centered-cell, th .centered-cell {
     margin-right: auto;
 }
 .toggleRecBtn {
-  background: #5c7cfa;
+  background: #1976d2; /* Primary color for toggle button */
   color: #fff;
   border: none;
   border-radius: 10px;
@@ -520,7 +573,7 @@ td .centered-cell, th .centered-cell {
   transition: background 0.2s;
 }
 .toggleRecBtn.active {
-  background: #e53935;
+  background: #1976d2;
 }
 .toggleRecBtn .rec-dot {
   display: inline-block;
@@ -542,14 +595,283 @@ td .centered-cell, th .centered-cell {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.downloadRecordingBtn, .deleteRecordingBtn {
-    min-width: unset;
-    width: 40px;
-    height: 40px;
+/* === Square Action Buttons - Consistent Sizing === */
+.downloadRecordingBtn, .deleteRecordingBtn,
+.deleteInputBtn, .deleteOutputBtn {
+    min-width: 32px;
+    min-height: 32px;
+    width: 32px;
+    height: 32px;
     padding: 0;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    font-size: 24px;
-    border-radius: 8px;
+    font-size: 0;
+}
+
+/* Download buttons - blue */
+.downloadRecordingBtn {
+    background: #1976d2;
+    color: #fff;
+}
+
+.downloadRecordingBtn:hover {
+    background: #1565c0;
+}
+
+/* All delete buttons - red */
+.deleteInputBtn, .deleteOutputBtn, .deleteRecordingBtn {
+    background: #e53935;
+    color: #fff;
+}
+
+.deleteInputBtn:hover, .deleteOutputBtn:hover, .deleteRecordingBtn:hover {
+    background: #c62828;
+}
+
+.deleteInputBtn:disabled, .deleteOutputBtn:disabled, .deleteRecordingBtn:disabled {
+    background: #ccc;
+    cursor: not-allowed;
+    opacity: 0.5;
+}
+
+/* All action button icons */
+.deleteInputBtn .material-icons, .deleteOutputBtn .material-icons, .deleteRecordingBtn .material-icons,
+.downloadRecordingBtn .material-icons {
+    font-size: 16px;
+    line-height: 1;
+    vertical-align: middle;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 100%;
+}
+
+/* Ensure recordings tab icons are visible */
+#recordingsTab .deleteRecordingBtn .material-icons,
+#recordingsTab .downloadRecordingBtn .material-icons {
+    font-size: 16px;
+    line-height: 1;
+    vertical-align: middle;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 100%;
+    color: inherit;
+}
+
+/* Ensure input cell content is properly spaced */
+.input-group-row > div {
+    line-height: 1.3;
+}
+
+.input-group-row .status-badge {
+    font-size: 0.85em;
+}
+
+/* Make sure badges don't wrap in table cells */
+.relay-table .badge {
+    font-size: 0.8em;
+    padding: 0.25em 0.6em;
+    white-space: nowrap;
+    display: inline-block;
+    min-width: fit-content;
+}
+
+/* Consistent table styling */
+.relay-table tbody tr:hover td {
+    background: #e0e7ef !important;
+}
+
+/* Make sure rowspan cells have consistent styling and centering */
+.relay-table td[rowspan] {
+    vertical-align: middle !important;
+    text-align: center !important;
+}
+
+/* Ensure input group cells are centered */
+.relay-table .input-group-row {
+    vertical-align: middle !important;
+    text-align: center !important;
+}
+
+/* Center all table cells by default */
+.relay-table td {
+    text-align: center !important;
+    vertical-align: middle !important;
+    overflow: visible;
+}
+
+/* Status container styling */
+.relay-table td > div {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+    justify-content: center;
+    align-items: center;
+    height: 100%;
+}
+
+.relay-table td > div > div:first-child {
+    word-break: break-word;
+}
+
+.relay-table td > div > div:nth-child(2) {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: nowrap;
+}
+
+/* Ensure input name containers are properly centered */
+.relay-table .input-group-row > div {
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: center !important;
+    justify-content: center !important;
+    gap: 4px !important;
+    height: 100% !important;
+}
+
+/* Actions column width */
+.relay-table th:last-child,
+.relay-table td:last-child {
+    min-width: 100px;
+    width: 100px;
+}
+
+/* Relay table action buttons - icon only */
+.relay-table .startRelayBtn,
+.relay-table .stopRelayBtn,
+.relay-table .deleteOutputBtn {
+    min-width: 32px;
+    min-height: 32px;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border-radius: 4px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    margin: 0 2px;
+    font-size: 0;
+    border: none;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.relay-table .startRelayBtn {
+    background: #4caf50;
+}
+
+.relay-table .startRelayBtn:hover {
+    background: #45a049;
+}
+
+.relay-table .stopRelayBtn {
+    background: #2196f3;
+}
+
+.relay-table .stopRelayBtn:hover {
+    background: #1976d2;
+}
+
+.relay-table .deleteOutputBtn {
+    background: #e53935;
+}
+
+.relay-table .deleteOutputBtn:hover {
+    background: #c62828;
+}
+
+.relay-table .startRelayBtn .material-icons,
+.relay-table .stopRelayBtn .material-icons {
+    font-size: 20px;
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+    vertical-align: middle;
+}
+
+.relay-table .deleteOutputBtn .material-icons {
+    font-size: 16px;
+    line-height: 1;
+    vertical-align: middle;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+/* === Relay Action Button Base Styles === */
+.relay-action-btn {
+    background: #1976d2;
+    color: #fff;
+    border: none;
+    border-radius: 4px;
+    padding: 6px 18px;
+    font-size: 1em;
+    font-weight: 500;
+    min-width: 80px;
+    min-height: 32px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.2s;
+    margin: 0 2px;
+}
+
+.relay-action-btn:hover, 
+.relay-action-btn:focus {
+    background: #1251a3;
+}
+
+/* Button with text and icon styling */
+.relay-table .startRelayBtn.relay-action-btn {
+    background: #4caf50;
+    width: auto;
+    height: auto;
+}
+
+.relay-table .startRelayBtn.relay-action-btn:hover,
+.relay-table .startRelayBtn.relay-action-btn:focus {
+    background: #45a049;
+}
+
+.relay-table .stopRelayBtn.relay-action-btn {
+    background: #1976d2;
+    width: auto;
+    height: auto;
+}
+
+.relay-table .stopRelayBtn.relay-action-btn:hover,
+.relay-table .stopRelayBtn.relay-action-btn:focus {
+    background: #1251a3;
+}
+
+/* Icon styling for text buttons */
+.relay-action-btn .material-icons {
+    font-size: 16px;
+    margin-right: 6px;
+}
+.output-cell {
+    padding: 18px 20px;
+    text-align: center;
+}
+
+/* Ensure output name column has enough space for up to 10 characters without wrapping, and wraps if longer */
+.relay-table th.output-name,
+.relay-table td.output-name {
+    min-width: 110px;
+    max-width: 220px;
+    white-space: normal;
+    word-break: break-word;
+    overflow-wrap: break-word;
 }

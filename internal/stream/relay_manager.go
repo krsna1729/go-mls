@@ -211,6 +211,54 @@ func (rm *RelayManager) StopRelay(inputURL, outputURL, inputName, outputName str
 	return nil
 }
 
+// DeleteInput deletes an entire input relay and all its associated outputs
+func (rm *RelayManager) DeleteInput(inputURL, inputName string) error {
+	rm.Logger.Debug("DeleteInput called: input=%s, input_name=%s", inputURL, inputName)
+
+	// First, find and delete all output relays associated with this input
+	rm.OutputRelays.mu.Lock()
+	var outputsToDelete []string
+	for outputURL, relay := range rm.OutputRelays.Relays {
+		if relay.InputURL == inputURL {
+			outputsToDelete = append(outputsToDelete, outputURL)
+		}
+	}
+	rm.OutputRelays.mu.Unlock()
+
+	// Delete all associated outputs
+	for _, outputURL := range outputsToDelete {
+		err := rm.OutputRelays.DeleteOutput(outputURL)
+		if err != nil {
+			rm.Logger.Error("Failed to delete output relay %s: %v", outputURL, err)
+		}
+	}
+
+	// Delete the input relay
+	err := rm.InputRelays.DeleteInput(inputURL)
+	if err != nil {
+		rm.Logger.Error("Failed to delete input relay %s: %v", inputURL, err)
+		return err
+	}
+
+	rm.Logger.Info("Deleted input relay and all associated outputs: %s [%s]", inputName, inputURL)
+	return nil
+}
+
+// DeleteOutput deletes a single output relay
+func (rm *RelayManager) DeleteOutput(inputURL, outputURL, inputName, outputName string) error {
+	rm.Logger.Debug("DeleteOutput called: input=%s, output=%s, input_name=%s, output_name=%s", inputURL, outputURL, inputName, outputName)
+
+	// Delete the output relay (this will also clean up input relay refcount via callback)
+	err := rm.OutputRelays.DeleteOutput(outputURL)
+	if err != nil {
+		rm.Logger.Error("Failed to delete output relay %s: %v", outputURL, err)
+		return err
+	}
+
+	rm.Logger.Info("Deleted output relay: %s [%s] -> %s [%s]", inputName, inputURL, outputName, outputURL)
+	return nil
+}
+
 // ExportConfig saves the current relay configurations to a file (now includes names and presets)
 func (rm *RelayManager) ExportConfig(filename string) error {
 	rm.Logger.Debug("ExportConfig called: filename=%s", filename)
@@ -509,4 +557,37 @@ func outputRelayStatusString(s OutputRelayStatus) string {
 	default:
 		return "Stopped"
 	}
+}
+
+// StopAllRelays stops all active input and output relays gracefully
+func (rm *RelayManager) StopAllRelays() {
+	rm.Logger.Info("RelayManager: Stopping all active relays...")
+
+	// Get all active relays from status
+	status := rm.StatusV2()
+
+	// Stop all output relays first
+	for _, relay := range status.Relays {
+		for _, output := range relay.Outputs {
+			rm.Logger.Info("RelayManager: Stopping output relay %s -> %s", relay.Input.InputName, output.OutputName)
+			if err := rm.StopRelay(relay.Input.InputURL, output.OutputURL, relay.Input.InputName, output.OutputName); err != nil {
+				rm.Logger.Error("RelayManager: Failed to stop output relay %s -> %s: %v", relay.Input.InputName, output.OutputName, err)
+			}
+		}
+	}
+
+	// Stop all remaining input relays
+	rm.InputRelays.mu.Lock()
+	inputURLs := make([]string, 0, len(rm.InputRelays.Relays))
+	for inputURL := range rm.InputRelays.Relays {
+		inputURLs = append(inputURLs, inputURL)
+	}
+	rm.InputRelays.mu.Unlock()
+
+	for _, inputURL := range inputURLs {
+		rm.Logger.Info("RelayManager: Stopping input relay %s", inputURL)
+		rm.InputRelays.StopInputRelay(inputURL)
+	}
+
+	rm.Logger.Info("RelayManager: All relays stopped")
 }
