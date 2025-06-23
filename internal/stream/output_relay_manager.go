@@ -34,6 +34,7 @@ type OutputRelay struct {
 	InputURL       string // Reference to input URL
 	LocalURL       string // Local RTSP server URL
 	Cmd            *exec.Cmd
+	PID            int // Cached process ID to avoid race conditions
 	Status         OutputRelayStatus
 	LastError      string
 	StartTime      time.Time
@@ -138,7 +139,12 @@ func (orm *OutputRelayManager) StartOutputRelay(config OutputRelayConfig) error 
 		orm.Logger.Error("Failed to start output relay ffmpeg: %v", err)
 		return err
 	}
-	orm.Logger.Info("OutputRelayManager: Started ffmpeg process PID %d for %s -> %s", cmd.Process.Pid, config.LocalURL, config.OutputURL)
+
+	// Cache the PID to avoid race conditions when accessing it later
+	relay.mu.Lock()
+	relay.PID = cmd.Process.Pid
+	relay.mu.Unlock()
+	orm.Logger.Info("OutputRelayManager: Started ffmpeg process PID %d for %s -> %s", relay.PID, config.LocalURL, config.OutputURL)
 
 	// Start bitrate monitoring with context
 	relay.wg.Add(1)
@@ -171,7 +177,7 @@ func (orm *OutputRelayManager) StopOutputRelay(outputURL string) {
 	relay.shuttingDown = true
 
 	if relay.Cmd != nil && relay.Cmd.Process != nil {
-		pid := relay.Cmd.Process.Pid
+		pid := relay.PID
 		orm.Logger.Info("OutputRelayManager: Gracefully terminating ffmpeg process PID %d for %s", pid, outputURL)
 		// Try SIGTERM first for graceful shutdown
 		err := relay.Cmd.Process.Signal(os.Interrupt)
@@ -200,14 +206,14 @@ func (orm *OutputRelayManager) StopOutputRelay(outputURL string) {
 	// Wait for all goroutines to finish before continuing
 	relay.mu.Unlock()
 	orm.Logger.Debug("OutputRelayManager: Waiting for goroutines to finish for %s", outputURL)
-	
+
 	// Wait for goroutines with timeout to prevent hanging during shutdown
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		relay.wg.Wait()
 	}()
-	
+
 	select {
 	case <-done:
 		orm.Logger.Debug("OutputRelayManager: All goroutines finished for %s", outputURL)
@@ -215,7 +221,7 @@ func (orm *OutputRelayManager) StopOutputRelay(outputURL string) {
 		orm.Logger.Warn("OutputRelayManager: Timeout waiting for goroutines to finish for %s, force killing process", outputURL)
 		// Force kill the process if goroutines are still stuck
 		if relay.Cmd != nil && relay.Cmd.Process != nil {
-			pid := relay.Cmd.Process.Pid
+			pid := relay.PID
 			orm.Logger.Warn("OutputRelayManager: Force killing stuck process PID %d for %s", pid, outputURL)
 			relay.Cmd.Process.Kill()
 		}
@@ -244,13 +250,20 @@ func (orm *OutputRelayManager) StopOutputRelay(outputURL string) {
 func (orm *OutputRelayManager) RunOutputRelay(relay *OutputRelay) {
 	orm.Logger.Info("OutputRelayManager: RunOutputRelay: running ffmpeg for %s -> %s", relay.LocalURL, relay.OutputURL)
 
-	// Capture PID at the beginning for consistent logging
-	var pid string = "unknown"
-	if relay.Cmd != nil && relay.Cmd.Process != nil {
-		pid = fmt.Sprintf("%d", relay.Cmd.Process.Pid)
+	// Safely capture cmd reference and PID while holding the mutex
+	relay.mu.Lock()
+	cmd := relay.Cmd
+	pid := fmt.Sprintf("%d", relay.PID)
+	relay.mu.Unlock()
+
+	// Check if cmd is nil (relay was stopped before we could get reference)
+	if cmd == nil {
+		orm.Logger.Debug("OutputRelayManager: RunOutputRelay: cmd is nil, relay was stopped")
+		return
 	}
 
-	err := relay.Cmd.Wait()
+	// Wait for the process to finish (outside of mutex to avoid blocking other operations)
+	err := cmd.Wait()
 	relay.mu.Lock()
 
 	if relay.Status == OutputStopped {
@@ -346,7 +359,7 @@ func (orm *OutputRelayManager) DeleteOutput(outputURL string) error {
 
 	// Force stop the relay process
 	if relay.Cmd != nil && relay.Cmd.Process != nil {
-		pid := relay.Cmd.Process.Pid
+		pid := relay.PID
 		orm.Logger.Info("OutputRelayManager: Force terminating ffmpeg process PID %d for %s", pid, outputURL)
 		// Try SIGTERM first for graceful shutdown
 		err := relay.Cmd.Process.Signal(os.Interrupt)
@@ -372,14 +385,14 @@ func (orm *OutputRelayManager) DeleteOutput(outputURL string) error {
 	// Wait for all goroutines to finish
 	relay.mu.Unlock()
 	orm.Logger.Debug("OutputRelayManager: Waiting for goroutines to finish for %s", outputURL)
-	
+
 	// Wait for goroutines with timeout to prevent hanging during shutdown
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		relay.wg.Wait()
 	}()
-	
+
 	select {
 	case <-done:
 		orm.Logger.Debug("OutputRelayManager: All goroutines finished for %s", outputURL)
@@ -387,7 +400,7 @@ func (orm *OutputRelayManager) DeleteOutput(outputURL string) error {
 		orm.Logger.Warn("OutputRelayManager: Timeout waiting for goroutines to finish for %s, force killing process", outputURL)
 		// Force kill the process if goroutines are still stuck
 		if relay.Cmd != nil && relay.Cmd.Process != nil {
-			pid := relay.Cmd.Process.Pid
+			pid := relay.PID
 			orm.Logger.Warn("OutputRelayManager: Force killing stuck process PID %d for %s", pid, outputURL)
 			relay.Cmd.Process.Kill()
 		}

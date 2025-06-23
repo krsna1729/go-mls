@@ -34,6 +34,7 @@ type InputRelay struct {
 	InputName string
 	LocalURL  string // Local RTSP server URL
 	Cmd       *exec.Cmd
+	PID       int // Cached process ID to avoid race conditions
 	Status    InputRelayStatus
 	LastError string
 	StartTime time.Time
@@ -157,7 +158,10 @@ func (irm *InputRelayManager) StartInputRelay(inputName, inputURL, localURL stri
 		irm.Logger.Error("Failed to start input relay ffmpeg: %v", err)
 		return "", err
 	}
-	irm.Logger.Info("InputRelayManager: Started ffmpeg process PID %d for %s -> %s (refcount: %d)", cmd.Process.Pid, inputURL, localURL, currentRefCount)
+
+	// Cache the PID to avoid race conditions when accessing it later
+	relay.PID = cmd.Process.Pid
+	irm.Logger.Info("InputRelayManager: Started ffmpeg process PID %d for %s -> %s (refcount: %d)", relay.PID, inputURL, localURL, currentRefCount)
 
 	// Start bitrate monitoring with context
 	relay.wg.Add(1)
@@ -217,7 +221,7 @@ func (irm *InputRelayManager) StopInputRelay(inputURL string) bool {
 
 	// RefCount is 0 - safe to stop the relay process
 	// Terminate the process gracefully with fallback to force kill
-	irm.terminateProcess(relay.Cmd, inputURL, 2)
+	irm.terminateProcess(relay.Cmd, relay.PID, inputURL, 2)
 
 	// Cancel context to signal all monitoring goroutines to stop
 	// This ensures clean shutdown of progress monitoring and other background tasks
@@ -232,14 +236,14 @@ func (irm *InputRelayManager) StopInputRelay(inputURL string) bool {
 	// This prevents race conditions during relay cleanup
 	relay.mu.Unlock()
 	irm.Logger.Debug("InputRelayManager: Waiting for goroutines to finish for %s", inputURL)
-	
+
 	// Wait for goroutines with timeout to prevent hanging during shutdown
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		relay.wg.Wait()
 	}()
-	
+
 	select {
 	case <-done:
 		irm.Logger.Debug("InputRelayManager: All goroutines finished for %s", inputURL)
@@ -247,7 +251,7 @@ func (irm *InputRelayManager) StopInputRelay(inputURL string) bool {
 		irm.Logger.Warn("InputRelayManager: Timeout waiting for goroutines to finish for %s, force killing process", inputURL)
 		// Force kill the process if goroutines are still stuck
 		if relay.Cmd != nil && relay.Cmd.Process != nil {
-			pid := relay.Cmd.Process.Pid
+			pid := relay.PID
 			irm.Logger.Warn("InputRelayManager: Force killing stuck process PID %d for %s", pid, inputURL)
 			relay.Cmd.Process.Kill()
 		}
@@ -259,7 +263,7 @@ func (irm *InputRelayManager) StopInputRelay(inputURL string) bool {
 			irm.Logger.Error("InputRelayManager: Goroutines still stuck after force kill for %s, proceeding anyway", inputURL)
 		}
 	}
-	
+
 	relay.mu.Lock()
 
 	inputName := relay.InputName // Store input name for RTSP cleanup
@@ -298,7 +302,7 @@ func (irm *InputRelayManager) ForceStopInputRelay(inputURL string) bool {
 	relay.RefCount = 0
 
 	// Stop the relay process
-	irm.terminateProcess(relay.Cmd, inputURL, 1) // Shorter timeout for force stop
+	irm.terminateProcess(relay.Cmd, relay.PID, inputURL, 1) // Shorter timeout for force stop
 
 	// Cancel context to stop monitoring goroutines
 	if relay.cancel != nil {
@@ -311,14 +315,14 @@ func (irm *InputRelayManager) ForceStopInputRelay(inputURL string) bool {
 	// Wait for all goroutines to finish before continuing
 	relay.mu.Unlock()
 	irm.Logger.Debug("InputRelayManager: Waiting for goroutines to finish for %s", inputURL)
-	
+
 	// Wait for goroutines with timeout to prevent hanging during shutdown
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		relay.wg.Wait()
 	}()
-	
+
 	select {
 	case <-done:
 		irm.Logger.Debug("InputRelayManager: All goroutines finished for %s", inputURL)
@@ -326,7 +330,7 @@ func (irm *InputRelayManager) ForceStopInputRelay(inputURL string) bool {
 		irm.Logger.Warn("InputRelayManager: Timeout waiting for goroutines to finish for %s, force killing process", inputURL)
 		// Force kill the process if goroutines are still stuck
 		if relay.Cmd != nil && relay.Cmd.Process != nil {
-			pid := relay.Cmd.Process.Pid
+			pid := relay.PID
 			irm.Logger.Warn("InputRelayManager: Force killing stuck process PID %d for %s", pid, inputURL)
 			relay.Cmd.Process.Kill()
 		}
@@ -338,7 +342,7 @@ func (irm *InputRelayManager) ForceStopInputRelay(inputURL string) bool {
 			irm.Logger.Error("InputRelayManager: Goroutines still stuck after force kill for %s, proceeding anyway", inputURL)
 		}
 	}
-	
+
 	relay.mu.Lock()
 
 	inputName := relay.InputName // Store input name for RTSP cleanup
@@ -363,7 +367,7 @@ func (irm *InputRelayManager) RunInputRelay(relay *InputRelay) {
 	// Capture PID at the beginning for consistent logging
 	var pid string = "unknown"
 	if relay.Cmd != nil && relay.Cmd.Process != nil {
-		pid = fmt.Sprintf("%d", relay.Cmd.Process.Pid)
+		pid = fmt.Sprintf("%d", relay.PID)
 	}
 
 	err := relay.Cmd.Wait()
@@ -419,7 +423,7 @@ func (irm *InputRelayManager) DeleteInput(inputURL string) error {
 	relay.mu.Lock()
 
 	// Force stop the relay process regardless of reference count
-	irm.terminateProcess(relay.Cmd, inputURL, 1) // Shorter timeout for delete
+	irm.terminateProcess(relay.Cmd, relay.PID, inputURL, 1) // Shorter timeout for delete
 
 	// Cancel context to stop monitoring goroutines
 	if relay.cancel != nil {
@@ -433,21 +437,21 @@ func (irm *InputRelayManager) DeleteInput(inputURL string) error {
 	// Wait for all goroutines to finish
 	relay.mu.Unlock()
 	irm.Logger.Debug("InputRelayManager: Waiting for goroutines to finish for %s", inputURL)
-	
+
 	// Wait for goroutines with timeout to prevent hanging during delete
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		relay.wg.Wait()
 	}()
-	
+
 	select {
 	case <-done:
 		irm.Logger.Debug("InputRelayManager: All goroutines finished for %s", inputURL)
 	case <-time.After(3 * time.Second):
 		irm.Logger.Warn("InputRelayManager: Timeout waiting for goroutines to finish for %s during delete, proceeding anyway", inputURL)
 	}
-	
+
 	relay.mu.Lock()
 
 	// Remove from map
@@ -477,7 +481,7 @@ func (irm *InputRelayManager) monitorFFmpegProgress(relay *InputRelay, progressR
 	scanner := bufio.NewScanner(progressReader)
 	lineChan := make(chan string, 10) // Buffered channel to prevent blocking
 	errChan := make(chan error, 1)
-	
+
 	// Run scanner in a separate goroutine to avoid blocking on Scan()
 	go func() {
 		defer close(lineChan)
@@ -516,7 +520,7 @@ func (irm *InputRelayManager) monitorFFmpegProgress(relay *InputRelay, progressR
 				irm.Logger.Debug("InputRelay progress monitoring finished for %s", relay.InputURL)
 				return
 			}
-			
+
 			// Process the line
 			if strings.HasPrefix(line, "speed=") {
 				val := strings.TrimPrefix(line, "speed=")
@@ -543,23 +547,22 @@ func (irm *InputRelayManager) monitorFFmpegProgress(relay *InputRelay, progressR
 
 // terminateProcess safely terminates a process with graceful shutdown followed by force kill if necessary
 // This avoids race conditions by not calling Wait() concurrently - the RunInputRelay goroutine handles Wait()
-func (irm *InputRelayManager) terminateProcess(cmd *exec.Cmd, inputURL string, timeoutSeconds int) {
+func (irm *InputRelayManager) terminateProcess(cmd *exec.Cmd, pid int, inputURL string, timeoutSeconds int) {
 	if cmd == nil || cmd.Process == nil {
 		return
 	}
-	
-	pid := cmd.Process.Pid
+
 	irm.Logger.Info("InputRelayManager: Gracefully terminating ffmpeg process PID %d for %s", pid, inputURL)
-	
+
 	// Try SIGTERM first for graceful shutdown
 	err := cmd.Process.Signal(os.Interrupt)
 	if err != nil {
 		irm.Logger.Warn("Failed to send SIGTERM to input relay process PID %d: %v", pid, err)
 	}
-	
+
 	// Give process time to gracefully exit
 	time.Sleep(time.Duration(timeoutSeconds) * time.Second)
-	
+
 	// Check if process is still alive and force kill if necessary
 	// We don't call Wait() here to avoid race condition with RunInputRelay goroutine
 	if cmd.Process != nil {
