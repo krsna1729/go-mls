@@ -200,7 +200,33 @@ func (orm *OutputRelayManager) StopOutputRelay(outputURL string) {
 	// Wait for all goroutines to finish before continuing
 	relay.mu.Unlock()
 	orm.Logger.Debug("OutputRelayManager: Waiting for goroutines to finish for %s", outputURL)
-	relay.wg.Wait()
+	
+	// Wait for goroutines with timeout to prevent hanging during shutdown
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		relay.wg.Wait()
+	}()
+	
+	select {
+	case <-done:
+		orm.Logger.Debug("OutputRelayManager: All goroutines finished for %s", outputURL)
+	case <-time.After(5 * time.Second):
+		orm.Logger.Warn("OutputRelayManager: Timeout waiting for goroutines to finish for %s, force killing process", outputURL)
+		// Force kill the process if goroutines are still stuck
+		if relay.Cmd != nil && relay.Cmd.Process != nil {
+			pid := relay.Cmd.Process.Pid
+			orm.Logger.Warn("OutputRelayManager: Force killing stuck process PID %d for %s", pid, outputURL)
+			relay.Cmd.Process.Kill()
+		}
+		// Wait a bit more for force kill to take effect
+		select {
+		case <-done:
+			orm.Logger.Debug("OutputRelayManager: Goroutines finished after force kill for %s", outputURL)
+		case <-time.After(2 * time.Second):
+			orm.Logger.Error("OutputRelayManager: Goroutines still stuck after force kill for %s, proceeding anyway", outputURL)
+		}
+	}
 
 	orm.mu.Unlock()
 
@@ -346,7 +372,33 @@ func (orm *OutputRelayManager) DeleteOutput(outputURL string) error {
 	// Wait for all goroutines to finish
 	relay.mu.Unlock()
 	orm.Logger.Debug("OutputRelayManager: Waiting for goroutines to finish for %s", outputURL)
-	relay.wg.Wait()
+	
+	// Wait for goroutines with timeout to prevent hanging during shutdown
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		relay.wg.Wait()
+	}()
+	
+	select {
+	case <-done:
+		orm.Logger.Debug("OutputRelayManager: All goroutines finished for %s", outputURL)
+	case <-time.After(5 * time.Second):
+		orm.Logger.Warn("OutputRelayManager: Timeout waiting for goroutines to finish for %s, force killing process", outputURL)
+		// Force kill the process if goroutines are still stuck
+		if relay.Cmd != nil && relay.Cmd.Process != nil {
+			pid := relay.Cmd.Process.Pid
+			orm.Logger.Warn("OutputRelayManager: Force killing stuck process PID %d for %s", pid, outputURL)
+			relay.Cmd.Process.Kill()
+		}
+		// Wait a bit more for force kill to take effect
+		select {
+		case <-done:
+			orm.Logger.Debug("OutputRelayManager: Goroutines finished after force kill for %s", outputURL)
+		case <-time.After(2 * time.Second):
+			orm.Logger.Error("OutputRelayManager: Goroutines still stuck after force kill for %s, proceeding anyway", outputURL)
+		}
+	}
 
 	// Remove from map
 	delete(orm.Relays, outputURL)

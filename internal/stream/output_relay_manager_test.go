@@ -51,3 +51,58 @@ func TestOutputRelayManager_StartAndStopOutputRelay(t *testing.T) {
 		t.Errorf("expected status OutputStopped, got %v", relay.Status)
 	}
 }
+
+func TestOutputRelayManager_StopNonExistentRelay(t *testing.T) {
+	log := logger.NewLogger()
+	orm := NewOutputRelayManager(log)
+
+	// Stopping non-existent relay should not panic
+	orm.StopOutputRelay("nonexistent")
+
+	// Should have no relays
+	orm.mu.Lock()
+	count := len(orm.Relays)
+	orm.mu.Unlock()
+
+	if count != 0 {
+		t.Errorf("expected 0 relays, got %d", count)
+	}
+}
+
+func TestOutputRelayManager_GetRelayStatus(t *testing.T) {
+	log := logger.NewLogger()
+	orm := NewOutputRelayManager(log)
+
+	// Start a relay and test status
+	config := OutputRelayConfig{
+		OutputURL:      "rtmp://example.com/live",
+		OutputName:     "test",
+		InputURL:       "rtsp://localhost/relay/test",
+		LocalURL:       "rtsp://localhost/relay/test",
+		Timeout:        1 * time.Second,
+		PlatformPreset: "",
+		FFmpegOptions:  make(map[string]string),
+		FFmpegArgs:     []string{"-re", "-i", "rtsp://localhost/relay/test", "-c", "copy", "-f", "flv", "rtmp://example.com/live"},
+	}
+
+	err := orm.StartOutputRelay(config)
+	if err != nil {
+		t.Errorf("expected no error starting relay, got %v", err)
+	}
+
+	// Check relay exists in manager
+	orm.mu.Lock()
+	relay, exists := orm.Relays["rtmp://example.com/live"]
+	orm.mu.Unlock()
+
+	if !exists {
+		t.Errorf("expected relay to exist after start")
+	}
+
+	if relay.Status == OutputStopped {
+		t.Errorf("expected relay status to not be OutputStopped")
+	}
+
+	// Clean up
+	orm.StopOutputRelay("rtmp://example.com/live")
+}

@@ -220,9 +220,9 @@ document.addEventListener('DOMContentLoaded', function () {
                 <span class="centered-cell" title="${ep.output_url}"><span>${ep.output_name || ep.output_url}</span><button class='eyeBtn' data-url="${ep.output_url}" title="Show Output URL"><span class="material-icons">visibility</span></button></span>
             </td>
             <td style="padding:8px 12px;" data-label="Status">${getStatusBadge(status)}</td>
-            <td style="padding:8px 12px;" data-label="Bitrate (kbps)">${isRunning && ep.bitrate ? ep.bitrate : '-'}</td>
+            <td style="padding:8px 12px;" data-label="Bitrate (kbps)">${isRunning && typeof ep.bitrate === 'number' ? ep.bitrate : '-'}</td>
             <td style="padding:8px 12px;" data-label="CPU">${isRunning && typeof ep.cpu === 'number' ? ep.cpu.toFixed(1) : '-'}</td>
-            <td style="padding:8px 12px;" data-label="Mem">${isRunning && ep.mem ? (ep.mem / (1024 * 1024)).toFixed(1) : '-'}</td>
+            <td style="padding:8px 12px;" data-label="Mem">${isRunning && typeof ep.mem === 'number' ? (ep.mem / (1024 * 1024)).toFixed(1) : '-'}</td>
             <td style="padding:8px 12px;" data-label="Action">
                 ${isRunning
                 ? `<button class="stopRelayBtn" data-input="${input}" data-output="${ep.output_url}" data-input-name="${ep.input_name || ''}" data-output-name="${ep.output_name || ''}"><span class="material-icons">stop</span>Stop</button>`
@@ -569,9 +569,9 @@ document.addEventListener('DOMContentLoaded', function () {
                     html += `<tr data-input-group="group-${relayIdx}">
                         <td class="input-group-row" data-input-group="group-${relayIdx}" title="${input}" style="word-break:break-all; color:#1976d2; font-weight:bold; padding:6px 8px; background:${inputBg}; text-align:center;">${inputName}</td>
                         <td style="padding:6px 8px; background:${inputBg}; text-align:center;">${getStatusBadge(inputStatus)}</td>
-                        <td style="padding:6px 8px; background:${inputBg}; text-align:center;">${relay.input.cpu?.toFixed(1) || '-'}</td>
-                        <td style="padding:6px 8px; background:${inputBg}; text-align:center;">${relay.input.mem ? Math.round(relay.input.mem / (1024 * 1024)) : '-'}</td>
-                        <td style="padding:6px 8px; background:${inputBg}; text-align:center;">${relay.input.speed ? relay.input.speed.toFixed(2) + 'x' : '-'}</td>
+                        <td style="padding:6px 8px; background:${inputBg}; text-align:center;">${inputStatus === 'Running' && typeof relay.input.cpu === 'number' ? relay.input.cpu.toFixed(1) : '-'}</td>
+                        <td style="padding:6px 8px; background:${inputBg}; text-align:center;">${inputStatus === 'Running' && typeof relay.input.mem === 'number' ? Math.round(relay.input.mem / (1024 * 1024)) : '-'}</td>
+                        <td style="padding:6px 8px; background:${inputBg}; text-align:center;">${inputStatus === 'Running' && typeof relay.input.speed === 'number' ? relay.input.speed.toFixed(2) + 'x' : '-'}</td>
                         <td style="padding:6px 8px; background:${inputBg}; text-align:center;">
         <button class="deleteInputBtn" data-input="${input}" data-input-name="${inputName}" title="Delete Input" style="padding:4px 6px; min-width:auto; min-height:auto; background:#dc3545; color:white; border:none; border-radius:3px; font-size:0.8em;"><span class="material-icons" style="font-size:16px;">delete</span></button>
     </td>
@@ -593,9 +593,9 @@ document.addEventListener('DOMContentLoaded', function () {
                         if (isFirstOutput) {
                             html += `<td class="input-group-row" data-input-group="group-${relayIdx}" rowspan="${relay.outputs.length}" title="${input}" style="word-break:break-all; color:#1976d2; font-weight:bold; vertical-align:middle; padding:6px 8px; background:${inputBg}; border:none; text-align:center;">${inputName}</td>`;
                             html += `<td rowspan="${relay.outputs.length}" style="padding:6px 8px; background:${inputBg}; vertical-align:middle; text-align:center;">${getStatusBadge(inputStatus)}</td>`;
-                            html += `<td rowspan="${relay.outputs.length}" style="padding:6px 8px; background:${inputBg}; vertical-align:middle; text-align:center;">${relay.input.cpu?.toFixed(1) || '-'}</td>`;
-                            html += `<td rowspan="${relay.outputs.length}" style="padding:6px 8px; background:${inputBg}; vertical-align:middle; text-align:center;">${relay.input.mem ? Math.round(relay.input.mem / (1024 * 1024)) : '-'}</td>`;
-                            html += `<td rowspan="${relay.outputs.length}" style="padding:6px 8px; background:${inputBg}; vertical-align:middle; text-align:center;">${relay.input.speed ? relay.input.speed.toFixed(2) + 'x' : '-'}</td>`;
+                            html += `<td rowspan="${relay.outputs.length}" style="padding:6px 8px; background:${inputBg}; vertical-align:middle; text-align:center;">${inputStatus === 'Running' && typeof relay.input.cpu === 'number' ? relay.input.cpu.toFixed(1) : '-'}</td>`;
+                            html += `<td rowspan="${relay.outputs.length}" style="padding:6px 8px; background:${inputBg}; vertical-align:middle; text-align:center;">${inputStatus === 'Running' && typeof relay.input.mem === 'number' ? Math.round(relay.input.mem / (1024 * 1024)) : '-'}</td>`;
+                            html += `<td rowspan="${relay.outputs.length}" style="padding:6px 8px; background:${inputBg}; vertical-align:middle; text-align:center;">${inputStatus === 'Running' && typeof relay.input.speed === 'number' ? relay.input.speed.toFixed(2) + 'x' : '-'}</td>`;
                             html += `<td rowspan="${relay.outputs.length}" style="padding:6px 8px; background:${inputBg}; vertical-align:middle; text-align:center;">
         <button class="deleteInputBtn" data-input="${input}" data-input-name="${inputName}" title="Delete Input" style="padding:4px 6px; min-width:auto; min-height:auto; background:#dc3545; color:white; border:none; border-radius:3px; font-size:0.8em;"><span class="material-icons" style="font-size:16px;">delete</span></button>
     </td>`;
@@ -607,9 +607,9 @@ document.addEventListener('DOMContentLoaded', function () {
                                 </div>
                             </td>
                             <td class="output-cell">${getStatusBadge(outputStatus)}</td>
-                            <td class="output-cell">${out.cpu?.toFixed(1) || '-'}</td>
-                            <td class="output-cell">${out.mem ? Math.round(out.mem / (1024 * 1024)) : '-'}</td>
-                            <td class="output-cell">${out.bitrate ? Math.round(out.bitrate) : '-'}</td>
+                            <td class="output-cell">${outputStatus === 'Running' && typeof out.cpu === 'number' ? out.cpu.toFixed(1) : '-'}</td>
+                            <td class="output-cell">${outputStatus === 'Running' && typeof out.mem === 'number' ? Math.round(out.mem / (1024 * 1024)) : '-'}</td>
+                            <td class="output-cell">${outputStatus === 'Running' && typeof out.bitrate === 'number' ? Math.round(out.bitrate) : '-'}</td>
                             <td class="output-cell">
                                 <div style="display:flex; flex-direction:row; align-items:center; justify-content:center; gap:8px; flex-wrap:nowrap;">
                                     ${outputStatus === 'Running'

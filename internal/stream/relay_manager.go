@@ -19,6 +19,10 @@ type RelayManager struct {
 	rtspServer   *RTSPServerManager // RTSP server for local relays
 	recDir       string             // Directory for playing recordings from
 
+	// Configurable timeouts
+	inputTimeout  time.Duration
+	outputTimeout time.Duration
+
 	// Mutex map for serializing concurrent starts of the same input URL
 	startMutexes   map[string]*sync.Mutex
 	startMutexesMu sync.Mutex
@@ -28,11 +32,13 @@ func NewRelayManager(l *logger.Logger, recDir string) *RelayManager {
 	irm := NewInputRelayManager(l, recDir)
 	orm := NewOutputRelayManager(l)
 	rm := &RelayManager{
-		InputRelays:  irm,
-		OutputRelays: orm,
-		Logger:       l,
-		recDir:       recDir,
-		startMutexes: make(map[string]*sync.Mutex),
+		InputRelays:   irm,
+		OutputRelays:  orm,
+		Logger:        l,
+		recDir:        recDir,
+		inputTimeout:  30 * time.Second, // Default values, can be overridden
+		outputTimeout: 60 * time.Second,
+		startMutexes:  make(map[string]*sync.Mutex),
 	}
 
 	// Set up failure callback for output relays to clean up input relay refcount
@@ -124,8 +130,7 @@ func (rm *RelayManager) StartRelayWithOptions(inputURL, outputURL, inputName, ou
 	localRelayURL := fmt.Sprintf("%s/%s", GetRTSPServerURL(), relayPath)
 
 	// Start or get the input relay
-	inputTimeout := 30 * time.Second // TODO: make configurable
-	_, err := rm.InputRelays.StartInputRelay(inputName, inputURL, localRelayURL, inputTimeout)
+	_, err := rm.InputRelays.StartInputRelay(inputName, inputURL, localRelayURL, rm.inputTimeout)
 	if err != nil {
 		rm.Logger.Error("Failed to start input relay for output: %v", err)
 		return err
@@ -187,13 +192,12 @@ func (rm *RelayManager) StartRelayWithOptions(inputURL, outputURL, inputName, ou
 		}
 	}
 
-	outputTimeout := 60 * time.Second // TODO: make configurable and > inputTimeout
 	config := OutputRelayConfig{
 		OutputURL:      outputURL,
 		OutputName:     outputName,
 		InputURL:       inputURL,
 		LocalURL:       localRelayURL,
-		Timeout:        outputTimeout,
+		Timeout:        rm.outputTimeout,
 		PlatformPreset: preset,
 		FFmpegOptions:  optsMap,
 		FFmpegArgs:     args,
@@ -484,10 +488,16 @@ func (rm *RelayManager) StatusV2() StatusV2Response {
 	for _, in := range rm.InputRelays.Relays {
 		in.mu.Lock()
 		cpu, mem := 0.0, uint64(0)
-		if in.Cmd != nil && in.Cmd.Process != nil {
-			if usage, err := process.GetProcUsage(in.Cmd.Process.Pid); err == nil {
-				cpu = usage.CPU
-				mem = usage.Mem
+		// Safely access process info to avoid data race
+		if in.Cmd != nil {
+			// Create a local copy of the process reference to avoid race
+			cmd := in.Cmd
+			if cmd.Process != nil {
+				pid := cmd.Process.Pid
+				if usage, err := process.GetProcUsage(pid); err == nil {
+					cpu = usage.CPU
+					mem = usage.Mem
+				}
 			}
 		}
 		inputStatus := InputRelayStatusV2{
@@ -508,10 +518,16 @@ func (rm *RelayManager) StatusV2() StatusV2Response {
 			if out.InputURL == in.InputURL {
 				out.mu.Lock()
 				cpuO, memO := 0.0, uint64(0)
-				if out.Cmd != nil && out.Cmd.Process != nil {
-					if usage, err := process.GetProcUsage(out.Cmd.Process.Pid); err == nil {
-						cpuO = usage.CPU
-						memO = usage.Mem
+				// Safely access process info to avoid data race
+				if out.Cmd != nil {
+					// Create a local copy of the process reference to avoid race
+					cmd := out.Cmd
+					if cmd.Process != nil {
+						pid := cmd.Process.Pid
+						if usage, err := process.GetProcUsage(pid); err == nil {
+							cpuO = usage.CPU
+							memO = usage.Mem
+						}
 					}
 				}
 				outputs = append(outputs, OutputRelayStatusV2{
@@ -651,6 +667,18 @@ func (rm *RelayManager) StopAllRelays() {
 	}
 
 	rm.Logger.Info("RelayManager: All relays stopped")
+}
+
+// SetTimeouts configures the input and output relay timeouts
+func (rm *RelayManager) SetTimeouts(inputTimeout, outputTimeout time.Duration) {
+	rm.inputTimeout = inputTimeout
+	rm.outputTimeout = outputTimeout
+	rm.Logger.Debug("RelayManager: Updated timeouts - input: %v, output: %v", inputTimeout, outputTimeout)
+}
+
+// GetInputTimeout returns the configured input timeout
+func (rm *RelayManager) GetInputTimeout() time.Duration {
+	return rm.inputTimeout
 }
 
 // getStartMutex returns a mutex for the given input URL to serialize concurrent starts

@@ -72,15 +72,19 @@ func NewRecordingManager(l *logger.Logger, dir string, relayMgr *RelayManager) *
 }
 
 // StartRecording starts recording a source to a file using ffmpeg, using local relay URL
+// This function implements a two-phase recording start to prevent race conditions:
+// 1. First, create a placeholder recording entry to reserve the name+source combination
+// 2. Then start the actual recording process
 func (rm *RecordingManager) StartRecording(ctx context.Context, name, sourceURL string) error {
 	rm.Logger.Info("StartRecording called: name=%s, source=%s", name, sourceURL)
 
-	// Use a more robust approach to prevent duplicate recordings
+	// Phase 1: Check for duplicates and create placeholder
 	// Create a deterministic key for the recording based on name and source
 	recordingKey := fmt.Sprintf("%s_%s", name, sourceURL)
 
 	rm.mu.Lock()
 	// Check for existing active recordings by name and source
+	// This prevents multiple recordings with the same name+source combination
 	for _, rec := range rm.recordings {
 		if rec.Name == name && rec.Source == sourceURL && rec.Active {
 			rm.mu.Unlock()
@@ -90,6 +94,7 @@ func (rm *RecordingManager) StartRecording(ctx context.Context, name, sourceURL 
 	}
 
 	// Create a placeholder recording entry to prevent race conditions
+	// This ensures that concurrent StartRecording calls won't create duplicates
 	currentTime := time.Now()
 	timestamp := currentTime.Unix()
 	uniqueKey := fmt.Sprintf("%s_%d", recordingKey, timestamp)
@@ -97,26 +102,26 @@ func (rm *RecordingManager) StartRecording(ctx context.Context, name, sourceURL 
 		Name:      name,
 		Source:    sourceURL,
 		StartedAt: currentTime,
-		Active:    true, // Mark as active immediately
+		Active:    true, // Mark as active immediately to block other attempts
 	}
 	rm.recordings[uniqueKey] = placeholderRec
 	rm.mu.Unlock()
 
-	// Compose local RTSP relay path and URL
+	// Phase 2: Start the input relay
+	// Set up a local RTSP relay to handle the input source
+	// This provides a stable local URL for ffmpeg to record from
 	relayPath := fmt.Sprintf("relay/%s", name)
 	localRelayURL := fmt.Sprintf("rtsp://127.0.0.1:8554/%s", relayPath) // or use GetRTSPServerURL if available
-	inputTimeout := 30 * time.Second                                    // match relay_manager.go
-	_, err := rm.RelayMgr.InputRelays.StartInputRelay(name, sourceURL, localRelayURL, inputTimeout)
+	// Use the configured timeout from the relay manager
+	_, err := rm.RelayMgr.InputRelays.StartInputRelay(name, sourceURL, localRelayURL, rm.RelayMgr.GetInputTimeout())
 	if err != nil {
 		rm.Logger.Error("Failed to start input relay for recording: %v", err)
-		// Clean up the placeholder recording entry
+		// Clean up the placeholder recording entry on failure
 		rm.mu.Lock()
 		delete(rm.recordings, uniqueKey)
 		rm.mu.Unlock()
 		return err
 	}
-
-	// Double-check logic is no longer needed since we have a placeholder entry
 
 	// Wait for the RTSP stream to become ready before starting recording ffmpeg
 	rtspServer := rm.RelayMgr.GetRTSPServer()
@@ -501,53 +506,64 @@ func lastUnderscore(s string) int {
 	return -1
 }
 
-// SSEBroker manages Server-Sent Events clients
+// SSEBroker manages Server-Sent Events clients for real-time UI updates
+// This implements a fan-out pattern to broadcast updates to multiple browser clients
 var sseBroker = &SSEBroker{
 	clients:  make(map[chan string]struct{}),
 	shutdown: make(chan struct{}),
 }
 
+// SSEBroker handles real-time communication with web browser clients
+// It maintains a registry of active client connections and broadcasts updates
 type SSEBroker struct {
-	clients  map[chan string]struct{}
-	mu       sync.Mutex
-	shutdown chan struct{}
-	once     sync.Once
+	clients  map[chan string]struct{} // Map of active client channels
+	mu       sync.Mutex               // Protects concurrent access to clients map
+	shutdown chan struct{}            // Signals when broker should shut down
+	once     sync.Once                // Ensures shutdown only happens once
 }
 
+// NotifyAll broadcasts a message to all connected SSE clients
+// Uses non-blocking sends to prevent slow clients from blocking the broadcast
 func (b *SSEBroker) NotifyAll(msg string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	for ch := range b.clients {
 		select {
 		case ch <- msg:
+			// Message sent successfully
 		default:
+			// Client channel is full/blocked - skip to prevent blocking
+			// This prevents slow clients from affecting other clients
 		}
 	}
 }
 
+// AddClient registers a new SSE client channel for receiving updates
 func (b *SSEBroker) AddClient(ch chan string) {
 	b.mu.Lock()
 	b.clients[ch] = struct{}{}
 	b.mu.Unlock()
 }
 
+// RemoveClient unregisters an SSE client channel
 func (b *SSEBroker) RemoveClient(ch chan string) {
 	b.mu.Lock()
 	delete(b.clients, ch)
 	b.mu.Unlock()
 }
 
-// Shutdown closes all active SSE connections
+// Shutdown gracefully closes all active SSE connections
+// Uses sync.Once to ensure it can only be called once safely
 func (b *SSEBroker) Shutdown() {
 	b.once.Do(func() {
 		close(b.shutdown)
 		b.mu.Lock()
 		defer b.mu.Unlock()
-		// Close all client channels to force connections to end
+		// Close all client channels to force connections to end gracefully
 		for ch := range b.clients {
 			close(ch)
 		}
-		// Clear clients map
+		// Clear clients map to prevent memory leaks
 		b.clients = make(map[chan string]struct{})
 	})
 }
@@ -586,10 +602,13 @@ func ApiRecordingsSSE() http.HandlerFunc {
 }
 
 // watchRecordingsDir watches for changes in the recordings directory and notifies via SSE
+// This function uses inotify (Linux) to efficiently monitor filesystem events.
+// It runs in its own goroutine and handles proper shutdown via context cancellation.
 func (rm *RecordingManager) watchRecordingsDir() {
 	defer rm.watcherWg.Done()
 	rm.Logger.Debug("RecordingManager: Starting directory watcher for %s", rm.dir)
 
+	// Initialize inotify file descriptor for filesystem event monitoring
 	fd, err := unix.InotifyInit()
 	if err != nil {
 		rm.Logger.Error("RecordingManager: Failed to initialize inotify: %v", err)
@@ -597,6 +616,8 @@ func (rm *RecordingManager) watchRecordingsDir() {
 	}
 	defer unix.Close(fd)
 
+	// Add a watch for the recordings directory
+	// Monitor file creation, modification, deletion, and moves
 	wd, err := unix.InotifyAddWatch(fd, rm.dir, unix.IN_CREATE|unix.IN_MODIFY|unix.IN_DELETE|unix.IN_MOVED_FROM|unix.IN_MOVED_TO|unix.IN_CLOSE_WRITE)
 	if err != nil {
 		rm.Logger.Error("RecordingManager: Failed to add inotify watch: %v", err)
@@ -604,13 +625,15 @@ func (rm *RecordingManager) watchRecordingsDir() {
 	}
 	defer unix.InotifyRmWatch(fd, uint32(wd))
 
-	// Use a goroutine to handle the blocking read and communicate via channels
+	// Use separate goroutine for blocking inotify reads to enable graceful shutdown
+	// This pattern allows us to select between inotify events and shutdown signals
 	eventCh := make(chan []byte, 1)
 	errCh := make(chan error, 1)
 
 	go func() {
-		buf := make([]byte, 4096)
+		buf := make([]byte, 4096) // Buffer for inotify events
 		for {
+			// Blocking read for inotify events
 			n, err := unix.Read(fd, buf)
 			if err != nil {
 				select {
@@ -621,7 +644,7 @@ func (rm *RecordingManager) watchRecordingsDir() {
 				return
 			}
 
-			// Make a copy of the buffer to send
+			// Copy buffer data since it will be reused
 			eventData := make([]byte, n)
 			copy(eventData, buf[:n])
 
@@ -633,6 +656,7 @@ func (rm *RecordingManager) watchRecordingsDir() {
 		}
 	}()
 
+	// Main event processing loop
 	for {
 		select {
 		case <-rm.ctx.Done():
@@ -642,15 +666,22 @@ func (rm *RecordingManager) watchRecordingsDir() {
 			rm.Logger.Error("RecordingManager: Error reading inotify events: %v", err)
 			return
 		case eventData := <-eventCh:
-			// Process the events
+			// Process inotify events from the buffer
+			// Multiple events can be packed into a single read
 			var offset uint32
 			n := len(eventData)
 			for offset <= uint32(n-unix.SizeofInotifyEvent) {
+				// Parse each inotify event from the buffer
 				raw := (*unix.InotifyEvent)(unsafe.Pointer(&eventData[offset]))
 				mask := raw.Mask
+
+				// Check if this is a relevant file system event
 				if mask&(unix.IN_CREATE|unix.IN_MODIFY|unix.IN_DELETE|unix.IN_MOVED_FROM|unix.IN_MOVED_TO|unix.IN_CLOSE_WRITE) != 0 {
+					// Notify all SSE clients that the recordings list should be updated
 					sseBroker.NotifyAll("update")
 				}
+
+				// Move to next event in buffer
 				offset += unix.SizeofInotifyEvent + raw.Len
 			}
 		}

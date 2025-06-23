@@ -55,6 +55,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 });
         }
     }
+
     // Listen for relayStatusUpdated event from app.js
     window.addEventListener('relayStatusUpdated', function () {
         const allRecordings = window.allRecordingsList || [];
@@ -109,7 +110,12 @@ document.addEventListener('DOMContentLoaded', function () {
             
             // Toggle button logic
             let toggleBtn = '';
-            if (latestActive) {
+            const buttonKey = `${input.input_name}_${input.input_url}`;
+            
+            // Check if this button is in "starting" state
+            if (startingButtons.has(buttonKey)) {
+                toggleBtn = `<button class="toggleRecBtn starting" data-name="${input.input_name}" data-url="${input.input_url}" disabled><span class="material-icons">hourglass_empty</span>Starting...</button>`;
+            } else if (latestActive) {
                 toggleBtn = `<button class=\"toggleRecBtn active\" data-name=\"${input.input_name}\" data-url=\"${input.input_url}\"><span class=\"rec-dot\"></span>Stop</button>`;
             } else {
                 toggleBtn = `<button class=\"toggleRecBtn\" data-name=\"${input.input_name}\" data-url=\"${input.input_url}\"><span class=\"material-icons\">fiber_manual_record</span>Start</button>`;
@@ -141,6 +147,9 @@ document.addEventListener('DOMContentLoaded', function () {
     // Add debouncing to prevent rapid successive requests
     const recordingRequestTimestamps = new Map();
     const REQUEST_DEBOUNCE_MS = 1000; // 1 second debounce
+    
+    // Track buttons that are in "starting" state to preserve them during re-renders
+    const startingButtons = new Map(); // key: "name_url", value: {timeout, originalText}
 
     function attachInputUrlHandlers() {
         document.querySelectorAll('.toggleRecBtn').forEach(btn => {
@@ -222,7 +231,75 @@ document.addEventListener('DOMContentLoaded', function () {
                     });
                 } else {
                     // Start recording
+                    const buttonKey = `${name}_${url}`;
+                    
+                    // Set button to starting state
                     btn.innerHTML = '<span class="material-icons">hourglass_empty</span>Starting...';
+                    btn.disabled = true;
+                    
+                    // Start polling for recording status immediately
+                    const startTime = Date.now();
+                    const maxWaitTime = 20000; // 20 seconds max
+                    let pollInterval;
+                    
+                    const pollForRecording = () => {
+                        fetch('/api/recording/list')
+                            .then(r => r.json())
+                            .then(recordings => {
+                                // Check if a recording with this name and source exists and is active
+                                const recordingExists = recordings.some(rec => 
+                                    rec.name === name && rec.source === url && rec.active
+                                );
+                                
+                                if (recordingExists) {
+                                    // Recording has started successfully - clear polling and update UI
+                                    clearInterval(pollInterval);
+                                    clearTimeout(timeoutId);
+                                    startingButtons.delete(buttonKey);
+                                    fetchInputUrls();
+                                    fetchAllRecordings();
+                                    return;
+                                }
+                                
+                                // Check if we've exceeded the maximum wait time
+                                const elapsed = Date.now() - startTime;
+                                if (elapsed > maxWaitTime) {
+                                    // Timeout - recording may have failed to start
+                                    clearInterval(pollInterval);
+                                    clearTimeout(timeoutId);
+                                    startingButtons.delete(buttonKey);
+                                    fetchInputUrls();
+                                    fetchAllRecordings();
+                                    return;
+                                }
+                            })
+                            .catch(err => {
+                                console.error('Error polling for recording status:', err);
+                                // Continue polling even on error unless timeout reached
+                                const elapsed = Date.now() - startTime;
+                                if (elapsed > maxWaitTime) {
+                                    clearInterval(pollInterval);
+                                    clearTimeout(timeoutId);
+                                    startingButtons.delete(buttonKey);
+                                    fetchInputUrls();
+                                    fetchAllRecordings();
+                                }
+                            });
+                    };
+                    
+                    // Fallback timeout in case polling fails
+                    const timeoutId = setTimeout(() => {
+                        clearInterval(pollInterval);
+                        startingButtons.delete(buttonKey);
+                        fetchInputUrls();
+                        fetchAllRecordings();
+                    }, maxWaitTime);
+                    
+                    startingButtons.set(buttonKey, {
+                        timeout: timeoutId,
+                        originalText: originalText
+                    });
+                    
                     fetch('/api/recording/start', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -235,13 +312,18 @@ document.addEventListener('DOMContentLoaded', function () {
                         }
                         return response.json();
                     }).then(() => {
-                        // Wait a bit for the recording to actually start, then refresh
-                        setTimeout(() => {
-                            fetchInputUrls();
-                            fetchAllRecordings();
-                        }, 500);
+                        // Start polling every 1 second after successful API call
+                        pollInterval = setInterval(pollForRecording, 1000);
+                        // Also poll immediately
+                        pollForRecording();
                     }).catch((error) => {
                         console.error('Error starting recording:', error);
+                        
+                        // Clear timeouts and remove from tracking
+                        clearInterval(pollInterval);
+                        clearTimeout(timeoutId);
+                        startingButtons.delete(buttonKey);
+                        
                         if (error.message.includes('already exists')) {
                             // Recording is already running - just refresh UI silently  
                             console.log('Recording is already running, refreshing UI');
@@ -251,10 +333,10 @@ document.addEventListener('DOMContentLoaded', function () {
                             }, 100);
                         } else {
                             alert('Failed to start recording: ' + error.message);
+                            // Reset button immediately on error
+                            btn.innerHTML = originalText;
+                            btn.disabled = false;
                         }
-                        btn.innerHTML = originalText;
-                    }).finally(() => {
-                        btn.disabled = false;
                     });
                 }
             };

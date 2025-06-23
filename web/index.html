@@ -4,20 +4,31 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Go-MLS Streaming Control</title>
+    <meta name="description" content="Go-MLS streaming control panel for managing video relays and recordings">
     <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:400,500,700&display=swap">
     <link rel="stylesheet" href="https://fonts.googleapis.com/icon?family=Material+Icons">
     <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-    <h1>Go-MLS Control Panel</h1>
-    <nav style="margin-bottom:1em; display:flex; gap:16px;">
-        <button id="tabRelays" class="tab-btn md-btn active">Relays</button>
-        <button id="tabRecordings" class="tab-btn md-btn">Recordings</button>
-    </nav>
-    <div id="relaysTab">
-        <div id="controls"></div>
-    </div>
-    <div id="recordingsTab" style="display:none"></div>
+    <header>
+        <h1>Go-MLS Control Panel</h1>
+    </header>
+    <main>
+        <nav role="tablist" style="margin-bottom:1em; display:flex; gap:16px;" aria-label="Main navigation tabs">
+            <button id="tabRelays" class="tab-btn md-btn active" role="tab" 
+                    aria-selected="true" aria-controls="relaysTab">
+                Relays
+            </button>
+            <button id="tabRecordings" class="tab-btn md-btn" role="tab" 
+                    aria-selected="false" aria-controls="recordingsTab">
+                Recordings
+            </button>
+        </nav>
+        <div id="relaysTab" tabindex="0" role="tabpanel" aria-labelledby="tabRelays">
+            <div id="controls"></div>
+        </div>
+        <div id="recordingsTab" style="display:none" tabindex="0" role="tabpanel" aria-labelledby="tabRecordings"></div>
+    </main>
     <script src="/app.js"></script>
     <script src="/recordings.js"></script>
     <script>
@@ -26,17 +37,38 @@
         const tabRecordings = document.getElementById('tabRecordings');
         const relaysTab = document.getElementById('relaysTab');
         const recordingsTab = document.getElementById('recordingsTab');
+        
+        function switchTab(activeTab, inactiveTab, activePanel, inactivePanel) {
+            // Update ARIA attributes
+            activeTab.setAttribute('aria-selected', 'true');
+            inactiveTab.setAttribute('aria-selected', 'false');
+            
+            // Update visual state
+            activeTab.classList.add('active');
+            inactiveTab.classList.remove('active');
+            
+            // Show/hide panels
+            activePanel.style.display = '';
+            inactivePanel.style.display = 'none';
+            
+            // Focus the active panel for screen readers
+            activePanel.focus();
+        }
+        
         tabRelays.onclick = function () {
-            tabRelays.classList.add('active');
-            tabRecordings.classList.remove('active');
-            relaysTab.style.display = '';
-            recordingsTab.style.display = 'none';
+            switchTab(tabRelays, tabRecordings, relaysTab, recordingsTab);
         };
+        
         tabRecordings.onclick = function () {
-            tabRecordings.classList.add('active');
-            tabRelays.classList.remove('active');
-            relaysTab.style.display = 'none';
-            recordingsTab.style.display = '';
+            switchTab(tabRecordings, tabRelays, recordingsTab, relaysTab);
+        };
+        
+        // Keyboard navigation support
+        tabRelays.onkeydown = tabRecordings.onkeydown = function(e) {
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                this.click();
+            }
         };
     });
     </script>

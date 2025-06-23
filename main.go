@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"embed"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -17,15 +16,10 @@ import (
 	"syscall"
 	"time"
 
+	"go-mls/internal/config"
 	"go-mls/internal/httputil"
 	"go-mls/internal/logger"
 	"go-mls/internal/stream"
-)
-
-// HTTP server configuration constants
-const (
-	DefaultHTTPPort = "8080"
-	DefaultHTTPHost = "0.0.0.0"
 )
 
 //go:embed web/*
@@ -42,16 +36,21 @@ func apiStartRelay(relayMgr *stream.RelayManager) http.HandlerFunc {
 			PlatformPreset string            `json:"platform_preset"`
 			FFmpegOptions  map[string]string `json:"ffmpeg_options"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+
+		// Use secure JSON decoding with size limits
+		if err := httputil.DecodeJSON(r, &req); err != nil {
 			relayMgr.Logger.Error("apiStartRelay: failed to decode request: %v", err)
 			httputil.WriteError(w, http.StatusBadRequest, "Invalid request")
 			return
 		}
+
+		// Validate required fields
 		if req.InputName == "" || req.OutputName == "" {
 			relayMgr.Logger.Error("apiStartRelay: missing input or output name")
 			httputil.WriteError(w, http.StatusBadRequest, "Input and output names are required")
 			return
 		}
+
 		relayMgr.Logger.Debug("apiStartRelay: starting relay for input=%s, output=%s, input_name=%s, output_name=%s, preset=%s", req.InputURL, req.OutputURL, req.InputName, req.OutputName, req.PlatformPreset)
 
 		// Check if preset/options are provided in request, otherwise try to get from stored config
@@ -94,7 +93,9 @@ func apiStopRelay(relayMgr *stream.RelayManager) http.HandlerFunc {
 			InputName  string `json:"input_name"`
 			OutputName string `json:"output_name"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+
+		// Use secure JSON decoding with size limits
+		if err := httputil.DecodeJSON(r, &req); err != nil {
 			relayMgr.Logger.Error("apiStopRelay: failed to decode request: %v", err)
 			httputil.WriteError(w, http.StatusBadRequest, "Invalid request")
 			return
@@ -205,7 +206,9 @@ func apiDeleteInput(relayMgr *stream.RelayManager) http.HandlerFunc {
 			InputURL  string `json:"input_url"`
 			InputName string `json:"input_name"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+
+		// Use secure JSON decoding with size limits
+		if err := httputil.DecodeJSON(r, &req); err != nil {
 			relayMgr.Logger.Error("apiDeleteInput: failed to decode request: %v", err)
 			httputil.WriteError(w, http.StatusBadRequest, "Invalid request")
 			return
@@ -235,7 +238,9 @@ func apiDeleteOutput(relayMgr *stream.RelayManager) http.HandlerFunc {
 			InputName  string `json:"input_name"`
 			OutputName string `json:"output_name"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+
+		// Use secure JSON decoding with size limits
+		if err := httputil.DecodeJSON(r, &req); err != nil {
 			relayMgr.Logger.Error("apiDeleteOutput: failed to decode request: %v", err)
 			httputil.WriteError(w, http.StatusBadRequest, "Invalid request")
 			return
@@ -257,16 +262,31 @@ func apiDeleteOutput(relayMgr *stream.RelayManager) http.HandlerFunc {
 }
 
 func main() {
+	var configFile string
 	var recordingsDir string
-	flag.StringVar(&recordingsDir, "recordings-dir", "./recordings", "Directory to store recordings")
+	flag.StringVar(&configFile, "config", "config.json", "Configuration file path")
+	flag.StringVar(&recordingsDir, "recordings-dir", "", "Directory to store recordings (overrides config)")
 	flag.Parse()
 
+	// Load configuration
+	cfg, err := config.LoadConfig(configFile)
+	if err != nil {
+		fmt.Printf("Failed to load configuration: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Override recordings directory if provided via command line
+	if recordingsDir != "" {
+		cfg.Recording.Directory = recordingsDir
+	}
+
 	logger := logger.NewLogger()
+	logger.Info("Starting Go-MLS Relay Manager")
 
 	// Get initial goroutine count
 	initialGoroutines := runtime.NumGoroutine()
 
-	absDir, err := filepath.Abs(recordingsDir)
+	absDir, err := filepath.Abs(cfg.Recording.Directory)
 	if err != nil {
 		logger.Fatal("Failed to resolve recordings directory: %v", err)
 	}
@@ -275,14 +295,18 @@ func main() {
 	}
 	logger.Info("Using recordings directory: %s", absDir)
 
-	// Initialize RTSP server
+	// Initialize RTSP server with configuration
 	rtspServer := stream.NewRTSPServerManager(logger)
+	// TODO: Use RTSP configuration from config file
 	if err := rtspServer.Start(); err != nil {
 		logger.Fatal("Failed to start RTSP server: %v", err)
 	}
 
 	relayMgr := stream.NewRelayManager(logger, absDir)
 	relayMgr.SetRTSPServer(rtspServer)
+	// Set relay configuration timeouts
+	relayMgr.SetTimeouts(cfg.Relay.InputTimeout, cfg.Relay.OutputTimeout)
+
 	recordingMgr := stream.NewRecordingManager(logger, absDir, relayMgr)
 
 	// Use embedded static assets
@@ -316,13 +340,13 @@ func main() {
 
 	// Create HTTP server with proper shutdown support and timeout configuration
 	server := &http.Server{
-		Addr: ":" + DefaultHTTPPort,
+		Addr: cfg.HTTP.Host + ":" + cfg.HTTP.Port,
 
-		// Connection timeouts
-		ReadTimeout:       10 * time.Second, // Time to read request headers and body
-		WriteTimeout:      30 * time.Second, // Time to write response (important for SSE)
-		IdleTimeout:       60 * time.Second, // Time to keep connections alive between requests
-		ReadHeaderTimeout: 5 * time.Second,  // Time to read request headers only
+		// Connection timeouts from configuration
+		ReadTimeout:       cfg.HTTP.ReadTimeout,
+		WriteTimeout:      cfg.HTTP.WriteTimeout, // Important for SSE connections
+		IdleTimeout:       cfg.HTTP.IdleTimeout,
+		ReadHeaderTimeout: 5 * time.Second, // Keep fixed for security
 
 		// Maximum header size (default 1MB is usually fine)
 		MaxHeaderBytes: 1 << 20, // 1 MB
@@ -334,8 +358,8 @@ func main() {
 
 	// Start server in a goroutine
 	go func() {
-		logger.Info("Go-MLS relay manager running at http://%s:%s ...", DefaultHTTPHost, DefaultHTTPPort)
-		logger.Debug("main: server starting on :%s", DefaultHTTPPort)
+		logger.Info("Go-MLS relay manager running at http://%s:%s ...", cfg.HTTP.Host, cfg.HTTP.Port)
+		logger.Debug("main: server starting on %s:%s", cfg.HTTP.Host, cfg.HTTP.Port)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.Error("Server error: %v", err)
 		}
