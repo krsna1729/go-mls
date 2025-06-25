@@ -573,6 +573,7 @@ document.addEventListener('DOMContentLoaded', function () {
                         <td style="padding:6px 8px; background:${inputBg}; text-align:center;">${inputStatus === 'Running' && typeof relay.input.mem === 'number' ? Math.round(relay.input.mem / (1024 * 1024)) : '-'}</td>
                         <td style="padding:6px 8px; background:${inputBg}; text-align:center;">${inputStatus === 'Running' && typeof relay.input.speed === 'number' ? relay.input.speed.toFixed(2) + 'x' : '-'}</td>
                         <td style="padding:6px 8px; background:${inputBg}; text-align:center;">
+        <button class="playInputBtn" data-input-name="${inputName}" data-local-url="${relay.input.local_url}" title="Play Input"><span class="material-icons">play_circle_filled</span></button>
         <button class="deleteInputBtn" data-input="${input}" data-input-name="${inputName}" title="Delete Input" style="padding:4px 6px; min-width:auto; min-height:auto; background:#dc3545; color:white; border:none; border-radius:3px; font-size:0.8em;"><span class="material-icons" style="font-size:16px;">delete</span></button>
     </td>
                         <td style="padding:6px 8px; font-style:italic; color:#999; text-align:center;">${inputError ? `<div style='color:red; font-size:0.85em; margin-top:2px; text-align:center;'>${inputError}</div>` : '<i>No outputs</i>'}</td>
@@ -597,6 +598,7 @@ document.addEventListener('DOMContentLoaded', function () {
                             html += `<td rowspan="${relay.outputs.length}" style="padding:6px 8px; background:${inputBg}; vertical-align:middle; text-align:center;">${inputStatus === 'Running' && typeof relay.input.mem === 'number' ? Math.round(relay.input.mem / (1024 * 1024)) : '-'}</td>`;
                             html += `<td rowspan="${relay.outputs.length}" style="padding:6px 8px; background:${inputBg}; vertical-align:middle; text-align:center;">${inputStatus === 'Running' && typeof relay.input.speed === 'number' ? relay.input.speed.toFixed(2) + 'x' : '-'}</td>`;
                             html += `<td rowspan="${relay.outputs.length}" style="padding:6px 8px; background:${inputBg}; vertical-align:middle; text-align:center;">
+        <button class="playInputBtn" data-input-name="${inputName}" data-local-url="${relay.input.local_url}" title="Play Input"><span class="material-icons">play_circle_filled</span></button>
         <button class="deleteInputBtn" data-input="${input}" data-input-name="${inputName}" title="Delete Input" style="padding:4px 6px; min-width:auto; min-height:auto; background:#dc3545; color:white; border:none; border-radius:3px; font-size:0.8em;"><span class="material-icons" style="font-size:16px;">delete</span></button>
     </td>`;
                         }
@@ -725,4 +727,288 @@ document.addEventListener('DOMContentLoaded', function () {
     fetchStatus();
     // Periodically refresh status every 3 seconds
     setInterval(fetchStatus, 3000);
+
+    // --- Video Player Modal Logic ---
+    // Add modal HTML to body
+    const modalHtml = `
+    <div id="videoPlayerModal" class="modal" style="display:none; position:fixed; z-index:1000; left:0; top:0; width:100%; height:100%; background:rgba(0,0,0,0.8); justify-content:center; align-items:center;">
+        <div class="modal-content" style="position:relative; background:#121212; border-radius:8px; overflow:hidden; max-width:800px; width:90%; max-height:80vh;">
+            <span id="closeVideoModal" class="close" style="position:absolute; top:10px; right:10px; color:white; font-size:24px; cursor:pointer;">&times;</span>
+            <video id="inputVideoPlayer" controls style="width:100%; height:auto; background:black;"></video>
+        </div>
+    </div>`;
+    document.body.insertAdjacentHTML('beforeend', modalHtml);
+
+    // Play button handler (delegated, robust for icon clicks)
+    document.addEventListener('click', function (e) {
+        const btn = e.target.closest('button.playInputBtn');
+        if (btn) {
+            const inputName = btn.getAttribute('data-input-name');
+            if (!inputName) return;
+            // Start HLS viewer session
+            fetch('/api/relay/hls/start-viewer', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ input_name: inputName })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.viewer_id && data.playlist_url) {
+                    const modal = document.getElementById('videoPlayerModal');
+                    const video = document.getElementById('inputVideoPlayer');
+                    // Store viewer info for cleanup
+                    video.dataset.viewerId = data.viewer_id;
+                    video.dataset.inputName = inputName;
+                    console.log('HLS viewer started:', inputName, data.viewer_id);
+                    // --- Consecutive network error counter ---
+                    let hlsNetworkErrorCount = 0;
+                    // HLS.js logic with improved error handling
+                    if (window.Hls && Hls.isSupported()) {
+                        if (window.hlsInstance) {
+                            window.hlsInstance.destroy();
+                        }
+                        const hls = new Hls({
+                            debug: false,
+                            enableWorker: true,
+                            lowLatencyMode: true,
+                            backBufferLength: 90,
+                            manifestLoadingTimeOut: 10000,
+                            manifestLoadingMaxRetry: 5,
+                            levelLoadingTimeOut: 10000,
+                            fragLoadingTimeOut: 20000
+                        });
+                        // Add error handling
+                        hls.on(Hls.Events.ERROR, function(event, data) {
+                            console.error('HLS error:', data.type, data.details, data);
+                            if (data.fatal && data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+                                hlsNetworkErrorCount++;
+                                console.warn('HLS fatal network error count:', hlsNetworkErrorCount);
+                                if (hlsNetworkErrorCount >= 5) {
+                                    closeHLSModal();
+                                    alert('Stream disconnected due to repeated network errors.');
+                                    return;
+                                }
+                            }
+                            // Reset on any successful fragment/playlist load
+                            if (data.type === Hls.ErrorTypes.NETWORK_ERROR && hlsNetworkErrorCount > 0 && !data.fatal) {
+                                hlsNetworkErrorCount = 0;
+                            }
+                            if (data.fatal) {
+                                switch(data.type) {
+                                    case Hls.ErrorTypes.NETWORK_ERROR:
+                                        hls.startLoad();
+                                        break;
+                                    case Hls.ErrorTypes.MEDIA_ERROR:
+                                        hls.recoverMediaError();
+                                        break;
+                                    default:
+                                        break;
+                                }
+                            }
+                        });
+                        // Reset error counter on successful fragment/playlist load
+                        hls.on(Hls.Events.FRAG_LOADED, function() { hlsNetworkErrorCount = 0; });
+                        hls.on(Hls.Events.LEVEL_LOADED, function(event, data) {
+                            hlsNetworkErrorCount = 0;
+                            if (data.details && data.details.live === false) {
+                                setTimeout(() => {
+                                    closeHLSModal();
+                                    alert('Stream has ended.');
+                                }, 500);
+                            }
+                        });
+                        hls.on(Hls.Events.FRAG_EOF, function() {
+                            setTimeout(() => {
+                                closeHLSModal();
+                                alert('Stream has ended.');
+                            }, 500);
+                        });
+                        hls.loadSource(data.playlist_url);
+                        hls.attachMedia(video);
+                        window.hlsInstance = hls;
+                    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                        // Native HLS support (Safari)
+                        video.src = data.playlist_url;
+                    } else {
+                        console.warn('HLS not supported by this browser, trying fallback');
+                        video.src = data.playlist_url; // fallback, unlikely to work
+                    }
+                        
+                        modal.style.display = 'flex';
+                        video.focus();
+                        // Start heartbeat
+                        startHLSHeartbeat(inputName, data.viewer_id);
+                        // --- Auto-close on video end (native event) ---
+                        video.onended = function() {
+                            closeHLSModal();
+                            alert('Stream has ended.');
+                        };
+                    } else {
+                        console.error('Failed to start HLS viewer:', data);
+                        alert('Failed to start video player');
+                    }
+                })
+                .catch(err => {
+                    console.error('Error starting HLS viewer:', err);
+                    alert('Failed to start video player');
+                });
+        }
+    });
+
+    // HLS heartbeat function
+    let heartbeatInterval = null;
+    let heartbeatErrorCount = 0; // Track consecutive heartbeat errors
+    function startHLSHeartbeat(inputName, viewerId) {
+        // Clear any existing heartbeat
+        if (heartbeatInterval) {
+            clearInterval(heartbeatInterval);
+            heartbeatInterval = null;
+            console.log('HLS heartbeat stopped (before starting new)');
+        }
+        heartbeatErrorCount = 0;
+        // Send heartbeat every 15 seconds
+        heartbeatInterval = setInterval(() => {
+            fetch('/api/relay/hls/heartbeat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ 
+                    input_name: inputName, 
+                    viewer_id: viewerId 
+                })
+            })
+            .then(resp => {
+                if (!resp.ok) throw new Error('Heartbeat not ok');
+                heartbeatErrorCount = 0; // Reset on success
+            })
+            .catch(err => {
+                heartbeatErrorCount++;
+                console.error('HLS heartbeat failed:', err, 'count:', heartbeatErrorCount);
+                if (heartbeatErrorCount >= 5) {
+                    closeHLSModal();
+                    alert('Stream disconnected due to repeated heartbeat errors.');
+                }
+            });
+        }, 15000);
+        console.log('HLS heartbeat started');
+    }
+
+    function stopHLSViewer(inputName, viewerId) {
+        if (heartbeatInterval) {
+            clearInterval(heartbeatInterval);
+            heartbeatInterval = null;
+            console.log('HLS heartbeat stopped (stopHLSViewer)');
+        }
+        if (viewerId && inputName) {
+            fetch('/api/relay/hls/stop-viewer', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ 
+                    input_name: inputName, 
+                    viewer_id: viewerId 
+                })
+            }).catch(err => {
+                console.error('Error stopping HLS viewer:', err);
+            });
+        }
+    }
+
+    // Modal close handler (updated)
+    const closeModalBtn = document.getElementById('closeVideoModal');
+    if (closeModalBtn) {
+        closeModalBtn.onclick = function () {
+            const modal = document.getElementById('videoPlayerModal');
+            const video = document.getElementById('inputVideoPlayer');
+            if (modal && video) {
+                // Stop HLS viewer session
+                const viewerId = video.dataset.viewerId;
+                const inputName = video.dataset.inputName;
+                stopHLSViewer(inputName, viewerId);
+                
+                video.pause();
+                video.src = '';
+                if (window.hlsInstance) {
+                    window.hlsInstance.destroy();
+                    window.hlsInstance = null;
+                }
+                modal.style.display = 'none';
+                
+                // Clean up datasets
+                delete video.dataset.viewerId;
+                delete video.dataset.inputName;
+                console.log('HLS modal closed');
+            }
+        };
+    }
+    
+    // Close modal on outside click (updated)
+    const modal = document.getElementById('videoPlayerModal');
+    if (modal) {
+        modal.onclick = function (e) {
+            if (e.target === modal) {
+                const video = document.getElementById('inputVideoPlayer');
+                const viewerId = video.dataset.viewerId;
+                const inputName = video.dataset.inputName;
+                stopHLSViewer(inputName, viewerId);
+                
+                video.pause();
+                video.src = '';
+                if (window.hlsInstance) {
+                    window.hlsInstance.destroy();
+                    window.hlsInstance = null;
+                }
+                modal.style.display = 'none';
+                
+                // Clean up datasets
+                delete video.dataset.viewerId;
+                delete video.dataset.inputName;
+            }
+        };
+    }
+    
+    // Handle page unload to clean up HLS viewer
+    window.addEventListener('beforeunload', function() {
+        const video = document.getElementById('inputVideoPlayer');
+        if (video) {
+            const viewerId = video.dataset.viewerId;
+            const inputName = video.dataset.inputName;
+            if (viewerId && inputName) {
+                // Use sendBeacon for reliable cleanup on page unload
+                navigator.sendBeacon('/api/relay/hls/stop-viewer', 
+                    JSON.stringify({ 
+                        input_name: inputName, 
+                        viewer_id: viewerId 
+                    })
+                );
+            }
+        }
+    });
+
+    // --- Move closeHLSModal here so it shares scope with modal/player/heartbeat vars ---
+    function closeHLSModal() {
+        const modal = document.getElementById('videoPlayerModal');
+        const video = document.getElementById('inputVideoPlayer');
+        if (modal && video) {
+            // Stop HLS viewer session
+            const viewerId = video.dataset.viewerId;
+            const inputName = video.dataset.inputName;
+            stopHLSViewer(inputName, viewerId);
+            if (heartbeatInterval) {
+                clearInterval(heartbeatInterval);
+                heartbeatInterval = null;
+                console.log('HLS heartbeat stopped (closeHLSModal)');
+            }
+            heartbeatErrorCount = 0;
+            video.pause();
+            video.src = '';
+            if (window.hlsInstance) {
+                window.hlsInstance.destroy();
+                window.hlsInstance = null;
+            }
+            modal.style.display = 'none';
+            // Clean up datasets
+            delete video.dataset.viewerId;
+            delete video.dataset.inputName;
+            console.log('HLS modal closed');
+        }
+    }
 });

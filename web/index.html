@@ -29,6 +29,14 @@
         </div>
         <div id="recordingsTab" style="display:none" tabindex="0" role="tabpanel" aria-labelledby="tabRecordings"></div>
     </main>
+    <!-- Video Player Modal -->
+    <div id="videoPlayerModal" class="modal" style="display:none;">
+        <div class="modal-content">
+            <button id="closeVideoModal" class="modal-close" aria-label="Close video player"><span class="material-icons">close</span></button>
+            <video id="inputVideoPlayer" controls autoplay style="width:100%;max-height:70vh;outline:none;" tabindex="0"></video>
+        </div>
+    </div>
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@1.4.12"></script>
     <script src="/app.js"></script>
     <script src="/recordings.js"></script>
     <script>

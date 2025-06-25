@@ -6,6 +6,7 @@ toolchain go1.24.2
 
 require (
 	github.com/bluenviron/gortsplib/v4 v4.14.1
+	github.com/fsnotify/fsnotify v1.6.0
 	github.com/pion/rtp v1.8.16
 	golang.org/x/sys v0.33.0
 )

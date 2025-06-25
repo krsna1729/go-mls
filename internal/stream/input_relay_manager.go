@@ -410,6 +410,18 @@ func (irm *InputRelayManager) GetInputNameForURL(inputURL string) string {
 	return ""
 }
 
+// FindLocalURLByInputName returns the local RTSP URL for a given inputName, concurrency-safe.
+func (irm *InputRelayManager) FindLocalURLByInputName(inputName string) (string, bool) {
+	irm.mu.Lock()
+	defer irm.mu.Unlock()
+	for _, relay := range irm.Relays {
+		if relay.InputName == inputName {
+			return relay.LocalURL, true
+		}
+	}
+	return "", false
+}
+
 // DeleteInput completely removes an input relay and all associated outputs
 func (irm *InputRelayManager) DeleteInput(inputURL string) error {
 	irm.Logger.Info("InputRelayManager: DeleteInput: inputURL=%s", inputURL)

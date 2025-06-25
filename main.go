@@ -261,6 +261,112 @@ func apiDeleteOutput(relayMgr *stream.RelayManager) http.HandlerFunc {
 	}
 }
 
+// apiWatchInputHLS handles HLS playlist/segment requests for a given input relay.
+func apiWatchInputHLS(hlsMgr *stream.HLSManager, relayMgr *stream.RelayManager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// URL: /api/relay/watch-input/hls/{inputName}/{file}
+		parts := strings.SplitN(strings.TrimPrefix(r.URL.Path, "/api/relay/watch-input/hls/"), "/", 2)
+		if len(parts) != 2 {
+			relayMgr.Logger.Error("Invalid HLS request path: %s", r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		inputName, file := parts[0], parts[1]
+		if inputName == "" || file == "" {
+			relayMgr.Logger.Error("Missing inputName or file in HLS request: %s", r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+
+		// HLS manager will handle starting input relay if needed
+		hlsMgr.ServeHLS(w, r, inputName, file, "")
+	}
+}
+
+// apiStartHLSViewer creates a new HLS viewer session
+func apiStartHLSViewer(hlsMgr *stream.HLSManager, relayMgr *stream.RelayManager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			InputName string `json:"input_name"`
+		}
+
+		if err := httputil.DecodeJSON(r, &req); err != nil {
+			relayMgr.Logger.Error("HLS start viewer: failed to decode request: %v", err)
+			httputil.WriteError(w, http.StatusBadRequest, "Invalid request")
+			return
+		}
+
+		if req.InputName == "" {
+			relayMgr.Logger.Error("HLS start viewer: missing input name")
+			httputil.WriteError(w, http.StatusBadRequest, "Input name is required")
+			return
+		}
+
+		// HLS manager will handle starting input relay if needed
+		viewerID, err := hlsMgr.AddViewer(req.InputName, "")
+		if err != nil {
+			relayMgr.Logger.Error("HLS start viewer: failed to add viewer for input %s: %v", req.InputName, err)
+			httputil.WriteError(w, http.StatusInternalServerError, "Failed to start HLS viewer")
+			return
+		}
+
+		relayMgr.Logger.Info("HLS viewer started: input=%s, viewerID=%s", req.InputName, viewerID)
+		httputil.WriteJSON(w, http.StatusOK, map[string]string{
+			"viewer_id":    viewerID,
+			"playlist_url": fmt.Sprintf("/api/relay/watch-input/hls/%s/index.m3u8", req.InputName),
+		})
+	}
+}
+
+// apiStopHLSViewer stops an HLS viewer session
+func apiStopHLSViewer(hlsMgr *stream.HLSManager, relayMgr *stream.RelayManager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			InputName string `json:"input_name"`
+			ViewerID  string `json:"viewer_id"`
+		}
+
+		if err := httputil.DecodeJSON(r, &req); err != nil {
+			relayMgr.Logger.Error("HLS stop viewer: failed to decode request: %v", err)
+			httputil.WriteError(w, http.StatusBadRequest, "Invalid request")
+			return
+		}
+
+		if req.InputName == "" || req.ViewerID == "" {
+			relayMgr.Logger.Error("HLS stop viewer: missing input name or viewer ID")
+			httputil.WriteError(w, http.StatusBadRequest, "Input name and viewer ID are required")
+			return
+		}
+
+		hlsMgr.RemoveViewer(req.InputName, req.ViewerID)
+		relayMgr.Logger.Info("HLS viewer stopped: input=%s, viewerID=%s", req.InputName, req.ViewerID)
+		httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "stopped"})
+	}
+}
+
+// apiHLSViewerHeartbeat updates viewer heartbeat
+func apiHLSViewerHeartbeat(hlsMgr *stream.HLSManager, relayMgr *stream.RelayManager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			InputName string `json:"input_name"`
+			ViewerID  string `json:"viewer_id"`
+		}
+
+		if err := httputil.DecodeJSON(r, &req); err != nil {
+			httputil.WriteError(w, http.StatusBadRequest, "Invalid request")
+			return
+		}
+
+		if req.InputName == "" || req.ViewerID == "" {
+			httputil.WriteError(w, http.StatusBadRequest, "Input name and viewer ID are required")
+			return
+		}
+
+		hlsMgr.UpdateViewerHeartbeat(req.InputName, req.ViewerID)
+		httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	}
+}
+
 func main() {
 	var configFile string
 	var recordingsDir string
@@ -309,6 +415,11 @@ func main() {
 
 	recordingMgr := stream.NewRecordingManager(logger, absDir, relayMgr)
 
+	// Instantiate HLSManager (ffmpeg path, cleanup interval, session timeout)
+	hlsMgr := stream.NewHLSManager("ffmpeg", 2*time.Minute, 5*time.Minute)
+	// Connect HLS manager to relay manager for proper consumer management
+	hlsMgr.SetRelayManager(relayMgr)
+
 	// Use embedded static assets
 	staticFS, err := fs.Sub(webAssets, "web")
 	if err != nil {
@@ -337,6 +448,10 @@ func main() {
 
 	http.HandleFunc("/api/input/delete", apiDeleteInput(relayMgr))
 	http.HandleFunc("/api/output/delete", apiDeleteOutput(relayMgr))
+	http.HandleFunc("/api/relay/watch-input/hls/", apiWatchInputHLS(hlsMgr, relayMgr))
+	http.HandleFunc("/api/relay/hls/start-viewer", apiStartHLSViewer(hlsMgr, relayMgr))
+	http.HandleFunc("/api/relay/hls/stop-viewer", apiStopHLSViewer(hlsMgr, relayMgr))
+	http.HandleFunc("/api/relay/hls/heartbeat", apiHLSViewerHeartbeat(hlsMgr, relayMgr))
 
 	// Create HTTP server with proper shutdown support and timeout configuration
 	server := &http.Server{
@@ -369,6 +484,12 @@ func main() {
 	<-sigChan
 	logger.Info("Received interrupt signal, initiating graceful shutdown...")
 
+	// Write #EXT-X-ENDLIST to all active HLS playlists before shutdown
+	logger.Info("Writing #EXT-X-ENDLIST to all HLS playlists...")
+	hlsMgr.WriteEndlistToAll()
+	// Give clients a moment to fetch the final playlist
+	time.Sleep(10 * time.Second)
+
 	// Create a context with timeout for graceful shutdown
 	// Increased timeout to allow SSE connections and long-running requests to close properly
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -391,6 +512,10 @@ func main() {
 	// Stop RTSP server
 	logger.Info("Stopping RTSP server...")
 	rtspServer.Stop()
+
+	// Shutdown HLS manager and clean up all HLS sessions/ffmpeg processes
+	logger.Info("Shutting down HLS manager...")
+	hlsMgr.Shutdown()
 
 	// Give more time for cleanup of goroutines
 	logger.Info("Waiting for goroutines to clean up...")
@@ -501,11 +626,8 @@ func dumpGoroutineProfiles(logger *logger.Logger) {
 		if start < 0 {
 			start = 0
 		}
-
 		for i := start; i < len(stackLines); i++ {
-			if strings.TrimSpace(stackLines[i]) != "" {
-				logger.Info("%s", stackLines[i])
-			}
+			logger.Info("%s", stackLines[i])
 		}
 	}
 

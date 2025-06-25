@@ -11,6 +11,12 @@ import (
 	"go-mls/internal/process"
 )
 
+// InputConfig stores persistent input configuration
+type InputConfig struct {
+	InputURL  string `json:"input_url"`
+	InputName string `json:"input_name"`
+}
+
 // RelayManager manages all relays (per input URL)
 type RelayManager struct {
 	InputRelays  *InputRelayManager
@@ -18,6 +24,10 @@ type RelayManager struct {
 	Logger       *logger.Logger
 	rtspServer   *RTSPServerManager // RTSP server for local relays
 	recDir       string             // Directory for playing recordings from
+
+	// Configuration registry for persistent input mappings
+	inputConfigs map[string]*InputConfig // inputName -> InputConfig
+	configMu     sync.RWMutex           // Protects inputConfigs
 
 	// Configurable timeouts
 	inputTimeout  time.Duration
@@ -36,6 +46,7 @@ func NewRelayManager(l *logger.Logger, recDir string) *RelayManager {
 		OutputRelays:  orm,
 		Logger:        l,
 		recDir:        recDir,
+		inputConfigs:  make(map[string]*InputConfig),
 		inputTimeout:  30 * time.Second, // Default values, can be overridden
 		outputTimeout: 60 * time.Second,
 		startMutexes:  make(map[string]*sync.Mutex),
@@ -119,6 +130,9 @@ var PlatformPresets = map[string]PlatformPreset{
 // StartRelayWithOptions starts a relay with advanced ffmpeg options and/or platform preset
 func (rm *RelayManager) StartRelayWithOptions(inputURL, outputURL, inputName, outputName string, opts *FFmpegOptions, preset string) error {
 	rm.Logger.Debug("StartRelayWithOptions called: input=%s, output=%s, input_name=%s, output_name=%s, preset=%s", inputURL, outputURL, inputName, outputName, preset)
+
+	// Register input configuration for future HLS access
+	rm.RegisterInputConfig(inputName, inputURL)
 
 	// Get mutex for this input URL to serialize concurrent starts
 	startMutex := rm.getStartMutex(inputURL)
@@ -356,6 +370,11 @@ func (rm *RelayManager) ImportConfig(filename string) error {
 	// Start all relays in parallel for faster startup
 	var wg sync.WaitGroup
 	errorChan := make(chan error, 100) // Buffer for potential errors
+
+	// Register all input configurations first
+	for _, relayCfg := range configs {
+		rm.RegisterInputConfig(relayCfg.InputName, relayCfg.InputURL)
+	}
 
 	for _, relayCfg := range configs {
 		for _, out := range relayCfg.Outputs {
@@ -694,4 +713,88 @@ func (rm *RelayManager) getStartMutex(inputURL string) *sync.Mutex {
 	mutex := &sync.Mutex{}
 	rm.startMutexes[inputURL] = mutex
 	return mutex
+}
+
+// RegisterInputConfig stores an input configuration for later HLS access
+func (rm *RelayManager) RegisterInputConfig(inputName, inputURL string) {
+	rm.configMu.Lock()
+	defer rm.configMu.Unlock()
+	
+	rm.inputConfigs[inputName] = &InputConfig{
+		InputURL:  inputURL,
+		InputName: inputName,
+	}
+	rm.Logger.Debug("Registered input config: %s -> %s", inputName, inputURL)
+}
+
+// GetInputURLByName returns the input URL for a given input name
+func (rm *RelayManager) GetInputURLByName(inputName string) (string, bool) {
+	// First check if there's a running input relay
+	if _, ok := rm.InputRelays.FindLocalURLByInputName(inputName); ok {
+		// Find the input URL from the running relay
+		rm.InputRelays.mu.Lock()
+		defer rm.InputRelays.mu.Unlock()
+		for inputURL, relay := range rm.InputRelays.Relays {
+			if relay.InputName == inputName {
+				return inputURL, true
+			}
+		}
+	}
+	
+	// Check stored configuration
+	rm.configMu.RLock()
+	defer rm.configMu.RUnlock()
+	
+	if config, exists := rm.inputConfigs[inputName]; exists {
+		return config.InputURL, true
+	}
+	
+	return "", false
+}
+
+// StartInputRelayForConsumer starts an input relay and marks it as having a consumer
+// This is used by HLS sessions, recordings, etc. to ensure proper lifecycle management
+func (rm *RelayManager) StartInputRelayForConsumer(inputName string) (string, error) {
+	inputURL, exists := rm.GetInputURLByName(inputName)
+	if !exists {
+		return "", fmt.Errorf("input configuration not found for: %s", inputName)
+	}
+	
+	// Compose local RTSP relay path and URL
+	relayPath := fmt.Sprintf("relay/%s", inputName)
+	localRelayURL := fmt.Sprintf("%s/%s", GetRTSPServerURL(), relayPath)
+	
+	// Start the input relay with consumer counting
+	localURL, err := rm.InputRelays.StartInputRelay(inputName, inputURL, localRelayURL, rm.inputTimeout)
+	if err != nil {
+		return "", fmt.Errorf("failed to start input relay for %s: %v", inputName, err)
+	}
+	
+	// Wait for the RTSP stream to become ready
+	if rm.rtspServer != nil {
+		rm.Logger.Info("Waiting for RTSP stream to become ready: %s", relayPath)
+		err = rm.rtspServer.WaitForStreamReady(relayPath, 30*time.Second)
+		if err != nil {
+			rm.Logger.Error("Failed to wait for RTSP stream to become ready for %s: %v", inputName, err)
+			if !rm.rtspServer.IsStreamReady(relayPath) {
+				rm.InputRelays.StopInputRelay(inputURL)
+				return "", fmt.Errorf("RTSP stream not ready: %v", err)
+			}
+			rm.Logger.Warn("Stream %s appears ready but wait failed, continuing anyway", relayPath)
+		}
+	}
+	
+	return localURL, nil
+}
+
+// StopInputRelayForConsumer decrements the consumer count for an input relay
+// This is used by HLS sessions, recordings, etc. when they stop consuming
+func (rm *RelayManager) StopInputRelayForConsumer(inputName string) {
+	inputURL, exists := rm.GetInputURLByName(inputName)
+	if !exists {
+		rm.Logger.Warn("Cannot stop input relay for %s: input configuration not found", inputName)
+		return
+	}
+	
+	rm.InputRelays.StopInputRelay(inputURL)
 }
