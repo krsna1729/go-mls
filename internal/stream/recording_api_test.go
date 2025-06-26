@@ -3,6 +3,7 @@ package stream
 import (
 	"encoding/json"
 	"go-mls/internal/logger"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,9 +17,29 @@ func TestApiStartRecording(t *testing.T) {
 	// Setup test environment
 	tempDir := t.TempDir()
 	log := logger.NewLogger()
+
+	// Start RTSP server (production-like setup)
+	rtspServer := NewRTSPServerManager(log)
+	if err := rtspServer.Start(); err != nil {
+		t.Fatalf("failed to start RTSP server: %v", err)
+	}
+	defer rtspServer.Stop()
+
 	relayMgr := NewRelayManager(log, tempDir)
+	relayMgr.SetRTSPServer(rtspServer)
 	rm := NewRecordingManager(log, tempDir, relayMgr)
 	defer rm.Shutdown()
+
+	// Copy test file to temp directory for file:// testing
+	testSrcPath := filepath.Join("..", "..", "testdata", "testsrc.mp4")
+	testDestPath := filepath.Join(tempDir, "testsrc.mp4")
+	if srcFile, err := os.Open(testSrcPath); err == nil {
+		defer srcFile.Close()
+		if destFile, err := os.Create(testDestPath); err == nil {
+			defer destFile.Close()
+			_, _ = io.Copy(destFile, srcFile)
+		}
+	}
 
 	handler := ApiStartRecording(rm)
 
@@ -30,7 +51,7 @@ func TestApiStartRecording(t *testing.T) {
 	}{
 		{
 			name:           "Valid request",
-			requestBody:    `{"name": "test", "source": "rtsp://example.com/stream"}`,
+			requestBody:    `{"name": "test", "source": "file://testsrc.mp4"}`,
 			expectedStatus: http.StatusOK,
 			shouldContain:  "recording started",
 		},
@@ -80,18 +101,54 @@ func TestApiStartRecording(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest("POST", "/api/start-recording", strings.NewReader(tt.requestBody))
-			req.Header.Set("Content-Type", "application/json")
-			w := httptest.NewRecorder()
+			if tt.name == "Valid request" {
+				origTestTimeout := 60 * time.Second
+				done := make(chan bool, 1)
+				go func() {
+					req := httptest.NewRequest("POST", "/api/start-recording", strings.NewReader(tt.requestBody))
+					req.Header.Set("Content-Type", "application/json")
+					w := httptest.NewRecorder()
 
-			handler(w, req)
+					handler(w, req)
 
-			if w.Code != tt.expectedStatus {
-				t.Errorf("expected status %d, got %d", tt.expectedStatus, w.Code)
-			}
+					if w.Code != tt.expectedStatus {
+						t.Errorf("expected status %d, got %d", tt.expectedStatus, w.Code)
+					}
 
-			if !strings.Contains(w.Body.String(), tt.shouldContain) {
-				t.Errorf("expected response to contain '%s', got '%s'", tt.shouldContain, w.Body.String())
+					if !strings.Contains(w.Body.String(), tt.shouldContain) {
+						t.Errorf("expected response to contain '%s', got '%s'", tt.shouldContain, w.Body.String())
+					}
+
+					// Wait a bit, then stop the recording to allow ffmpeg to exit
+					time.Sleep(2 * time.Second)
+					stopReq := httptest.NewRequest("POST", "/api/stop-recording", strings.NewReader(`{"name": "test", "source": "file://testsrc.mp4"}`))
+					stopReq.Header.Set("Content-Type", "application/json")
+					stopW := httptest.NewRecorder()
+					ApiStopRecording(rm)(stopW, stopReq)
+					done <- true
+				}()
+
+				select {
+				case <-done:
+				case <-time.After(origTestTimeout):
+					log.Error("[TEST] Test timed out after %v", origTestTimeout)
+					t.Fatalf("Test timed out after %v", origTestTimeout)
+				}
+			} else {
+				// For other tests, run normally
+				req := httptest.NewRequest("POST", "/api/start-recording", strings.NewReader(tt.requestBody))
+				req.Header.Set("Content-Type", "application/json")
+				w := httptest.NewRecorder()
+
+				handler(w, req)
+
+				if w.Code != tt.expectedStatus {
+					t.Errorf("expected status %d, got %d", tt.expectedStatus, w.Code)
+				}
+
+				if !strings.Contains(w.Body.String(), tt.shouldContain) {
+					t.Errorf("expected response to contain '%s', got '%s'", tt.shouldContain, w.Body.String())
+				}
 			}
 		})
 	}

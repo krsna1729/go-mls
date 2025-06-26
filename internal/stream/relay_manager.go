@@ -27,7 +27,7 @@ type RelayManager struct {
 
 	// Configuration registry for persistent input mappings
 	inputConfigs map[string]*InputConfig // inputName -> InputConfig
-	configMu     sync.RWMutex           // Protects inputConfigs
+	configMu     sync.RWMutex            // Protects inputConfigs
 
 	// Configurable timeouts
 	inputTimeout  time.Duration
@@ -508,15 +508,11 @@ func (rm *RelayManager) StatusV2() StatusV2Response {
 		in.mu.Lock()
 		cpu, mem := 0.0, uint64(0)
 		// Safely access process info to avoid data race
-		if in.Cmd != nil {
-			// Create a local copy of the process reference to avoid race
-			cmd := in.Cmd
-			if cmd.Process != nil {
-				pid := cmd.Process.Pid
-				if usage, err := process.GetProcUsage(pid); err == nil {
-					cpu = usage.CPU
-					mem = usage.Mem
-				}
+		if in.Proc != nil && in.Proc.Cmd != nil && in.Proc.Cmd.Process != nil {
+			pid := in.Proc.PID
+			if usage, err := process.GetProcUsage(pid); err == nil {
+				cpu = usage.CPU
+				mem = usage.Mem
 			}
 		}
 		inputStatus := InputRelayStatusV2{
@@ -527,9 +523,12 @@ func (rm *RelayManager) StatusV2() StatusV2Response {
 			LastError: in.LastError,
 			CPU:       cpu,
 			Mem:       mem,
-			Speed:     in.Speed, // Now using speed instead of bitrate
 		}
-		rm.Logger.Debug("StatusV2: Input relay %s speed: %.2fx", in.InputURL, in.Speed)
+		if in.Proc != nil {
+			speed, _ := in.Proc.GetSpeed()
+			inputStatus.Speed = speed
+			rm.Logger.Debug("StatusV2: Input relay %s speed: %.2fx", in.InputURL, speed)
+		}
 		// Gather outputs for this input
 		outputs := []OutputRelayStatusV2{}
 		rm.OutputRelays.mu.Lock()
@@ -538,18 +537,14 @@ func (rm *RelayManager) StatusV2() StatusV2Response {
 				out.mu.Lock()
 				cpuO, memO := 0.0, uint64(0)
 				// Safely access process info to avoid data race
-				if out.Cmd != nil {
-					// Create a local copy of the process reference to avoid race
-					cmd := out.Cmd
-					if cmd.Process != nil {
-						pid := cmd.Process.Pid
-						if usage, err := process.GetProcUsage(pid); err == nil {
-							cpuO = usage.CPU
-							memO = usage.Mem
-						}
+				if out.Proc != nil && out.Proc.Cmd != nil && out.Proc.Cmd.Process != nil {
+					pid := out.Proc.PID
+					if usage, err := process.GetProcUsage(pid); err == nil {
+						cpuO = usage.CPU
+						memO = usage.Mem
 					}
 				}
-				outputs = append(outputs, OutputRelayStatusV2{
+				outputStatus := OutputRelayStatusV2{
 					OutputURL:  out.OutputURL,
 					OutputName: out.OutputName,
 					InputURL:   out.InputURL,
@@ -558,9 +553,13 @@ func (rm *RelayManager) StatusV2() StatusV2Response {
 					LastError:  out.LastError,
 					CPU:        cpuO,
 					Mem:        memO,
-					Bitrate:    out.Bitrate, // Now using actual tracked bitrate
-				})
-				rm.Logger.Debug("StatusV2: Output relay %s bitrate: %.2f kbps", out.OutputURL, out.Bitrate)
+				}
+				if out.Proc != nil {
+					bitrate, _ := out.Proc.GetBitrate()
+					outputStatus.Bitrate = bitrate
+					rm.Logger.Debug("StatusV2: Output relay %s bitrate: %.2f kbps", out.OutputURL, bitrate)
+				}
+				outputs = append(outputs, outputStatus)
 				out.mu.Unlock()
 			}
 		}
@@ -719,7 +718,7 @@ func (rm *RelayManager) getStartMutex(inputURL string) *sync.Mutex {
 func (rm *RelayManager) RegisterInputConfig(inputName, inputURL string) {
 	rm.configMu.Lock()
 	defer rm.configMu.Unlock()
-	
+
 	rm.inputConfigs[inputName] = &InputConfig{
 		InputURL:  inputURL,
 		InputName: inputName,
@@ -740,15 +739,15 @@ func (rm *RelayManager) GetInputURLByName(inputName string) (string, bool) {
 			}
 		}
 	}
-	
+
 	// Check stored configuration
 	rm.configMu.RLock()
 	defer rm.configMu.RUnlock()
-	
+
 	if config, exists := rm.inputConfigs[inputName]; exists {
 		return config.InputURL, true
 	}
-	
+
 	return "", false
 }
 
@@ -759,17 +758,17 @@ func (rm *RelayManager) StartInputRelayForConsumer(inputName string) (string, er
 	if !exists {
 		return "", fmt.Errorf("input configuration not found for: %s", inputName)
 	}
-	
+
 	// Compose local RTSP relay path and URL
 	relayPath := fmt.Sprintf("relay/%s", inputName)
 	localRelayURL := fmt.Sprintf("%s/%s", GetRTSPServerURL(), relayPath)
-	
+
 	// Start the input relay with consumer counting
 	localURL, err := rm.InputRelays.StartInputRelay(inputName, inputURL, localRelayURL, rm.inputTimeout)
 	if err != nil {
 		return "", fmt.Errorf("failed to start input relay for %s: %v", inputName, err)
 	}
-	
+
 	// Wait for the RTSP stream to become ready
 	if rm.rtspServer != nil {
 		rm.Logger.Info("Waiting for RTSP stream to become ready: %s", relayPath)
@@ -783,7 +782,7 @@ func (rm *RelayManager) StartInputRelayForConsumer(inputName string) (string, er
 			rm.Logger.Warn("Stream %s appears ready but wait failed, continuing anyway", relayPath)
 		}
 	}
-	
+
 	return localURL, nil
 }
 
@@ -795,6 +794,6 @@ func (rm *RelayManager) StopInputRelayForConsumer(inputName string) {
 		rm.Logger.Warn("Cannot stop input relay for %s: input configuration not found", inputName)
 		return
 	}
-	
+
 	rm.InputRelays.StopInputRelay(inputURL)
 }

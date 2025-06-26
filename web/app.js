@@ -573,8 +573,8 @@ document.addEventListener('DOMContentLoaded', function () {
                         <td style="padding:6px 8px; background:${inputBg}; text-align:center;">${inputStatus === 'Running' && typeof relay.input.mem === 'number' ? Math.round(relay.input.mem / (1024 * 1024)) : '-'}</td>
                         <td style="padding:6px 8px; background:${inputBg}; text-align:center;">${inputStatus === 'Running' && typeof relay.input.speed === 'number' ? relay.input.speed.toFixed(2) + 'x' : '-'}</td>
                         <td style="padding:6px 8px; background:${inputBg}; text-align:center;">
-        <button class="playInputBtn" data-input-name="${inputName}" data-local-url="${relay.input.local_url}" title="Play Input"><span class="material-icons">play_circle_filled</span></button>
-        <button class="deleteInputBtn" data-input="${input}" data-input-name="${inputName}" title="Delete Input" style="padding:4px 6px; min-width:auto; min-height:auto; background:#dc3545; color:white; border:none; border-radius:3px; font-size:0.8em;"><span class="material-icons" style="font-size:16px;">delete</span></button>
+        <button class="playInputBtn" data-input-name="${inputName}" data-local-url="${relay.input.local_url}" title="Play Input"><span class="material-icons">play_circle_outline</span></button>
+        <button class="deleteInputBtn" data-input="${input}" data-input-name="${inputName}" title="Delete Input"><span class="material-icons">delete</span></button>
     </td>
                         <td style="padding:6px 8px; font-style:italic; color:#999; text-align:center;">${inputError ? `<div style='color:red; font-size:0.85em; margin-top:2px; text-align:center;'>${inputError}</div>` : '<i>No outputs</i>'}</td>
                         <td style="padding:6px 8px; text-align:center;">-</td>
@@ -598,8 +598,8 @@ document.addEventListener('DOMContentLoaded', function () {
                             html += `<td rowspan="${relay.outputs.length}" style="padding:6px 8px; background:${inputBg}; vertical-align:middle; text-align:center;">${inputStatus === 'Running' && typeof relay.input.mem === 'number' ? Math.round(relay.input.mem / (1024 * 1024)) : '-'}</td>`;
                             html += `<td rowspan="${relay.outputs.length}" style="padding:6px 8px; background:${inputBg}; vertical-align:middle; text-align:center;">${inputStatus === 'Running' && typeof relay.input.speed === 'number' ? relay.input.speed.toFixed(2) + 'x' : '-'}</td>`;
                             html += `<td rowspan="${relay.outputs.length}" style="padding:6px 8px; background:${inputBg}; vertical-align:middle; text-align:center;">
-        <button class="playInputBtn" data-input-name="${inputName}" data-local-url="${relay.input.local_url}" title="Play Input"><span class="material-icons">play_circle_filled</span></button>
-        <button class="deleteInputBtn" data-input="${input}" data-input-name="${inputName}" title="Delete Input" style="padding:4px 6px; min-width:auto; min-height:auto; background:#dc3545; color:white; border:none; border-radius:3px; font-size:0.8em;"><span class="material-icons" style="font-size:16px;">delete</span></button>
+        <button class="playInputBtn" data-input-name="${inputName}" data-local-url="${relay.input.local_url}" title="Play Input"><span class="material-icons">play_circle_outline</span></button>
+        <button class="deleteInputBtn" data-input="${input}" data-input-name="${inputName}" title="Delete Input"><span class="material-icons">delete</span></button>
     </td>`;
                         }
                         // Output columns

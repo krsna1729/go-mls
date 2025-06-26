@@ -1,16 +1,13 @@
 package stream
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"go-mls/internal/logger"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sync"
-	"syscall"
 	"time"
 	"unsafe"
 
@@ -19,28 +16,34 @@ import (
 
 // Recording represents a recording session or file
 type Recording struct {
+	// --- Fields exposed to API/JSON ---
 	Name      string    `json:"name"`
 	Source    string    `json:"source"`
-	FilePath  string    `json:"file_path"`
 	Filename  string    `json:"filename"`
 	FileSize  int64     `json:"file_size"`
 	StartedAt time.Time `json:"started_at"`
 	StoppedAt time.Time `json:"stopped_at,omitempty"`
 	Active    bool      `json:"active"`
+
+	// --- Internal fields (not exposed to API) ---
+	FilePath string `json:"-"` // Full filesystem path - security sensitive
 }
 
 // RecordingManager manages active and completed recordings
 // Now uses RelayManager for local relay and refcounting
 type RecordingManager struct {
+	// --- Mutable fields protected by mu ---
 	mu         sync.Mutex
 	recordings map[string]*Recording
-	processes  map[string]*exec.Cmd
-	dones      map[string]chan struct{} // done channel for each recording
-	Logger     *logger.Logger           // Add logger field
-	dir        string                   // Recordings directory
-	RelayMgr   *RelayManager            // Reference to RelayManager for local relay
+	processes  map[string]*FFmpegProcess // Now uses FFmpegProcess abstraction
+	dones      map[string]chan struct{}  // done channel for each recording
 
-	// Shutdown support
+	// --- Immutable/config fields (set at construction) ---
+	Logger   *logger.Logger // Logger
+	dir      string         // Recordings directory
+	RelayMgr *RelayManager  // Reference to RelayManager for local relay
+
+	// --- Shutdown support ---
 	ctx       context.Context
 	cancel    context.CancelFunc
 	watcherWg sync.WaitGroup
@@ -55,7 +58,7 @@ func NewRecordingManager(l *logger.Logger, dir string, relayMgr *RelayManager) *
 	ctx, cancel := context.WithCancel(context.Background())
 	rm := &RecordingManager{
 		recordings: make(map[string]*Recording),
-		processes:  make(map[string]*exec.Cmd),
+		processes:  make(map[string]*FFmpegProcess),
 		dones:      make(map[string]chan struct{}),
 		Logger:     l,
 		dir:        dir,
@@ -150,39 +153,44 @@ func (rm *RecordingManager) StartRecording(ctx context.Context, name, sourceURL 
 
 	filePath := fmt.Sprintf("%s/%s_%d.mp4", rm.dir, name, timestamp)
 	rm.Logger.Debug("Starting ffmpeg for recording: %s", filePath)
-	cmd := exec.CommandContext(ctx, "ffmpeg", "-y", "-i", localRelayURL, "-c", "copy", filePath)
-	// Set up process group to prevent child processes from receiving SIGINT on Ctrl+C
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Setpgid: true,
+	ffmpegArgs := []string{"-y", "-i", localRelayURL, "-c", "copy", filePath}
+	procCtx, procCancel := context.WithCancel(context.Background())
+	defer func() {
+		if procCancel != nil {
+			procCancel()
+		}
+	}()
+	rm.Logger.Debug("StartRecording: creating FFmpegProcess, args=%v", ffmpegArgs)
+	proc, err := NewFFmpegProcess(procCtx, ffmpegArgs...)
+	if err != nil {
+		rm.Logger.Error("Failed to create ffmpeg process: %v", err)
+		rm.RelayMgr.InputRelays.StopInputRelay(sourceURL)
+		// Clean up the placeholder recording entry
+		delete(rm.recordings, uniqueKey)
+		return err
 	}
-	rm.Logger.Debug("RecordingManager: Starting ffmpeg command: %v", cmd.Args)
-	var outBuf, errBuf bytes.Buffer
-	cmd.Stdout = &outBuf
-	cmd.Stderr = &errBuf
-	if err := cmd.Start(); err != nil {
+
+	if err := proc.Start(); err != nil {
 		rm.Logger.Error("Failed to start ffmpeg: %v", err)
 		rm.RelayMgr.InputRelays.StopInputRelay(sourceURL)
 		// Clean up the placeholder recording entry
 		delete(rm.recordings, uniqueKey)
 		return err
 	}
-	rm.Logger.Info("RecordingManager: Started ffmpeg process PID %d for recording %s", cmd.Process.Pid, filePath)
-
+	procCancel = nil // Ownership transferred to process
+	rm.Logger.Info("RecordingManager: Started ffmpeg process PID %d for recording %s", proc.PID, filePath)
 	// Update the placeholder recording with actual file information
 	placeholderRec.FilePath = filePath
 	placeholderRec.Filename = fmt.Sprintf("%s_%d.mp4", name, timestamp)
-	rm.processes[uniqueKey] = cmd
+	rm.processes[uniqueKey] = proc
 	done := make(chan struct{})
 	rm.dones[uniqueKey] = done
 	go func(key string, done chan struct{}) {
-		defer rm.RelayMgr.InputRelays.StopInputRelay(sourceURL) // Decrement relay when recording ends
-
-		// Create a channel to handle the command completion
+		defer rm.RelayMgr.InputRelays.StopInputRelay(sourceURL)
 		cmdDone := make(chan error, 1)
 		go func() {
-			cmdDone <- cmd.Wait()
+			cmdDone <- proc.Wait()
 		}()
-
 		select {
 		case err := <-cmdDone:
 			var filePath string
@@ -191,7 +199,6 @@ func (rm *RecordingManager) StartRecording(ctx context.Context, name, sourceURL 
 				r.Active = false
 				r.StoppedAt = time.Now()
 				filePath = r.FilePath
-				// Update file size when recording finishes
 				if info, statErr := os.Stat(r.FilePath); statErr == nil {
 					r.FileSize = info.Size()
 					rm.Logger.Debug("Updated file size for finished recording %s: %d bytes", name, r.FileSize)
@@ -204,31 +211,26 @@ func (rm *RecordingManager) StartRecording(ctx context.Context, name, sourceURL 
 			rm.mu.Unlock()
 			sseBroker.NotifyAll("update")
 			if err != nil {
-				ffmpegOut := outBuf.String()
-				ffmpegErr := errBuf.String()
-				rm.Logger.Error("ffmpeg exited with error for %s (%s): %v\nstdout:\n%s\nstderr:\n%s", name, filePath, err, ffmpegOut, ffmpegErr)
+				ffmpegOutput := proc.GetOutput()
+				rm.Logger.Error("ffmpeg exited with error for %s (%s): %v\nOutput:\n%s", name, filePath, err, ffmpegOutput)
 			} else {
 				rm.Logger.Info("Recording finished for %s (%s)", name, filePath)
 			}
 		case <-done:
-			// Stop requested
-			rm.Logger.Debug("Recording for %s stopped by done channel.", name)
-			// Send SIGINT for graceful shutdown
-			if cmd.Process != nil {
-				pid := cmd.Process.Pid
+			rm.Logger.Debug("StartRecording: recording goroutine done channel closed for key=%s", key)
+			if proc.Cmd.Process != nil {
+				pid := proc.Cmd.Process.Pid
 				rm.Logger.Info("RecordingManager: Gracefully terminating ffmpeg process PID %d for recording %s", pid, name)
-				err := cmd.Process.Signal(syscall.SIGINT)
+				err := proc.Stop(2 * time.Second)
 				if err != nil {
-					rm.Logger.Warn("Failed to send SIGINT to ffmpeg process PID %d: %v", pid, err)
+					rm.Logger.Warn("Failed to stop ffmpeg process PID %d: %v", pid, err)
 				}
 			}
-			// Wait for ffmpeg to exit and finalize file
-			<-cmdDone // Wait for the command to finish
+			<-cmdDone
 			rm.mu.Lock()
 			if r, ok := rm.recordings[key]; ok {
 				r.Active = false
 				r.StoppedAt = time.Now()
-				// Update file size when recording is stopped
 				if info, statErr := os.Stat(r.FilePath); statErr == nil {
 					r.FileSize = info.Size()
 					rm.Logger.Debug("Updated file size for stopped recording %s: %d bytes", name, r.FileSize)
@@ -304,6 +306,7 @@ func (rm *RecordingManager) StopAllRecordings() {
 			activeRecordings = append(activeRecordings, struct{ name, source string }{recording.Name, recording.Source})
 		}
 	}
+	// Release lock before calling StopRecording to avoid deadlock
 	rm.mu.Unlock()
 
 	if len(activeRecordings) == 0 {
@@ -439,7 +442,7 @@ func (rm *RecordingManager) DeleteRecording(key string) error {
 		filePath := r.FilePath
 		rm.mu.Unlock()
 
-		if err := exec.Command("rm", "-f", filePath).Run(); err != nil {
+		if err := os.Remove(filePath); err != nil {
 			rm.Logger.Error("Failed to delete file %s: %v", filePath, err)
 			return err
 		}
@@ -465,7 +468,7 @@ func (rm *RecordingManager) DeleteRecording(key string) error {
 			}
 		}
 	}
-	if err := exec.Command("rm", "-f", filePath).Run(); err != nil {
+	if err := os.Remove(filePath); err != nil {
 		rm.Logger.Error("Failed to delete file %s: %v", filePath, err)
 		return err
 	}
@@ -478,7 +481,7 @@ func (rm *RecordingManager) DeleteRecording(key string) error {
 func (rm *RecordingManager) DeleteRecordingByFilename(filename string) error {
 	rm.Logger.Info("DeleteRecordingByFilename called: filename=%s", filename)
 	filePath := filepath.Join(rm.dir, filename)
-	if err := exec.Command("rm", "-f", filePath).Run(); err != nil {
+	if err := os.Remove(filePath); err != nil {
 		rm.Logger.Error("Failed to delete file %s: %v", filePath, err)
 		return err
 	}
@@ -519,7 +522,7 @@ type SSEBroker struct {
 	clients  map[chan string]struct{} // Map of active client channels
 	mu       sync.Mutex               // Protects concurrent access to clients map
 	shutdown chan struct{}            // Signals when broker should shut down
-	once     sync.Once                // Ensures shutdown only happens once
+	once     sync.Once                // Ensures shutdown only happens once safely
 }
 
 // NotifyAll broadcasts a message to all connected SSE clients

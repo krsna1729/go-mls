@@ -1,8 +1,10 @@
 package logger
 
 import (
+	"io"
 	"log"
 	"os"
+	"sync"
 )
 
 type LogLevel int
@@ -16,7 +18,9 @@ const (
 )
 
 type Logger struct {
-	level LogLevel
+	level  LogLevel
+	mu     sync.Mutex
+	logger *log.Logger
 }
 
 func NewLogger() *Logger {
@@ -24,32 +28,56 @@ func NewLogger() *Logger {
 	if os.Getenv("GO_MLS_DEBUG") == "1" {
 		lvl = DEBUG
 	}
-	return &Logger{level: lvl}
+	return &Logger{
+		level:  lvl,
+		logger: log.New(os.Stderr, "", log.LstdFlags),
+	}
+}
+
+func NewLoggerWithWriter(w io.Writer) *Logger {
+	lvl := INFO
+	if os.Getenv("GO_MLS_DEBUG") == "1" {
+		lvl = DEBUG
+	}
+	return &Logger{
+		level:  lvl,
+		logger: log.New(w, "", log.LstdFlags),
+	}
 }
 
 func (l *Logger) Debug(msg string, args ...interface{}) {
 	if l.level <= DEBUG {
-		log.Printf("[DEBUG] "+msg, args...)
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		l.logger.Printf("[DEBUG] "+msg, args...)
 	}
 }
 func (l *Logger) Info(msg string, args ...interface{}) {
 	if l.level <= INFO {
-		log.Printf("[INFO] "+msg, args...)
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		l.logger.Printf("[INFO] "+msg, args...)
 	}
 }
 func (l *Logger) Warn(msg string, args ...interface{}) {
 	if l.level <= WARN {
-		log.Printf("[WARN] "+msg, args...)
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		l.logger.Printf("[WARN] "+msg, args...)
 	}
 }
 func (l *Logger) Error(msg string, args ...interface{}) {
 	if l.level <= ERROR {
-		log.Printf("[ERROR] "+msg, args...)
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		l.logger.Printf("[ERROR] "+msg, args...)
 	}
 }
 func (l *Logger) Fatal(msg string, args ...interface{}) {
 	if l.level <= FATAL {
-		log.Printf("[FATAL] "+msg, args...)
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		l.logger.Printf("[FATAL] "+msg, args...)
 		os.Exit(1)
 	}
 }

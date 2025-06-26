@@ -26,7 +26,9 @@ func ApiStartRecording(rm *RecordingManager) http.HandlerFunc {
 			httputil.WriteError(w, http.StatusBadRequest, "Invalid name or source: cannot be 'undefined'")
 			return
 		}
-		if err := rm.StartRecording(context.Background(), req.Name, req.Source); err != nil {
+		// Diagnostic logging to trace handler execution
+		err := rm.StartRecording(context.Background(), req.Name, req.Source)
+		if err != nil {
 			httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 			return
 		}

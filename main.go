@@ -345,7 +345,7 @@ func apiStopHLSViewer(hlsMgr *stream.HLSManager, relayMgr *stream.RelayManager) 
 }
 
 // apiHLSViewerHeartbeat updates viewer heartbeat
-func apiHLSViewerHeartbeat(hlsMgr *stream.HLSManager, relayMgr *stream.RelayManager) http.HandlerFunc {
+func apiHLSViewerHeartbeat(hlsMgr *stream.HLSManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			InputName string `json:"input_name"`
@@ -451,7 +451,7 @@ func main() {
 	http.HandleFunc("/api/relay/watch-input/hls/", apiWatchInputHLS(hlsMgr, relayMgr))
 	http.HandleFunc("/api/relay/hls/start-viewer", apiStartHLSViewer(hlsMgr, relayMgr))
 	http.HandleFunc("/api/relay/hls/stop-viewer", apiStopHLSViewer(hlsMgr, relayMgr))
-	http.HandleFunc("/api/relay/hls/heartbeat", apiHLSViewerHeartbeat(hlsMgr, relayMgr))
+	http.HandleFunc("/api/relay/hls/heartbeat", apiHLSViewerHeartbeat(hlsMgr))
 
 	// Create HTTP server with proper shutdown support and timeout configuration
 	server := &http.Server{
@@ -484,11 +484,11 @@ func main() {
 	<-sigChan
 	logger.Info("Received interrupt signal, initiating graceful shutdown...")
 
-	// Write #EXT-X-ENDLIST to all active HLS playlists before shutdown
-	logger.Info("Writing #EXT-X-ENDLIST to all HLS playlists...")
+	// Write endlist to all HLS sessions
+	logger.Info("Signalling stream end to all HLS sessions...")
 	hlsMgr.WriteEndlistToAll()
 	// Give clients a moment to fetch the final playlist
-	time.Sleep(10 * time.Second)
+	time.Sleep(15 * time.Second)
 
 	// Create a context with timeout for graceful shutdown
 	// Increased timeout to allow SSE connections and long-running requests to close properly
@@ -501,6 +501,10 @@ func main() {
 		logger.Error("Server shutdown error: %v", err)
 	}
 
+	// Shutdown HLS manager and clean up all HLS sessions/ffmpeg processes
+	logger.Info("Shutting down HLS manager...")
+	hlsMgr.Shutdown()
+
 	// Stop all recordings and shut down recording manager
 	logger.Info("Shutting down recording manager...")
 	recordingMgr.Shutdown()
@@ -512,10 +516,6 @@ func main() {
 	// Stop RTSP server
 	logger.Info("Stopping RTSP server...")
 	rtspServer.Stop()
-
-	// Shutdown HLS manager and clean up all HLS sessions/ffmpeg processes
-	logger.Info("Shutting down HLS manager...")
-	hlsMgr.Shutdown()
 
 	// Give more time for cleanup of goroutines
 	logger.Info("Waiting for goroutines to clean up...")

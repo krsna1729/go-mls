@@ -2,8 +2,7 @@ package stream
 
 import (
 	"bytes"
-	"io/ioutil"
-	"log"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,7 +15,7 @@ import (
 )
 
 func TestServeHLS_PlaylistAndSegment(t *testing.T) {
-	dir, err := ioutil.TempDir("", "hls_test_")
+	dir, err := os.MkdirTemp("", "hls_test_")
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
@@ -62,7 +61,7 @@ func TestServeHLS_PlaylistAndSegment(t *testing.T) {
 	if resp.StatusCode != 200 {
 		t.Errorf("expected 200 for playlist, got %d", resp.StatusCode)
 	}
-	body, _ := ioutil.ReadAll(resp.Body)
+	body, _ := io.ReadAll(resp.Body)
 	if !strings.Contains(string(body), "#EXTM3U") {
 		t.Errorf("playlist body missing expected content")
 	}
@@ -76,34 +75,23 @@ func TestServeHLS_PlaylistAndSegment(t *testing.T) {
 	if resp.StatusCode != 200 {
 		t.Errorf("expected 200 for segment, got %d", resp.StatusCode)
 	}
-	body, _ = ioutil.ReadAll(resp.Body)
+	body, _ = io.ReadAll(resp.Body)
 	if string(body) != "dummytsdata" {
 		t.Errorf("segment body mismatch")
 	}
 }
 
-// testLogger mimics *logger.Logger for testing log output counting.
-type testLogger struct {
-	warnCount int
-}
-
-func (l *testLogger) Debug(msg string, args ...interface{}) {}
-func (l *testLogger) Info(msg string, args ...interface{})  {}
-func (l *testLogger) Error(msg string, args ...interface{}) {}
-func (l *testLogger) Warn(msg string, args ...interface{})  { l.warnCount++ }
-
 func TestServeHLS_NotFoundRateLimit(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer
-	log.SetOutput(&buf)
-	defer log.SetOutput(os.Stderr)
-
+	// Create a logger that writes to the test buffer
+	logr := logger.NewLoggerWithWriter(&buf)
 	mgr := &HLSManager{
 		sessions:            make(map[string]*HLSSession),
 		ffmpegPath:          "/bin/true",
 		cleanupInterval:     time.Minute,
 		sessionTimeout:      time.Minute,
-		relayManager:        &RelayManager{Logger: logger.NewLogger()},
+		relayManager:        &RelayManager{Logger: logr},
 		notFoundLogTimes:    make(map[string]time.Time),
 		notFoundLogInterval: 100 * time.Millisecond, // short for test
 	}

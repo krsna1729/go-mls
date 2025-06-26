@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -17,38 +16,43 @@ import (
 )
 
 type HLSSession struct {
+	// Immutable fields (set at creation, never change)
 	InputName  string
 	LocalURL   string
 	Dir        string
-	Cmd        *exec.Cmd
-	LastAccess time.Time
-	Cancel     context.CancelFunc
-	LogFile    *os.File             // Keep reference to close properly
+	IsConsumer bool // Whether this session is registered as an input relay consumer
+
+	// --- Concurrency: mutable fields below are protected by HLSManager.mu ---
 	ViewerIDs  map[string]time.Time // Track individual viewers with heartbeat
-	IsConsumer bool                 // Whether this session is registered as an input relay consumer
-	Ready      bool                 // Whether ffmpeg has started successfully
-	ReadyMu    sync.RWMutex         // Protects Ready flag
+	LastAccess time.Time            // Last time any viewer accessed this session
+
+	// --- Process management (concurrent-safe via FFmpegProcess) ---
+	Proc *FFmpegProcess // FFmpeg process abstraction (handles concurrency and output capture)
+
+	// --- Readiness flag (protected by ReadyMu) ---
+	Ready   bool
+	ReadyMu sync.RWMutex // Protects Ready flag
 }
 
 type HLSManager struct {
-	sessions map[string]*HLSSession
-	mu       sync.Mutex
-	// cleanupInterval determines how often the cleanupLoop runs to check for and remove stale sessions/viewers.
-	cleanupInterval time.Duration
-	// sessionTimeout is the base duration after which an HLS session with no viewers is eligible for cleanup.
-	// If there are active viewers, the session is kept alive for up to 3x this duration since last access.
-	sessionTimeout time.Duration
-	ffmpegPath     string
-	relayManager   *RelayManager        // Reference to relay manager for consumer management
-	failedInputs   map[string]time.Time // Track failed input attempts for cooldown
-	failedCooldown time.Duration        // How long to block repeated attempts
+	// --- Mutable fields protected by mu ---
+	sessions         map[string]*HLSSession
+	failedInputs     map[string]time.Time // Track failed input attempts for cooldown
+	notFoundLogTimes map[string]time.Time // Last log time for missing inputName warnings
 
-	// --- Rate limiting for 'inputName not found' log spam ---
-	notFoundLogTimes    map[string]time.Time // Last log time for missing inputName warnings
-	notFoundLogInterval time.Duration        // Minimum interval between logs per inputName
+	// --- Immutable/config fields (set at construction) ---
+	cleanupInterval     time.Duration
+	sessionTimeout      time.Duration
+	ffmpegPath          string
+	relayManager        *RelayManager // Reference to relay manager for consumer management
+	failedCooldown      time.Duration // How long to block repeated attempts
+	notFoundLogInterval time.Duration // Minimum interval between logs per inputName
 
+	// --- Shutdown support ---
 	ctx    context.Context    // Context for cancellation
 	cancel context.CancelFunc // Cancel function for shutdown
+
+	mu sync.Mutex // Protects all mutable fields above
 }
 
 func NewHLSManager(ffmpegPath string, cleanupInterval, sessionTimeout time.Duration) *HLSManager {
@@ -110,9 +114,6 @@ func (m *HLSManager) GetOrStartSession(inputName, localURL string) (*HLSSession,
 	sess, exists := m.sessions[inputName]
 	if exists {
 		sess.LastAccess = time.Now()
-		if m.relayManager != nil && m.relayManager.Logger != nil {
-			m.relayManager.Logger.Debug("Session exists for inputName=%s", inputName)
-		}
 		return sess, nil
 	}
 
@@ -146,72 +147,64 @@ func (m *HLSManager) GetOrStartSession(inputName, localURL string) (*HLSSession,
 		return nil, fmt.Errorf("failed to create temp dir: %w", err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
 	playlist := filepath.Join(dir, "index.m3u8")
 	segmentPattern := filepath.Join(dir, "segment_%03d.ts")
 
-	// Build ffmpeg command with robust settings for browser compatibility and local RTSP optimization
-	cmd := exec.CommandContext(ctx, m.ffmpegPath,
-		"-rtsp_transport", "tcp", // Use TCP for RTSP (reliable, even for local sources)
-		"-analyzeduration", "500k", // Analyze only 500k bytes (faster startup)
-		"-probesize", "500k", // Probe only 500k bytes (faster startup)
-		"-fflags", "nobuffer", // Lower latency for local input
-		"-i", actualLocalURL, // Input URL (RTSP/RTMP)
-		"-c:v", "libx264", // H.264 video codec
-		"-preset", "ultrafast", // Fastest x264 preset
-		"-tune", "zerolatency", // Tune for low latency
-		"-c:a", "aac", // AAC audio codec
-		"-ac", "2", // Stereo audio
-		"-ar", "44100", // 44.1kHz sample rate
-		"-f", "hls", // HLS output format
-		"-hls_time", "2", // 2s segment duration (low latency)
-		"-hls_list_size", "6", // Playlist holds 6 segments (12s window)
-		"-hls_flags", "delete_segments+append_list", // Remove old segments, append to playlist
-		"-hls_segment_filename", segmentPattern, // Segment file pattern
-		"-y",     // Overwrite output files
-		playlist, // Output playlist file
-	)
-	// Redirect ffmpeg output to log files to avoid mixing with Go logs
-	logFile := filepath.Join(dir, "ffmpeg.log")
-	logFileHandle, err := os.Create(logFile)
-	if err != nil {
-		cancel()
-		os.RemoveAll(dir)
-		if m.relayManager != nil {
-			m.relayManager.StopInputRelayForConsumer(inputName)
-		}
-		if m.relayManager != nil && m.relayManager.Logger != nil {
-			m.relayManager.Logger.Error("Failed to create log file: %v", err)
-		}
-		return nil, fmt.Errorf("failed to create log file: %w", err)
+	// Build ffmpeg args
+	ffmpegArgs := []string{
+		"-rtsp_transport", "tcp",
+		"-analyzeduration", "500k",
+		"-probesize", "500k",
+		"-fflags", "nobuffer",
+		"-i", actualLocalURL,
+		"-c:v", "libx264",
+		"-preset", "ultrafast",
+		"-tune", "zerolatency",
+		"-c:a", "aac",
+		"-ac", "2",
+		"-ar", "44100",
+		"-f", "hls",
+		"-hls_time", "2",
+		"-hls_list_size", "6",
+		"-hls_flags", "delete_segments+append_list",
+		"-hls_segment_filename", segmentPattern,
+		"-y",
+		playlist,
 	}
-	cmd.Stdout = logFileHandle
-	cmd.Stderr = logFileHandle
 
-	// Start ffmpeg
-	if err := cmd.Start(); err != nil {
-		cancel()
+	procCtx, procCancel := context.WithCancel(context.Background())
+	defer func() {
+		if procCancel != nil {
+			procCancel()
+		}
+	}()
+	proc, err := NewFFmpegProcess(procCtx, ffmpegArgs...)
+	if err != nil {
 		os.RemoveAll(dir)
 		if m.relayManager != nil {
 			m.relayManager.StopInputRelayForConsumer(inputName)
 		}
-		if m.relayManager != nil && m.relayManager.Logger != nil {
-			m.relayManager.Logger.Error("Failed to start ffmpeg: %v", err)
+		return nil, fmt.Errorf("failed to create ffmpeg process: %w", err)
+	}
+
+	if err := proc.Start(); err != nil {
+		os.RemoveAll(dir)
+		if m.relayManager != nil {
+			m.relayManager.StopInputRelayForConsumer(inputName)
 		}
 		return nil, fmt.Errorf("failed to start ffmpeg: %w", err)
 	}
+	procCancel = nil // Ownership transferred to process
 
 	sess = &HLSSession{
 		InputName:  inputName,
 		LocalURL:   actualLocalURL,
 		Dir:        dir,
-		Cmd:        cmd,
-		LastAccess: time.Now(),
-		Cancel:     cancel,
-		LogFile:    logFileHandle,
+		IsConsumer: m.relayManager != nil,
 		ViewerIDs:  make(map[string]time.Time),
-		IsConsumer: m.relayManager != nil, // Track if we're acting as a consumer
-		Ready:      false,                 // Will be set to true when ffmpeg is confirmed running
+		LastAccess: time.Now(),
+		Proc:       proc,
+		Ready:      false,
 	}
 	m.sessions[inputName] = sess
 
@@ -228,22 +221,23 @@ func (m *HLSManager) GetOrStartSession(inputName, localURL string) (*HLSSession,
 			defer watcher.Close()
 			_ = watcher.Add(sess.Dir)
 			timeout := time.After(10 * time.Second)
+		outer:
 			for !ready {
 				// Check if file is already ready (handles race)
 				if fi, err := os.Stat(playlistPath); err == nil && fi.Size() > 0 {
 					ready = true
-					break
+					break outer
 				}
 				select {
 				case event := <-watcher.Events:
 					if event.Name == playlistPath && (event.Op&fsnotify.Create != 0 || event.Op&fsnotify.Write != 0) {
 						if fi, err := os.Stat(playlistPath); err == nil && fi.Size() > 0 {
 							ready = true
-							break
+							break outer
 						}
 					}
 				case <-timeout:
-					break
+					break outer
 				case <-time.After(50 * time.Millisecond):
 					// continue
 				}
@@ -275,17 +269,12 @@ func (m *HLSManager) GetOrStartSession(inputName, localURL string) (*HLSSession,
 		sess.ReadyMu.Unlock()
 		if m.relayManager != nil && m.relayManager.Logger != nil {
 			m.relayManager.Logger.Error("HLS session failed to become ready for inputName=%s", inputName)
-			// Log last 10 lines of ffmpeg log for debugging
-			logPath := filepath.Join(sess.Dir, "ffmpeg.log")
-			if data, err := os.ReadFile(logPath); err == nil {
-				lines := strings.Split(string(data), "\n")
-				start := 0
-				if len(lines) > 10 {
-					start = len(lines) - 10
-				}
-				for _, l := range lines[start:] {
-					if l != "" {
-						m.relayManager.Logger.Error("ffmpeg.log: %s", l)
+			// Log last 10 lines of ffmpeg output for debugging
+			if sess.Proc != nil {
+				lines := sess.Proc.GetLastOutputLines(10)
+				for _, line := range lines {
+					if line != "" {
+						m.relayManager.Logger.Error("ffmpeg output: %s", line)
 					}
 				}
 			}
@@ -351,40 +340,33 @@ func (m *HLSManager) RemoveViewer(inputName, viewerID string) {
 
 // Shutdown gracefully stops the cleanup loop and cleans up all sessions and ffmpeg processes.
 func (m *HLSManager) Shutdown() {
-	m.cancel() // Cancel the context to stop cleanupLoop
+	m.cancel()
+	var sessions []*HLSSession
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	for name, sess := range m.sessions {
-		// Immediately release relay consumer if needed
+	for _, sess := range m.sessions {
+		sessions = append(sessions, sess)
+	}
+	m.sessions = make(map[string]*HLSSession)
+	m.mu.Unlock()
+
+	for _, sess := range sessions {
 		if sess.IsConsumer && m.relayManager != nil {
 			m.relayManager.StopInputRelayForConsumer(sess.InputName)
 		}
-		sess.Cancel()
-		if sess.Cmd != nil && sess.Cmd.Process != nil {
-			sess.Cmd.Process.Kill()
-			done := make(chan struct{})
-			go func(cmd *exec.Cmd) {
-				_ = cmd.Wait()
-				close(done)
-			}(sess.Cmd)
-			select {
-			case <-done:
-				// Waited successfully
-			case <-time.After(2 * time.Second):
+		if sess.Proc != nil {
+			err := sess.Proc.Stop(2 * time.Second)
+			if err != nil {
 				if m.relayManager != nil && m.relayManager.Logger != nil {
-					m.relayManager.Logger.Warn("Timeout waiting for ffmpeg process to exit for inputName=%s", sess.InputName)
+					m.relayManager.Logger.Warn("Error stopping ffmpeg process for HLS session inputName=%s: %v", sess.InputName, err)
 				}
 			}
-		}
-		if sess.LogFile != nil {
-			sess.LogFile.Close()
+			sess.Proc.Wait()
 		}
 		os.RemoveAll(sess.Dir)
 		if m.relayManager != nil && m.relayManager.Logger != nil {
-			m.relayManager.Logger.Info("Cleaned up HLS session for inputName=%s (shutdown)", name)
+			m.relayManager.Logger.Info("Cleaned up HLS session for inputName=%s (shutdown)", sess.InputName)
 		}
 	}
-	m.sessions = make(map[string]*HLSSession) // Clear all sessions
 }
 
 // ServeHLS serves HLS playlist or segment, concurrency-safe and with detailed logging
@@ -575,26 +557,7 @@ func (m *HLSManager) cleanupLoop(ctx context.Context) {
 					if sess.IsConsumer && m.relayManager != nil {
 						m.relayManager.StopInputRelayForConsumer(sess.InputName)
 					}
-					sess.Cancel()
-					if sess.Cmd != nil && sess.Cmd.Process != nil {
-						sess.Cmd.Process.Kill()
-						done := make(chan struct{})
-						go func(cmd *exec.Cmd) {
-							_ = cmd.Wait()
-							close(done)
-						}(sess.Cmd)
-						select {
-						case <-done:
-							// Waited successfully
-						case <-time.After(2 * time.Second):
-							if m.relayManager != nil && m.relayManager.Logger != nil {
-								m.relayManager.Logger.Warn("Timeout waiting for ffmpeg process to exit for inputName=%s", sess.InputName)
-							}
-						}
-					}
-					if sess.LogFile != nil {
-						sess.LogFile.Close()
-					}
+					sess.Proc.Stop(2 * time.Second)
 					os.RemoveAll(sess.Dir)
 					delete(m.sessions, name)
 					if m.relayManager != nil && m.relayManager.Logger != nil {
