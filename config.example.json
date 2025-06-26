@@ -1,0 +1,24 @@
+{
+  "http": {
+    "host": "0.0.0.0",
+    "port": "8080",
+    "read_timeout": "30s",
+    "write_timeout": "30s",
+    "idle_timeout": "120s"
+  },
+  "relay": {
+    "input_timeout": "30s",
+    "output_timeout": "60s",
+    "rtsp_server": {
+      "host": "127.0.0.1",
+      "port": 8554
+    }
+  },
+  "recording": {
+    "directory": "recordings"
+  },
+  "logging": {
+    "level": "info",
+    "file": ""
+  }
+}

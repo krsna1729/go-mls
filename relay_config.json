@@ -1,5 +1,28 @@
 [
   {
+    "input_url": "rtmp://localhost:1934/live/stream",
+    "input_name": "English",
+    "outputs": [
+      {
+        "output_url": "rtmp://localhost:1938/live/stream",
+        "output_name": "ENG-2"
+      },
+      {
+        "output_url": "rtmp://localhost:1937/live/stream",
+        "output_name": "ENG-1",
+        "platform_preset": "YouTube",
+        "ffmpeg_options": {
+          "audio_codec": "aac",
+          "bitrate": "4500k",
+          "framerate": "30",
+          "resolution": "1920x1080",
+          "rotation": "transpose=2",
+          "video_codec": "libx264"
+        }
+      }
+    ]
+  },
+  {
     "input_url": "rtmp://localhost:1933/live/stream",
     "input_name": "Tamil",
     "outputs": [
@@ -12,36 +35,13 @@
         "output_url": "rtmp://localhost:1936/live/stream",
         "output_name": "TN-1",
         "ffmpeg_options": {
-          "video_codec": "",
           "audio_codec": "aac",
-          "resolution": "1280x720",
-          "framerate": "60",
           "bitrate": "2000k",
-          "rotation": ""
+          "framerate": "60",
+          "resolution": "1280x720",
+          "rotation": "",
+          "video_codec": ""
         }
-      }
-    ]
-  },
-  {
-    "input_url": "rtmp://localhost:1934/live/stream",
-    "input_name": "English",
-    "outputs": [
-      {
-        "output_url": "rtmp://localhost:1937/live/stream",
-        "output_name": "ENG-1",
-        "platform_preset": "YouTube",
-        "ffmpeg_options": {
-          "video_codec": "libx264",
-          "audio_codec": "aac",
-          "resolution": "1920x1080",
-          "framerate": "30",
-          "bitrate": "4500k",
-          "rotation": "transpose=2"
-        }
-      },
-      {
-        "output_url": "rtmp://localhost:1938/live/stream",
-        "output_name": "ENG-2"
       }
     ]
   }

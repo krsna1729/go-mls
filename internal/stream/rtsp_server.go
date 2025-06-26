@@ -311,30 +311,35 @@ func (rm *RTSPServerManager) CreateEmptyStream(name string) (string, error) {
 
 // WaitForStreamReady waits for a stream to become ready for reading (i.e., being published to)
 func (rm *RTSPServerManager) WaitForStreamReady(name string, timeout time.Duration) error {
-	// Use polling approach to handle multiple waiters correctly
-	startTime := time.Now()
-	ticker := time.NewTicker(100 * time.Millisecond) // Check every 100ms
-	defer ticker.Stop()
+	rm.streamsMutex.Lock()
+	// Create channel if it doesn't exist
+	if _, exists := rm.streamReady[name]; !exists {
+		rm.streamReady[name] = make(chan bool, 1)
+	}
+	readyChan := rm.streamReady[name]
+	rm.streamsMutex.Unlock()
 
-	for {
-		// Check if stream is ready
-		if rm.IsStreamReady(name) {
+	// Check if already ready (for existing streams)
+	if rm.IsStreamReady(name) {
+		// For existing streams, check if they're actually recording by waiting briefly for signal
+		select {
+		case <-readyChan:
 			rm.logger.Debug("Stream %s is ready for reading", name)
 			return nil
+		case <-time.After(500 * time.Millisecond):
+			// If no signal after 500ms but stream exists, assume it's ready (for reused streams)
+			rm.logger.Debug("Stream %s appears to be already ready", name)
+			return nil
 		}
+	}
 
-		// Check timeout
-		if time.Since(startTime) >= timeout {
-			return fmt.Errorf("timeout waiting for stream %s to become ready", name)
-		}
-
-		// Wait for next check
-		select {
-		case <-ticker.C:
-			continue
-		case <-time.After(timeout - time.Since(startTime)):
-			return fmt.Errorf("timeout waiting for stream %s to become ready", name)
-		}
+	// Wait for the stream to start recording (OnRecord signals this channel)
+	select {
+	case <-readyChan:
+		rm.logger.Debug("Stream %s is ready for reading", name)
+		return nil
+	case <-time.After(timeout):
+		return fmt.Errorf("timeout waiting for stream %s to become ready", name)
 	}
 }
 

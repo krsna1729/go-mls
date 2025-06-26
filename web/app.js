@@ -162,19 +162,22 @@ document.addEventListener('DOMContentLoaded', function () {
     function filterData(data, query) {
         if (!query) return data;
         const q = query.toLowerCase();
+        // Adapted for new API: data.relays is [{input, outputs}]
         const filtered = { ...data, relays: [] };
+        if (!data.relays) return filtered;
         for (const relay of data.relays) {
-            const inputMatch = (relay.input_name && relay.input_name.toLowerCase().includes(q)) ||
-                (relay.input_url && relay.input_url.toLowerCase().includes(q));
-            const endpoints = relay.endpoints.filter(ep =>
-                (ep.output_name && ep.output_name.toLowerCase().includes(q)) ||
-                (ep.output_url && ep.output_url.toLowerCase().includes(q))
+            const input = relay.input || {};
+            const inputMatch = (input.input_name && input.input_name.toLowerCase().includes(q)) ||
+                (input.input_url && input.input_url.toLowerCase().includes(q));
+            let outputs = relay.outputs || [];
+            let matchingOutputs = outputs.filter(out =>
+                (out.output_name && out.output_name.toLowerCase().includes(q)) ||
+                (out.output_url && out.output_url.toLowerCase().includes(q))
             );
-            if (inputMatch || endpoints.length > 0) {
-                // If input matches, show all endpoints; else only matching endpoints
+            if (inputMatch || matchingOutputs.length > 0) {
                 filtered.relays.push({
                     ...relay,
-                    endpoints: inputMatch ? relay.endpoints : endpoints
+                    outputs: inputMatch ? outputs : matchingOutputs
                 });
             }
         }
@@ -217,9 +220,9 @@ document.addEventListener('DOMContentLoaded', function () {
                 <span class="centered-cell" title="${ep.output_url}"><span>${ep.output_name || ep.output_url}</span><button class='eyeBtn' data-url="${ep.output_url}" title="Show Output URL"><span class="material-icons">visibility</span></button></span>
             </td>
             <td style="padding:8px 12px;" data-label="Status">${getStatusBadge(status)}</td>
-            <td style="padding:8px 12px;" data-label="Bitrate (kbps)">${isRunning && ep.bitrate ? ep.bitrate : '-'}</td>
+            <td style="padding:8px 12px;" data-label="Bitrate (kbps)">${isRunning && typeof ep.bitrate === 'number' ? ep.bitrate : '-'}</td>
             <td style="padding:8px 12px;" data-label="CPU">${isRunning && typeof ep.cpu === 'number' ? ep.cpu.toFixed(1) : '-'}</td>
-            <td style="padding:8px 12px;" data-label="Mem">${isRunning && ep.mem ? (ep.mem / (1024 * 1024)).toFixed(1) : '-'}</td>
+            <td style="padding:8px 12px;" data-label="Mem">${isRunning && typeof ep.mem === 'number' ? (ep.mem / (1024 * 1024)).toFixed(1) : '-'}</td>
             <td style="padding:8px 12px;" data-label="Action">
                 ${isRunning
                 ? `<button class="stopRelayBtn" data-input="${input}" data-output="${ep.output_url}" data-input-name="${ep.input_name || ''}" data-output-name="${ep.output_name || ''}"><span class="material-icons">stop</span>Stop</button>`
@@ -251,13 +254,82 @@ document.addEventListener('DOMContentLoaded', function () {
                 fetch('/api/relay/start', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ input_url: input, output_url: output, input_name: inputName, output_name: outputName })
+                    body: JSON.stringify({
+                        input_url: input,
+                        output_url: output,
+                        input_name: inputName,
+                        output_name: outputName
+                    })
                 }).then(() => { fetchStatus(); });
             };
         });
         document.querySelectorAll('.eyeBtn').forEach(btn => {
             btn.onclick = function () {
                 alert('URL: ' + btn.getAttribute('data-url'));
+            };
+        });
+        
+        // Add delete input button handlers
+        document.querySelectorAll('.deleteInputBtn').forEach(btn => {
+            btn.onclick = function () {
+                const input = btn.getAttribute('data-input');
+                const inputName = btn.getAttribute('data-input-name') || '';
+                
+                if (confirm(`Are you sure you want to delete input "${inputName}" and all its outputs? This action cannot be undone.`)) {
+                    fetch('/api/relay/delete-input', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            input_url: input,
+                            input_name: inputName
+                        })
+                    }).then(response => {
+                        if (response.ok) {
+                            fetchStatus();
+                        } else {
+                            response.text().then(text => {
+                                alert('Failed to delete input: ' + text);
+                            });
+                        }
+                    }).catch(err => {
+                        console.error('Delete input error:', err);
+                        alert('Failed to delete input: ' + err.message);
+                    });
+                }
+            };
+        });
+        
+        // Add delete output button handlers
+        document.querySelectorAll('.deleteOutputBtn').forEach(btn => {
+            btn.onclick = function () {
+                const input = btn.getAttribute('data-input');
+                const output = btn.getAttribute('data-output');
+                const inputName = btn.getAttribute('data-input-name') || '';
+                const outputName = btn.getAttribute('data-output-name') || '';
+                
+                if (confirm(`Are you sure you want to delete output "${outputName}"? This action cannot be undone.`)) {
+                    fetch('/api/relay/delete-output', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            input_url: input,
+                            output_url: output,
+                            input_name: inputName,
+                            output_name: outputName
+                        })
+                    }).then(response => {
+                        if (response.ok) {
+                            fetchStatus();
+                        } else {
+                            response.text().then(text => {
+                                alert('Failed to delete output: ' + text);
+                            });
+                        }
+                    }).catch(err => {
+                        console.error('Delete output error:', err);
+                        alert('Failed to delete output: ' + err.message);
+                    });
+                }
             };
         });
         // Add ripple effect to all buttons
@@ -291,63 +363,117 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     }
 
+    // Attach handler for the top Start Relay button
+    document.getElementById('startRelayBtn').onclick = function () {
+        const inputName = document.getElementById('inputName').value.trim();
+        const inputUrl = document.getElementById('inputUrl').value.trim();
+        const outputName = document.getElementById('outputName').value.trim();
+        const outputUrl = document.getElementById('outputUrl').value.trim();
+        const platformPreset = document.getElementById('platformPreset').value || '';
+        // Advanced options
+        const ffmpegOptions = {
+            video_codec: document.getElementById('videoCodec').value.trim(),
+            audio_codec: document.getElementById('audioCodec').value.trim(),
+            resolution: document.getElementById('resolution').value.trim(),
+            framerate: document.getElementById('framerate').value.trim(),
+            bitrate: document.getElementById('bitrate').value.trim(),
+            rotation: document.getElementById('rotation').value.trim()
+        };
+        fetch('/api/relay/start', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                input_url: inputUrl,
+                output_url: outputUrl,
+                input_name: inputName,
+                output_name: outputName,
+                platform_preset: platformPreset,
+                ffmpeg_options: ffmpegOptions
+            })
+        }).then(() => { fetchStatus(); });
+    };
+
+    // Update table Start buttons to only send minimal info
+    document.querySelectorAll('.startRelayBtn').forEach(btn => {
+        btn.onclick = function () {
+            const input = btn.getAttribute('data-input');
+            const output = btn.getAttribute('data-output');
+            const inputName = btn.getAttribute('data-input-name') || '';
+            const outputName = btn.getAttribute('data-output-name') || '';
+            fetch('/api/relay/start', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    input_url: input,
+                    output_url: output,
+                    input_name: inputName,
+                    output_name: outputName
+                })
+            }).then(() => { fetchStatus(); });
+        };
+    });
+
+    // --- Import/Export button handlers ---
+    document.getElementById('exportBtn').onclick = function () {
+        window.location = '/api/relay/export';
+    };
+    
+    document.getElementById('importBtn').onclick = function () {
+        document.getElementById('importFile').click();
+    };
+    
+    document.getElementById('importFile').onchange = function (e) {
+        const file = e.target.files[0];
+        if (!file) return;
+        const formData = new FormData();
+        formData.append('file', file);
+        fetch('/api/relay/import', {
+            method: 'POST',
+            body: formData
+        }).then(() => { 
+            fetchStatus(); 
+            alert('Import completed successfully!');
+        }).catch(err => {
+            console.error('Import failed:', err);
+            alert('Import failed. Check console for details.');
+        });
+    };
+
     function fetchStatus() {
         fetch('/api/relay/status')
             .then(r => r.json())
             .then(data => updateUI(data));
     }
 
-    function addInputHighlightHandlers() {
-        // Remove previous listeners if any
-        document.querySelectorAll('.input-group-row').forEach(cell => {
-            cell.onmouseenter = null;
-            cell.onmouseleave = null;
-        });
-        document.querySelectorAll('tr[data-input-group]').forEach(row => {
-            const group = row.getAttribute('data-input-group');
-            row.onmouseenter = function () {
-                const inputCell = document.querySelector(`.input-group-row[data-input-group="${group}"]`);
-                if (inputCell) inputCell.classList.add('input-highlight');
-            };
-            row.onmouseleave = function () {
-                const inputCell = document.querySelector(`.input-group-row[data-input-group="${group}"]`);
-                if (inputCell) inputCell.classList.remove('input-highlight');
-            };
-        });
-    }
-
     function updateUI(data) {
+        // Expect data: { server: {cpu, mem}, relays: [...] }
         window.latestRelayStatus = data;
         window.dispatchEvent(new Event('relayStatusUpdated'));
         const searchVal = document.getElementById('searchBox').value.trim();
-        lastSearch = searchVal;
         const filtered = filterData(data, searchVal);
-        // Server stats
+        let relayGroups = 0, totalEndpoints = 0, totalCpu = 0, totalMem = 0, totalBitrate = 0, health = 'Good';
         let appCpu = '0.0%';
         let appMem = '0';
-        let relayGroups = 0;
-        let totalEndpoints = 0;
-        let totalBitrate = 0;
-        let health = 'Good';
-        let totalCpu = 0;
-        let totalMem = 0;
-        if (data && data.server) {
-            appCpu = data.server.cpu.toFixed(1) + '%';
-            appMem = formatBytes(data.server.mem);
-        } else {
-            appMem = '0';
+        if (filtered && filtered.server) {
+            appCpu = typeof filtered.server.cpu === 'number' ? filtered.server.cpu.toFixed(1) + '%' : '0.0%';
+            appMem = typeof filtered.server.mem === 'number' ? formatBytes(filtered.server.mem) : '0';
         }
-        // Calculate relay summary, health, and endpoint resource totals
-        if (data && data.relays) {
-            relayGroups = data.relays.length;
-            data.relays.forEach(relay => {
-                if (relay.endpoints && Array.isArray(relay.endpoints)) {
-                    totalEndpoints += relay.endpoints.length;
-                    relay.endpoints.forEach(ep => {
-                        if (ep.bitrate && !isNaN(ep.bitrate)) totalBitrate += Number(ep.bitrate);
-                        if (ep.status && ep.status === 'Error') health = 'Warning';
-                        if (typeof ep.cpu === 'number' && !isNaN(ep.cpu)) totalCpu += ep.cpu;
-                        if (typeof ep.mem === 'number' && !isNaN(ep.mem)) totalMem += ep.mem;
+        if (filtered && filtered.relays) {
+            relayGroups = filtered.relays.length;
+            filtered.relays.forEach(relay => {
+                if (relay.input) {
+                    if (typeof relay.input.cpu === 'number') totalCpu += relay.input.cpu;
+                    if (typeof relay.input.mem === 'number') totalMem += relay.input.mem;
+                    // Input speed is not included in total bitrate (it's a different metric)
+                    if (relay.input.status === 'Error') health = 'Warning';
+                }
+                if (relay.outputs && Array.isArray(relay.outputs)) {
+                    totalEndpoints += relay.outputs.length;
+                    relay.outputs.forEach(out => {
+                        if (typeof out.cpu === 'number') totalCpu += out.cpu;
+                        if (typeof out.mem === 'number') totalMem += out.mem;
+                        if (typeof out.bitrate === 'number') totalBitrate += out.bitrate;
+                        if (out.status === 'Error') health = 'Warning';
                     });
                 }
             });
@@ -355,8 +481,8 @@ document.addEventListener('DOMContentLoaded', function () {
         let healthBadge = health === 'Good'
             ? '<span class="badge badge-healthy">Good</span>'
             : '<span class="badge badge-warning">Warning</span>';
-        let totalCpuStr = totalEndpoints ? totalCpu.toFixed(1) + '%' : '0';
-        let totalMemStr = totalEndpoints ? formatBytes(totalMem) : '0';
+        let totalCpuStr = (relayGroups + totalEndpoints) ? totalCpu.toFixed(1) + '%' : '0';
+        let totalMemStr = (relayGroups + totalEndpoints) ? formatBytes(totalMem) : '0';
         let serverHtml = `
   <div class="stats-card">
     <div class="stats-grid stats-grid-custom">
@@ -396,148 +522,493 @@ document.addEventListener('DOMContentLoaded', function () {
   </div>`;
         document.getElementById('serverStats').innerHTML = serverHtml;
 
-        // Relays table
+        // Render relay table with input/output separation - use filtered data
         let html = '';
-        if (!filtered || !filtered.relays || filtered.relays.length === 0) {
+        if (!filtered.relays || filtered.relays.length === 0) {
             html += '<i>No relays running.</i>';
         } else {
-            // Sort relays by input_name (fallback input_url)
-            filtered.relays.sort((a, b) => {
-                const aName = a.input_name || a.input_url || '';
-                const bName = b.input_name || b.input_url || '';
-                return aName.localeCompare(bName, undefined, { numeric: true, sensitivity: 'base' });
+            // Sort filtered relays by input name, then outputs by output name
+            filtered.relays.sort((a, b) => (a.input.input_name || '').localeCompare(b.input.input_name || ''));
+            filtered.relays.forEach(relay => {
+                if (relay.outputs && Array.isArray(relay.outputs)) {
+                    relay.outputs.sort((a, b) => (a.output_name || '').localeCompare(b.output_name || ''));
+                }
             });
-            html += `<table style="width:100%;border-collapse:separate;border-spacing:0;">
-                <thead>
-                    <tr>
-                        <th style="text-align:left; padding:8px 12px;">Input</th>
-                        <th style="text-align:left; padding:8px 12px;">Output</th>
-                        <th style="text-align:left; padding:8px 12px;">Status</th>
-                        <th style="text-align:left; padding:8px 12px;">Bitrate (kbps)</th>
-                        <th style="text-align:left; padding:8px 12px;">CPU (%)</th>
-                        <th style="text-align:left; padding:8px 12px;">Mem (MB)</th>
-                        <th style="text-align:left; padding:8px 12px;">Action</th>
-                    </tr>
-                </thead>
-                <tbody>`;
-            for (let relayIdx = 0; relayIdx < filtered.relays.length; relayIdx++) {
-                const relay = filtered.relays[relayIdx];
-                const input = relay.input_url;
-                const inputName = relay.input_name || '';
-                const groupId = `group-${relayIdx}`;
-                // Sort endpoints by output_name (fallback output_url)
-                const endpoints = relay.endpoints
-                    ? relay.endpoints.slice().sort((a, b) => {
-                        const aName = a.output_name || a.output_url || '';
-                        const bName = b.output_name || b.output_url || '';
-                        return aName.localeCompare(bName, undefined, { numeric: true, sensitivity: 'base' });
-                    })
-                    : [];
+            // In the relay table header, add an Actions column under Input
+            html += `<table class="relay-table" style="width:100%;border-collapse:separate;border-spacing:0; font-size:1rem;">
+<thead>
+    <tr style="background:#eaf2fb;">
+        <th colspan="6" style="text-align:center; padding:6px 8px; border-bottom:1px solid #b6d0f7;">Input</th>
+        <th colspan="6" style="text-align:center; padding:6px 8px; border-bottom:1px solid #b6d0f7;">Output</th>
+    </tr>
+    <tr style="background:#eaf2fb;">
+        <th style="text-align:center; padding:6px 4px; width:140px;">Name</th>
+        <th style="text-align:center; padding:6px 4px; width:70px;">Status</th>
+        <th style="text-align:center; padding:6px 4px; width:60px;">CPU (%)</th>
+        <th style="text-align:center; padding:6px 4px; width:70px;">Mem (MB)</th>
+        <th style="text-align:center; padding:6px 4px; width:65px;">Speed (x)</th>
+        <th style="text-align:center; padding:6px 4px; width:60px;">Actions</th>
+        <th style="text-align:center; padding:6px 4px; width:130px;">Name</th>
+        <th style="text-align:center; padding:6px 4px; width:70px;">Status</th>
+        <th style="text-align:center; padding:6px 4px; width:60px;">CPU (%)</th>
+        <th style="text-align:center; padding:6px 4px; width:70px;">Mem (MB)</th>
+        <th style="text-align:center; padding:6px 4px; width:90px;">Bitrate (kbps)</th>
+        <th style="text-align:center; padding:6px 4px; width:90px;">Actions</th>
+    </tr>
+</thead><tbody>`;
+            filtered.relays.forEach((relay, relayIdx) => {
+                const input = relay.input.input_url;
+                const inputName = relay.input.input_name || '';
+                const inputStatus = relay.input.status || 'Stopped';
+                const inputError = relay.input.last_error || '';
                 const inputBg = relayIdx % 2 === 0 ? '#f7fafd' : '#f0f4fa';
-                const inputGroupBorder = 'border-top: 3px solid #b6d0f7;';
-                if (endpoints.length === 0) {
-                    html += `<tr data-input-group="${groupId}">
-                        <td class="input-group-row" data-input-group="${groupId}" style="word-break:break-all; color:#1976d2; font-weight:bold; padding:8px 12px; background:${inputBg};">${highlightMatch(inputName, searchVal)}</td>
-                        <td colspan="5" style="padding:8px 12px; background:#fff;"><i>No endpoints</i></td>
+                
+                if (!relay.outputs || relay.outputs.length === 0) {
+                    // No outputs - single row with consistent structure
+                    // For input rows (no outputs)
+                    html += `<tr data-input-group="group-${relayIdx}">
+                        <td class="input-group-row" data-input-group="group-${relayIdx}" title="${input}" style="word-break:break-all; color:#1976d2; font-weight:bold; padding:6px 8px; background:${inputBg}; text-align:center;">${inputName}</td>
+                        <td style="padding:6px 8px; background:${inputBg}; text-align:center;">${getStatusBadge(inputStatus)}</td>
+                        <td style="padding:6px 8px; background:${inputBg}; text-align:center;">${inputStatus === 'Running' && typeof relay.input.cpu === 'number' ? relay.input.cpu.toFixed(1) : '-'}</td>
+                        <td style="padding:6px 8px; background:${inputBg}; text-align:center;">${inputStatus === 'Running' && typeof relay.input.mem === 'number' ? Math.round(relay.input.mem / (1024 * 1024)) : '-'}</td>
+                        <td style="padding:6px 8px; background:${inputBg}; text-align:center;">${inputStatus === 'Running' && typeof relay.input.speed === 'number' ? relay.input.speed.toFixed(2) + 'x' : '-'}</td>
+                        <td style="padding:6px 8px; background:${inputBg}; text-align:center;">
+        <button class="playInputBtn" data-input-name="${inputName}" data-local-url="${relay.input.local_url}" title="Play Input"><span class="material-icons">play_circle_outline</span></button>
+        <button class="deleteInputBtn" data-input="${input}" data-input-name="${inputName}" title="Delete Input"><span class="material-icons">delete</span></button>
+    </td>
+                        <td style="padding:6px 8px; font-style:italic; color:#999; text-align:center;">${inputError ? `<div style='color:red; font-size:0.85em; margin-top:2px; text-align:center;'>${inputError}</div>` : '<i>No outputs</i>'}</td>
+                        <td style="padding:6px 8px; text-align:center;">-</td>
+                        <td style="padding:6px 8px; text-align:center;">-</td>
+                        <td style="padding:6px 8px; text-align:center;">-</td>
+                        <td style="padding:6px 8px; text-align:center;">-</td>
+                        <td style="padding:6px 8px; text-align:center;">-</td>
                     </tr>`;
                 } else {
-                    for (let i = 0; i < endpoints.length; i++) {
-                        endpoints[i].input_name = inputName;
-                        if (endpoints[i].bitrate && !isNaN(endpoints[i].bitrate)) {
-                            endpoints[i].bitrate = Math.round(Number(endpoints[i].bitrate));
+                    // Has outputs - create one row per output
+                    relay.outputs.forEach((out, i) => {
+                        const outputStatus = out.status || 'Stopped';
+                        const outputError = out.last_error || '';
+                        const isFirstOutput = i === 0;
+                        html += `<tr data-input-group="group-${relayIdx}">`;
+                        // For input rows with outputs, update the first output row to include the input actions column with rowspan
+                        if (isFirstOutput) {
+                            html += `<td class="input-group-row" data-input-group="group-${relayIdx}" rowspan="${relay.outputs.length}" title="${input}" style="word-break:break-all; color:#1976d2; font-weight:bold; vertical-align:middle; padding:6px 8px; background:${inputBg}; border:none; text-align:center;">${inputName}</td>`;
+                            html += `<td rowspan="${relay.outputs.length}" style="padding:6px 8px; background:${inputBg}; vertical-align:middle; text-align:center;">${getStatusBadge(inputStatus)}</td>`;
+                            html += `<td rowspan="${relay.outputs.length}" style="padding:6px 8px; background:${inputBg}; vertical-align:middle; text-align:center;">${inputStatus === 'Running' && typeof relay.input.cpu === 'number' ? relay.input.cpu.toFixed(1) : '-'}</td>`;
+                            html += `<td rowspan="${relay.outputs.length}" style="padding:6px 8px; background:${inputBg}; vertical-align:middle; text-align:center;">${inputStatus === 'Running' && typeof relay.input.mem === 'number' ? Math.round(relay.input.mem / (1024 * 1024)) : '-'}</td>`;
+                            html += `<td rowspan="${relay.outputs.length}" style="padding:6px 8px; background:${inputBg}; vertical-align:middle; text-align:center;">${inputStatus === 'Running' && typeof relay.input.speed === 'number' ? relay.input.speed.toFixed(2) + 'x' : '-'}</td>`;
+                            html += `<td rowspan="${relay.outputs.length}" style="padding:6px 8px; background:${inputBg}; vertical-align:middle; text-align:center;">
+        <button class="playInputBtn" data-input-name="${inputName}" data-local-url="${relay.input.local_url}" title="Play Input"><span class="material-icons">play_circle_outline</span></button>
+        <button class="deleteInputBtn" data-input="${input}" data-input-name="${inputName}" title="Delete Input"><span class="material-icons">delete</span></button>
+    </td>`;
                         }
-                        // Use backend status string for running logic
-                        const status = endpoints[i].status || 'Stopped';
-                        const isRunning = status === 'Running';
-                        html += `<tr data-input-group="${groupId}">`;
-                        if (i === 0) {
-                            html += `<td class="input-group-row" data-input-group="${groupId}" rowspan="${endpoints.length}" style="word-break:break-all; color:#1976d2; font-weight:bold; vertical-align:middle; padding:8px 12px; background:${inputBg}; border:none;" data-label="Input">
-                                <span class="centered-cell" title="${input}"><span>${highlightMatch(endpoints[i].input_name || '', searchVal)}</span><button class='eyeBtn' data-url="${input}" title="Show Input URL"><span class="material-icons">visibility</span></button></span>
+                        // Output columns
+                        html += `<td class="output-cell" style="word-break:break-all;">
+                                <div style="display:flex; flex-direction:column; align-items:center; gap:8px;">
+                                    <div title="${out.output_url}" style="font-weight:bold; color:#1976d2;">${out.output_name || out.output_url}</div>
+                                </div>
+                            </td>
+                            <td class="output-cell">${getStatusBadge(outputStatus)}</td>
+                            <td class="output-cell">${outputStatus === 'Running' && typeof out.cpu === 'number' ? out.cpu.toFixed(1) : '-'}</td>
+                            <td class="output-cell">${outputStatus === 'Running' && typeof out.mem === 'number' ? Math.round(out.mem / (1024 * 1024)) : '-'}</td>
+                            <td class="output-cell">${outputStatus === 'Running' && typeof out.bitrate === 'number' ? Math.round(out.bitrate) : '-'}</td>
+                            <td class="output-cell">
+                                <div style="display:flex; flex-direction:row; align-items:center; justify-content:center; gap:8px; flex-wrap:nowrap;">
+                                    ${outputStatus === 'Running'
+                                    ? `<button class="stopRelayBtn relay-action-btn" data-input="${input}" data-output="${out.output_url}" data-input-name="${inputName}" data-output-name="${out.output_name || ''}" title="Stop Output"><span class="material-icons" style="font-size:16px;">stop</span></button>`
+                                    : `<button class="startRelayBtn relay-action-btn" data-input="${input}" data-output="${out.output_url}" data-input-name="${inputName}" data-output-name="${out.output_name || ''}" title="Start Output"><span class="material-icons" style="font-size:16px;">play_arrow</span></button>`
+                                    }
+                                    <button class="deleteOutputBtn" data-input="${input}" data-output="${out.output_url}" data-input-name="${inputName}" data-output-name="${out.output_name || ''}" title="Delete Output"><span class="material-icons" style="font-size:16px;">delete</span></button>
+                                </div>
                             </td>`;
-                        }
-                        html += `<td style="word-break:break-all; padding:8px 12px;" data-label="Output">
-                                <span class="centered-cell" title="${endpoints[i].output_url}"><span>${highlightMatch(endpoints[i].output_name || endpoints[i].output_url, searchVal)}</span><button class='eyeBtn' data-url="${endpoints[i].output_url}" title="Show Output URL"><span class="material-icons">visibility</span></button></span>
-                            </td>
-                            <td style="padding:8px 12px;" data-label="Status">${getStatusBadge(status)}</td>
-                            <td style="padding:8px 12px;" data-label="Bitrate (kbps)">${isRunning && endpoints[i].bitrate ? endpoints[i].bitrate : '-'}</td>
-                            <td style="padding:8px 12px;" data-label="CPU">${isRunning && typeof endpoints[i].cpu === 'number' ? endpoints[i].cpu.toFixed(1) : '-'}</td>
-                            <td style="padding:8px 12px;" data-label="Mem">${isRunning && endpoints[i].mem ? (endpoints[i].mem / (1024 * 1024)).toFixed(1) : '-'}</td>
-                            <td style="padding:8px 12px;" data-label="Action">
-                                ${isRunning
-                                ? `<button class="stopRelayBtn" data-input="${input}" data-output="${endpoints[i].output_url}" data-input-name="${endpoints[i].input_name || ''}" data-output-name="${endpoints[i].output_name || ''}"><span class="material-icons">stop</span>Stop</button>`
-                                : `<button class="startRelayBtn" data-input="${input}" data-output="${endpoints[i].output_url}" data-input-name="${endpoints[i].input_name || ''}" data-output-name="${endpoints[i].output_name || ''}"><span class="material-icons">play_arrow</span>Start</button>`
-                            }
-                            </td>
-                        </tr>`;
-                    }
+                    });
                 }
-            }
+            });
             html += '</tbody></table>';
         }
         document.getElementById('relayTable').innerHTML = html;
         attachRelayButtonHandlers();
         addInputHighlightHandlers();
-
-        document.getElementById('startRelayBtn').onclick = function () {
-            const inputUrl = document.getElementById('inputUrl').value.trim();
-            const outputUrl = document.getElementById('outputUrl').value.trim();
-            const inputName = document.getElementById('inputName').value.trim();
-            const outputName = document.getElementById('outputName').value.trim();
-            const preset = document.getElementById('platformPreset').value;
-            const videoCodec = document.getElementById('videoCodec').value.trim();
-            const audioCodec = document.getElementById('audioCodec').value.trim();
-            const resolution = document.getElementById('resolution').value.trim();
-            const framerate = document.getElementById('framerate').value.trim();
-            const bitrate = document.getElementById('bitrate').value.trim();
-            const rotation = document.getElementById('rotation').value.trim();
-            if (!inputUrl || !outputUrl || !inputName || !outputName) { alert('Input/Output URL and Name required'); return; }
-            const ffmpeg_options = { video_codec: videoCodec, audio_codec: audioCodec, resolution, framerate, bitrate, rotation };
-            if (rotation) {
-                ffmpeg_options.rotation = rotation;
-            }
-            fetch('/api/relay/start', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ input_url: inputUrl, output_url: outputUrl, input_name: inputName, output_name: outputName, platform_preset: preset, ffmpeg_options })
-            }).then(() => { fetchStatus(); });
-        };
-
-        document.getElementById('exportBtn').onclick = function () {
-            window.location = '/api/relay/export';
-        };
-        document.getElementById('importBtn').onclick = function () {
-            document.getElementById('importFile').click();
-        };
-        document.getElementById('importFile').onchange = function (e) {
-            const file = e.target.files[0];
-            if (!file) return;
-            const formData = new FormData();
-            formData.append('file', file);
-            fetch('/api/relay/import', {
-                method: 'POST',
-                body: formData
-            }).then(() => { fetchStatus(); });
-        };
     }
 
+    function addInputHighlightHandlers() {
+        // Remove previous handlers to avoid stacking
+        document.querySelectorAll('tr[data-input-group], .input-group-row').forEach(el => {
+            el.onmouseenter = null;
+            el.onmouseleave = null;
+        });
+
+        // --- INPUT HOVER: highlight all input columns and all corresponding outputs ---
+        document.querySelectorAll('.input-group-row').forEach(inputCell => {
+            const group = inputCell.getAttribute('data-input-group');
+            inputCell.onmouseenter = function () {
+                // Highlight all input columns for this group (the input row)
+                const groupRows = document.querySelectorAll(`tr[data-input-group="${group}"]`);
+                // Find the input row (rowspan cell)
+                const inputRow = document.querySelector(`.input-group-row[data-input-group="${group}"]`);
+                if (inputRow) {
+                    // Highlight all input columns (first 5 cells)
+                    const inputCells = inputRow.parentElement.querySelectorAll('td');
+                    for (let i = 0; i < 5 && i < inputCells.length; i++) {
+                        inputCells[i].classList.add('input-highlight');
+                    }
+                }
+                // Highlight all output rows for this group (all columns for each output row)
+                groupRows.forEach(row => {
+                    // For output rows, highlight all output columns (columns 5+)
+                    const cells = row.querySelectorAll('td');
+                    for (let j = 5; j < cells.length; j++) {
+                        cells[j].classList.add('output-highlight');
+                    }
+                });
+            };
+            inputCell.onmouseleave = function () {
+                const groupRows = document.querySelectorAll(`tr[data-input-group="${group}"]`);
+                const inputRow = document.querySelector(`.input-group-row[data-input-group="${group}"]`);
+                if (inputRow) {
+                    const inputCells = inputRow.parentElement.querySelectorAll('td');
+                    for (let i = 0; i < 5 && i < inputCells.length; i++) {
+                        inputCells[i].classList.remove('input-highlight');
+                    }
+                }
+                groupRows.forEach(row => {
+                    const cells = row.querySelectorAll('td');
+                    for (let j = 5; j < cells.length; j++) {
+                        cells[j].classList.remove('output-highlight');
+                    }
+                });
+            };
+        });
+
+        // --- OUTPUT HOVER: highlight all output columns and all corresponding input columns ---
+        document.querySelectorAll('tr[data-input-group]').forEach(row => {
+            const group = row.getAttribute('data-input-group');
+            const cells = row.querySelectorAll('td');
+            // Output columns are 5+
+            for (let i = 5; i < cells.length; i++) {
+                cells[i].onmouseenter = function () {
+                    // Highlight all output columns for this row
+                    for (let j = 5; j < cells.length; j++) {
+                        cells[j].classList.add('output-highlight');
+                    }
+                    // Highlight all input columns for the input row
+                    const inputRow = document.querySelector(`.input-group-row[data-input-group="${group}"]`);
+                    if (inputRow) {
+                        const inputCells = inputRow.parentElement.querySelectorAll('td');
+                        for (let k = 0; k < 5 && k < inputCells.length; k++) {
+                            inputCells[k].classList.add('input-highlight');
+                        }
+                    }
+                };
+                cells[i].onmouseleave = function () {
+                    for (let j = 5; j < cells.length; j++) {
+                        cells[j].classList.remove('output-highlight');
+                    }
+                    const inputRow = document.querySelector(`.input-group-row[data-input-group="${group}"]`);
+                    if (inputRow) {
+                        const inputCells = inputRow.parentElement.querySelectorAll('td');
+                        for (let k = 0; k < 5 && k < inputCells.length; k++) {
+                            inputCells[k].classList.remove('input-highlight');
+                        }
+                    }
+                };
+            }
+        });
+    }
+
+    // Fix: search bar event handler just calls updateUI with latest data
     document.getElementById('searchBox').addEventListener('input', function () {
-        fetch('/api/relay/status')
-            .then(r => r.json())
-            .then(data => updateUI(data));
+        if (window.latestRelayStatus) {
+            updateUI(window.latestRelayStatus);
+        }
     });
 
-    // Initial render
+    // Initial fetch to populate UI
     fetchStatus();
-    setInterval(fetchStatus, 5000);
+    // Periodically refresh status every 3 seconds
+    setInterval(fetchStatus, 3000);
+
+    // --- Video Player Modal Logic ---
+    // Add modal HTML to body
+    const modalHtml = `
+    <div id="videoPlayerModal" class="modal" style="display:none; position:fixed; z-index:1000; left:0; top:0; width:100%; height:100%; background:rgba(0,0,0,0.8); justify-content:center; align-items:center;">
+        <div class="modal-content" style="position:relative; background:#121212; border-radius:8px; overflow:hidden; max-width:800px; width:90%; max-height:80vh;">
+            <span id="closeVideoModal" class="close" style="position:absolute; top:10px; right:10px; color:white; font-size:24px; cursor:pointer;">&times;</span>
+            <video id="inputVideoPlayer" controls style="width:100%; height:auto; background:black;"></video>
+        </div>
+    </div>`;
+    document.body.insertAdjacentHTML('beforeend', modalHtml);
+
+    // Play button handler (delegated, robust for icon clicks)
+    document.addEventListener('click', function (e) {
+        const btn = e.target.closest('button.playInputBtn');
+        if (btn) {
+            const inputName = btn.getAttribute('data-input-name');
+            if (!inputName) return;
+            // Start HLS viewer session
+            fetch('/api/relay/hls/start-viewer', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ input_name: inputName })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.viewer_id && data.playlist_url) {
+                    const modal = document.getElementById('videoPlayerModal');
+                    const video = document.getElementById('inputVideoPlayer');
+                    // Store viewer info for cleanup
+                    video.dataset.viewerId = data.viewer_id;
+                    video.dataset.inputName = inputName;
+                    console.log('HLS viewer started:', inputName, data.viewer_id);
+                    // --- Consecutive network error counter ---
+                    let hlsNetworkErrorCount = 0;
+                    // HLS.js logic with improved error handling
+                    if (window.Hls && Hls.isSupported()) {
+                        if (window.hlsInstance) {
+                            window.hlsInstance.destroy();
+                        }
+                        const hls = new Hls({
+                            debug: false,
+                            enableWorker: true,
+                            lowLatencyMode: true,
+                            backBufferLength: 90,
+                            manifestLoadingTimeOut: 10000,
+                            manifestLoadingMaxRetry: 5,
+                            levelLoadingTimeOut: 10000,
+                            fragLoadingTimeOut: 20000
+                        });
+                        // Add error handling
+                        hls.on(Hls.Events.ERROR, function(event, data) {
+                            console.error('HLS error:', data.type, data.details, data);
+                            if (data.fatal && data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+                                hlsNetworkErrorCount++;
+                                console.warn('HLS fatal network error count:', hlsNetworkErrorCount);
+                                if (hlsNetworkErrorCount >= 5) {
+                                    closeHLSModal();
+                                    alert('Stream disconnected due to repeated network errors.');
+                                    return;
+                                }
+                            }
+                            // Reset on any successful fragment/playlist load
+                            if (data.type === Hls.ErrorTypes.NETWORK_ERROR && hlsNetworkErrorCount > 0 && !data.fatal) {
+                                hlsNetworkErrorCount = 0;
+                            }
+                            if (data.fatal) {
+                                switch(data.type) {
+                                    case Hls.ErrorTypes.NETWORK_ERROR:
+                                        hls.startLoad();
+                                        break;
+                                    case Hls.ErrorTypes.MEDIA_ERROR:
+                                        hls.recoverMediaError();
+                                        break;
+                                    default:
+                                        break;
+                                }
+                            }
+                        });
+                        // Reset error counter on successful fragment/playlist load
+                        hls.on(Hls.Events.FRAG_LOADED, function() { hlsNetworkErrorCount = 0; });
+                        hls.on(Hls.Events.LEVEL_LOADED, function(event, data) {
+                            hlsNetworkErrorCount = 0;
+                            if (data.details && data.details.live === false) {
+                                setTimeout(() => {
+                                    closeHLSModal();
+                                    alert('Stream has ended.');
+                                }, 500);
+                            }
+                        });
+                        hls.on(Hls.Events.FRAG_EOF, function() {
+                            setTimeout(() => {
+                                closeHLSModal();
+                                alert('Stream has ended.');
+                            }, 500);
+                        });
+                        hls.loadSource(data.playlist_url);
+                        hls.attachMedia(video);
+                        window.hlsInstance = hls;
+                    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                        // Native HLS support (Safari)
+                        video.src = data.playlist_url;
+                    } else {
+                        console.warn('HLS not supported by this browser, trying fallback');
+                        video.src = data.playlist_url; // fallback, unlikely to work
+                    }
+                        
+                        modal.style.display = 'flex';
+                        video.focus();
+                        // Start heartbeat
+                        startHLSHeartbeat(inputName, data.viewer_id);
+                        // --- Auto-close on video end (native event) ---
+                        video.onended = function() {
+                            closeHLSModal();
+                            alert('Stream has ended.');
+                        };
+                    } else {
+                        console.error('Failed to start HLS viewer:', data);
+                        alert('Failed to start video player');
+                    }
+                })
+                .catch(err => {
+                    console.error('Error starting HLS viewer:', err);
+                    alert('Failed to start video player');
+                });
+        }
+    });
+
+    // HLS heartbeat function
+    let heartbeatInterval = null;
+    let heartbeatErrorCount = 0; // Track consecutive heartbeat errors
+    function startHLSHeartbeat(inputName, viewerId) {
+        // Clear any existing heartbeat
+        if (heartbeatInterval) {
+            clearInterval(heartbeatInterval);
+            heartbeatInterval = null;
+            console.log('HLS heartbeat stopped (before starting new)');
+        }
+        heartbeatErrorCount = 0;
+        // Send heartbeat every 15 seconds
+        heartbeatInterval = setInterval(() => {
+            fetch('/api/relay/hls/heartbeat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ 
+                    input_name: inputName, 
+                    viewer_id: viewerId 
+                })
+            })
+            .then(resp => {
+                if (!resp.ok) throw new Error('Heartbeat not ok');
+                heartbeatErrorCount = 0; // Reset on success
+            })
+            .catch(err => {
+                heartbeatErrorCount++;
+                console.error('HLS heartbeat failed:', err, 'count:', heartbeatErrorCount);
+                if (heartbeatErrorCount >= 5) {
+                    closeHLSModal();
+                    alert('Stream disconnected due to repeated heartbeat errors.');
+                }
+            });
+        }, 15000);
+        console.log('HLS heartbeat started');
+    }
+
+    function stopHLSViewer(inputName, viewerId) {
+        if (heartbeatInterval) {
+            clearInterval(heartbeatInterval);
+            heartbeatInterval = null;
+            console.log('HLS heartbeat stopped (stopHLSViewer)');
+        }
+        if (viewerId && inputName) {
+            fetch('/api/relay/hls/stop-viewer', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ 
+                    input_name: inputName, 
+                    viewer_id: viewerId 
+                })
+            }).catch(err => {
+                console.error('Error stopping HLS viewer:', err);
+            });
+        }
+    }
+
+    // Modal close handler (updated)
+    const closeModalBtn = document.getElementById('closeVideoModal');
+    if (closeModalBtn) {
+        closeModalBtn.onclick = function () {
+            const modal = document.getElementById('videoPlayerModal');
+            const video = document.getElementById('inputVideoPlayer');
+            if (modal && video) {
+                // Stop HLS viewer session
+                const viewerId = video.dataset.viewerId;
+                const inputName = video.dataset.inputName;
+                stopHLSViewer(inputName, viewerId);
+                
+                video.pause();
+                video.src = '';
+                if (window.hlsInstance) {
+                    window.hlsInstance.destroy();
+                    window.hlsInstance = null;
+                }
+                modal.style.display = 'none';
+                
+                // Clean up datasets
+                delete video.dataset.viewerId;
+                delete video.dataset.inputName;
+                console.log('HLS modal closed');
+            }
+        };
+    }
+    
+    // Close modal on outside click (updated)
+    const modal = document.getElementById('videoPlayerModal');
+    if (modal) {
+        modal.onclick = function (e) {
+            if (e.target === modal) {
+                const video = document.getElementById('inputVideoPlayer');
+                const viewerId = video.dataset.viewerId;
+                const inputName = video.dataset.inputName;
+                stopHLSViewer(inputName, viewerId);
+                
+                video.pause();
+                video.src = '';
+                if (window.hlsInstance) {
+                    window.hlsInstance.destroy();
+                    window.hlsInstance = null;
+                }
+                modal.style.display = 'none';
+                
+                // Clean up datasets
+                delete video.dataset.viewerId;
+                delete video.dataset.inputName;
+            }
+        };
+    }
+    
+    // Handle page unload to clean up HLS viewer
+    window.addEventListener('beforeunload', function() {
+        const video = document.getElementById('inputVideoPlayer');
+        if (video) {
+            const viewerId = video.dataset.viewerId;
+            const inputName = video.dataset.inputName;
+            if (viewerId && inputName) {
+                // Use sendBeacon for reliable cleanup on page unload
+                navigator.sendBeacon('/api/relay/hls/stop-viewer', 
+                    JSON.stringify({ 
+                        input_name: inputName, 
+                        viewer_id: viewerId 
+                    })
+                );
+            }
+        }
+    });
+
+    // --- Move closeHLSModal here so it shares scope with modal/player/heartbeat vars ---
+    function closeHLSModal() {
+        const modal = document.getElementById('videoPlayerModal');
+        const video = document.getElementById('inputVideoPlayer');
+        if (modal && video) {
+            // Stop HLS viewer session
+            const viewerId = video.dataset.viewerId;
+            const inputName = video.dataset.inputName;
+            stopHLSViewer(inputName, viewerId);
+            if (heartbeatInterval) {
+                clearInterval(heartbeatInterval);
+                heartbeatInterval = null;
+                console.log('HLS heartbeat stopped (closeHLSModal)');
+            }
+            heartbeatErrorCount = 0;
+            video.pause();
+            video.src = '';
+            if (window.hlsInstance) {
+                window.hlsInstance.destroy();
+                window.hlsInstance = null;
+            }
+            modal.style.display = 'none';
+            // Clean up datasets
+            delete video.dataset.viewerId;
+            delete video.dataset.inputName;
+            console.log('HLS modal closed');
+        }
+    }
 });
-
-// The fallback is only necessary if you are not guaranteed to always have input_name and output_name
-// in every relay and endpoint object in the status response. If your backend always provides these
-// names (even if they are just copies of the URLs), you can safely remove the fallback and sort
-// directly by input_name and output_name:
-
-// Example (if names are always present):
-// data.relays.sort((a, b) => a.input_name.localeCompare(a.input_name, undefined, { numeric: true, sensitivity: 'base' }));
-// endpoints.slice().sort((a, b) => a.output_name.localeCompare(a.output_name, undefined, { numeric: true, sensitivity: 'base' }));
-
-// If you are not sure, keep the fallback to avoid runtime errors or blank sorting keys.

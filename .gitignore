@@ -1,0 +1,5 @@
+recordings/
+bin/
+.vscode/
+.github/copilot-instructions.md
+*.out
