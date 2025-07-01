@@ -72,6 +72,22 @@ func NewRTSPServerManager(l *logger.Logger) *RTSPServerManager {
 	}
 }
 
+// NewRTSPServerManagerWithConfig creates a new RTSP server manager with custom host/port
+func NewRTSPServerManagerWithConfig(l *logger.Logger, host string, port int) *RTSPServerManager {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &RTSPServerManager{
+		config: RTSPServerConfig{
+			Port:      port,
+			Interface: host,
+		},
+		logger:      l,
+		streams:     make(map[string]*RTSPStreamInfo),
+		streamReady: make(map[string]chan bool),
+		ctx:         ctx,
+		cancel:      cancel,
+	}
+}
+
 // Start starts the RTSP server
 func (rm *RTSPServerManager) Start() error {
 	rm.logger.Info("Starting RTSP server on %s:%d", rm.config.Interface, rm.config.Port)

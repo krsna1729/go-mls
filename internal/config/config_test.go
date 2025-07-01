@@ -1,6 +1,7 @@
 package config
 
 import (
+	"go-mls/internal/logger"
 	"os"
 	"path/filepath"
 	"testing"
@@ -20,12 +21,11 @@ func TestDefaultConfig(t *testing.T) {
 	}
 
 	// Test Relay defaults
-	if config.Relay.InputTimeout != 30*time.Second {
-		t.Errorf("expected input timeout 30s, got %v", config.Relay.InputTimeout)
+	if time.Duration(config.Relay.InputTimeout) != 30*time.Second {
+		t.Errorf("expected default input timeout 30s, got %v", config.Relay.InputTimeout)
 	}
-
-	if config.Relay.OutputTimeout != 60*time.Second {
-		t.Errorf("expected output timeout 60s, got %v", config.Relay.OutputTimeout)
+	if time.Duration(config.Relay.OutputTimeout) != 60*time.Second {
+		t.Errorf("expected default output timeout 60s, got %v", config.Relay.OutputTimeout)
 	}
 
 	// Test Recording defaults
@@ -35,7 +35,7 @@ func TestDefaultConfig(t *testing.T) {
 }
 
 func TestLoadConfigNonExistent(t *testing.T) {
-	config, err := LoadConfig("nonexistent.json")
+	config, err := LoadConfig("nonexistent.json", logger.NewLogger())
 	if err != nil {
 		t.Errorf("expected no error loading nonexistent config, got %v", err)
 	}
@@ -53,7 +53,7 @@ func TestSaveAndLoadConfig(t *testing.T) {
 	// Create a custom config
 	config := DefaultConfig()
 	config.HTTP.Port = "9090"
-	config.Relay.InputTimeout = 45 * time.Second
+	config.Relay.InputTimeout = Duration(45 * time.Second)
 	config.Recording.Directory = "/custom/recordings"
 
 	// Save config
@@ -63,7 +63,7 @@ func TestSaveAndLoadConfig(t *testing.T) {
 	}
 
 	// Load config
-	loadedConfig, err := LoadConfig(configFile)
+	loadedConfig, err := LoadConfig(configFile, logger.NewLogger())
 	if err != nil {
 		t.Errorf("failed to load config: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestSaveAndLoadConfig(t *testing.T) {
 		t.Errorf("expected port '9090', got '%s'", loadedConfig.HTTP.Port)
 	}
 
-	if loadedConfig.Relay.InputTimeout != 45*time.Second {
+	if time.Duration(loadedConfig.Relay.InputTimeout) != 45*time.Second {
 		t.Errorf("expected input timeout 45s, got %v", loadedConfig.Relay.InputTimeout)
 	}
 
@@ -115,8 +115,8 @@ func TestConfigValidation(t *testing.T) {
 		{
 			name: "Output timeout not greater than input",
 			modifyFunc: func(c *Config) {
-				c.Relay.InputTimeout = 60 * time.Second
-				c.Relay.OutputTimeout = 30 * time.Second
+				c.Relay.InputTimeout = Duration(60 * time.Second)
+				c.Relay.OutputTimeout = Duration(30 * time.Second)
 			},
 			shouldError: true,
 			errorMsg:    "output timeout must be greater than input timeout",
@@ -184,7 +184,7 @@ func TestLoadConfigInvalidJSON(t *testing.T) {
 		t.Fatalf("failed to write test file: %v", err)
 	}
 
-	_, err = LoadConfig(configFile)
+	_, err = LoadConfig(configFile, logger.NewLogger())
 	if err == nil {
 		t.Error("expected error loading invalid JSON, got nil")
 	}
@@ -211,7 +211,7 @@ func TestLoadConfigInvalidValues(t *testing.T) {
 		t.Fatalf("failed to write test file: %v", err)
 	}
 
-	_, err = LoadConfig(configFile)
+	_, err = LoadConfig(configFile, logger.NewLogger())
 	if err == nil {
 		t.Error("expected validation error, got nil")
 	}

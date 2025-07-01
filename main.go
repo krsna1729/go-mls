@@ -374,8 +374,11 @@ func main() {
 	flag.StringVar(&recordingsDir, "recordings-dir", "", "Directory to store recordings (overrides config)")
 	flag.Parse()
 
+	// Create a temporary logger for config loading
+	tempLogger := logger.NewLogger()
+
 	// Load configuration
-	cfg, err := config.LoadConfig(configFile)
+	cfg, err := config.LoadConfig(configFile, tempLogger)
 	if err != nil {
 		fmt.Printf("Failed to load configuration: %v\n", err)
 		os.Exit(1)
@@ -386,7 +389,8 @@ func main() {
 		cfg.Recording.Directory = recordingsDir
 	}
 
-	logger := logger.NewLogger()
+	// Use config for logger
+	logger := logger.NewLoggerWithConfig(cfg.Logging.Level, cfg.Logging.File)
 	logger.Info("Starting Go-MLS Relay Manager")
 
 	// Get initial goroutine count
@@ -402,22 +406,31 @@ func main() {
 	logger.Info("Using recordings directory: %s", absDir)
 
 	// Initialize RTSP server with configuration
-	rtspServer := stream.NewRTSPServerManager(logger)
-	// TODO: Use RTSP configuration from config file
+	rtspServer := stream.NewRTSPServerManagerWithConfig(logger, cfg.Relay.RTSPServer.Host, cfg.Relay.RTSPServer.Port)
 	if err := rtspServer.Start(); err != nil {
 		logger.Fatal("Failed to start RTSP server: %v", err)
 	}
 
-	relayMgr := stream.NewRelayManager(logger, absDir)
+	relayMgr := stream.NewRelayManagerWithFFmpegLoglevel(logger, absDir, cfg.FFmpeg.LogLevel)
 	relayMgr.SetRTSPServer(rtspServer)
 	// Set relay configuration timeouts
-	relayMgr.SetTimeouts(cfg.Relay.InputTimeout, cfg.Relay.OutputTimeout)
+	relayMgr.SetTimeouts(time.Duration(cfg.Relay.InputTimeout), time.Duration(cfg.Relay.OutputTimeout))
 
 	recordingMgr := stream.NewRecordingManager(logger, absDir, relayMgr)
 
-	// Instantiate HLSManager (ffmpeg path, cleanup interval, session timeout)
-	hlsMgr := stream.NewHLSManager("ffmpeg", 2*time.Minute, 5*time.Minute)
-	// Connect HLS manager to relay manager for proper consumer management
+	// Convert config.HLSConfig durations to time.Duration for HLSManager
+	hlsMgr := stream.NewHLSManager(stream.HLSManagerConfig{
+		CleanupInterval:        time.Duration(cfg.HLS.CleanupInterval),
+		SessionTimeout:         time.Duration(cfg.HLS.SessionTimeout),
+		FailedCooldown:         time.Duration(cfg.HLS.FailedCooldown),
+		NotFoundLogInterval:    time.Duration(cfg.HLS.NotFoundLogInterval),
+		PlaylistReadyTimeout:   time.Duration(cfg.HLS.PlaylistReadyTimeout),
+		PlaylistPollInterval:   time.Duration(cfg.HLS.PlaylistPollInterval),
+		PlaylistPollAttempts:   cfg.HLS.PlaylistPollAttempts,
+		ViewerHeartbeatTimeout: time.Duration(cfg.HLS.ViewerHeartbeatTimeout),
+		FFmpegStopTimeout:      time.Duration(cfg.HLS.FFmpegStopTimeout),
+		PlaylistBaseDir:        cfg.HLS.PlaylistBaseDir,
+	})
 	hlsMgr.SetRelayManager(relayMgr)
 
 	// Use embedded static assets
@@ -458,9 +471,9 @@ func main() {
 		Addr: cfg.HTTP.Host + ":" + cfg.HTTP.Port,
 
 		// Connection timeouts from configuration
-		ReadTimeout:       cfg.HTTP.ReadTimeout,
-		WriteTimeout:      cfg.HTTP.WriteTimeout, // Important for SSE connections
-		IdleTimeout:       cfg.HTTP.IdleTimeout,
+		ReadTimeout:       time.Duration(cfg.HTTP.ReadTimeout),
+		WriteTimeout:      time.Duration(cfg.HTTP.WriteTimeout), // Important for SSE connections
+		IdleTimeout:       time.Duration(cfg.HTTP.IdleTimeout),
 		ReadHeaderTimeout: 5 * time.Second, // Keep fixed for security
 
 		// Maximum header size (default 1MB is usually fine)

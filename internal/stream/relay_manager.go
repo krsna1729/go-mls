@@ -33,6 +33,9 @@ type RelayManager struct {
 	inputTimeout  time.Duration
 	outputTimeout time.Duration
 
+	// ffmpeg loglevel (configurable)
+	ffmpegLogLevel string
+
 	// Mutex map for serializing concurrent starts of the same input URL
 	startMutexes   map[string]*sync.Mutex
 	startMutexesMu sync.Mutex
@@ -59,6 +62,19 @@ func NewRelayManager(l *logger.Logger, recDir string) *RelayManager {
 	})
 
 	return rm
+}
+
+// NewRelayManagerWithFFmpegLoglevel creates a relay manager with configurable ffmpeg loglevel
+func NewRelayManagerWithFFmpegLoglevel(l *logger.Logger, recDir string, ffmpegLogLevel string) *RelayManager {
+	return &RelayManager{
+		InputRelays:    NewInputRelayManager(l, recDir),
+		OutputRelays:   NewOutputRelayManager(l),
+		Logger:         l,
+		recDir:         recDir,
+		inputConfigs:   make(map[string]*InputConfig),
+		startMutexes:   make(map[string]*sync.Mutex),
+		ffmpegLogLevel: ffmpegLogLevel,
+	}
 }
 
 // SetRTSPServer sets the RTSP server instance
@@ -167,7 +183,12 @@ func (rm *RelayManager) StartRelayWithOptions(inputURL, outputURL, inputName, ou
 	}
 
 	// Build ffmpeg args for output relay
-	args := []string{"-hide_banner", "-loglevel", "info", "-stats", "-re", "-i", localRelayURL}
+	const defaultFFmpegLoglevel = "info"
+	loglevel := rm.ffmpegLogLevel
+	if loglevel == "" {
+		loglevel = defaultFFmpegLoglevel
+	}
+	args := []string{"-hide_banner", "-loglevel", loglevel, "-stats", "-re", "-i", localRelayURL}
 	if opts != nil {
 		if opts.VideoCodec != "" {
 			args = append(args, "-c:v", opts.VideoCodec)

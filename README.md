@@ -18,7 +18,7 @@ Go-MLS is a Go-based service for live video relay, recording, and monitoring, wi
 - ffmpeg installed and available in your PATH
 
 ### Build and Run
-```sh
+```bash
 git clone https://github.com/krsna/go-mls.git
 cd go-mls
 go build -o go-mls
@@ -52,17 +52,30 @@ Create a `config.json` file (see `config.example.json` for reference):
   "logging": {
     "level": "info",
     "file": ""
+  },
+  "ffmpeg": {
+    "path": "ffmpeg",                        // Path to ffmpeg binary used for all streaming/recording
+    "loglevel": "info"                       // ffmpeg loglevel (e.g. info, warning, error)
+  },
+  "hls": {
+    "cleanup_interval": "2m",               // How often to clean up old HLS temp dirs
+    "session_timeout": "5m",                // How long to keep an HLS session alive without viewers
+    "viewer_heartbeat_timeout": "30s",      // Viewer considered disconnected after this
+    "playlist_ready_timeout": "30s",        // Max time to wait for playlist to appear (fsnotify+poll)
+    "playlist_base_dir": "/tmp"             // Base directory for HLS playlist temp dirs (default: /tmp)
   }
 }
 ```
+Advanced HLS options (rarely need to change, see code for defaults):
+
+`failed_cooldown, not_found_log_interval, playlist_poll_interval, playlist_poll_attempts, ffmpeg_stop_timeout`
 
 Run with custom configuration:
-```sh
+```bash
 ./go-mls -config config.json
 ```
 
 ### Command Line Options
-- `-recordings-dir`: Directory to store recordings (default: `./recordings`)
 - `-config`: Path to configuration file (optional)
 
 ### Usage

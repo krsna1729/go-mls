@@ -32,7 +32,6 @@ func TestServeHLS_PlaylistAndSegment(t *testing.T) {
 
 	mgr := &HLSManager{
 		sessions:        make(map[string]*HLSSession),
-		ffmpegPath:      "/bin/true", // not used
 		cleanupInterval: time.Minute,
 		sessionTimeout:  time.Minute,
 		relayManager:    nil, // no logging needed for this test
@@ -88,7 +87,6 @@ func TestServeHLS_NotFoundRateLimit(t *testing.T) {
 	logr := logger.NewLoggerWithWriter(&buf)
 	mgr := &HLSManager{
 		sessions:            make(map[string]*HLSSession),
-		ffmpegPath:          "/bin/true",
 		cleanupInterval:     time.Minute,
 		sessionTimeout:      time.Minute,
 		relayManager:        &RelayManager{Logger: logr},

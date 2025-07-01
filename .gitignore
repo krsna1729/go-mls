@@ -3,3 +3,4 @@ bin/
 .vscode/
 .github/copilot-instructions.md
 *.out
+config.json
