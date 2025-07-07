@@ -155,31 +155,11 @@ func (rm *RelayManager) StartRelayWithOptions(inputURL, outputURL, inputName, ou
 	startMutex.Lock()
 	defer startMutex.Unlock()
 
-	// Compose local RTSP relay path and URL
-	relayPath := fmt.Sprintf("relay/%s", inputName)
-	localRelayURL := fmt.Sprintf("%s/%s", GetRTSPServerURL(), relayPath)
-
-	// Start or get the input relay
-	_, err := rm.InputRelays.StartInputRelay(inputName, inputURL, localRelayURL, rm.inputTimeout)
+	// Use StartInputRelayForConsumer to ensure proper input relay lifecycle (waits until ready)
+	localRelayURL, err := rm.StartInputRelayForConsumer(inputName)
 	if err != nil {
 		rm.Logger.Error("Failed to start input relay for output: %v", err)
 		return err
-	}
-
-	// Wait for the RTSP stream to become ready before starting output ffmpeg
-	if rm.rtspServer != nil {
-		rm.Logger.Info("Waiting for RTSP stream to become ready: %s", relayPath)
-		err = rm.rtspServer.WaitForStreamReady(relayPath, 30*time.Second)
-		if err != nil {
-			rm.Logger.Error("Failed to wait for RTSP stream to become ready for %s: %v", inputName, err)
-			if !rm.rtspServer.IsStreamReady(relayPath) {
-				rm.InputRelays.StopInputRelay(inputURL)
-				return fmt.Errorf("RTSP stream not ready: %v", err)
-			}
-			rm.Logger.Warn("Stream %s appears ready but wait failed, continuing anyway", relayPath)
-		} else {
-			rm.Logger.Info("RTSP stream is ready for %s, starting output relay", inputName)
-		}
 	}
 
 	// Build ffmpeg args for output relay
@@ -240,6 +220,7 @@ func (rm *RelayManager) StartRelayWithOptions(inputURL, outputURL, inputName, ou
 	err = rm.OutputRelays.StartOutputRelay(config)
 	if err != nil {
 		rm.Logger.Error("Failed to start output relay: %v", err)
+		rm.StopInputRelayForConsumer(inputName)
 		return err
 	}
 
@@ -773,7 +754,7 @@ func (rm *RelayManager) GetInputURLByName(inputName string) (string, bool) {
 }
 
 // StartInputRelayForConsumer starts an input relay and marks it as having a consumer
-// This is used by HLS sessions, recordings, etc. to ensure proper lifecycle management
+// Waits until the RTSP stream is ready, or returns error. All waiting/cleanup logic is internal.
 func (rm *RelayManager) StartInputRelayForConsumer(inputName string) (string, error) {
 	inputURL, exists := rm.GetInputURLByName(inputName)
 	if !exists {
@@ -790,7 +771,7 @@ func (rm *RelayManager) StartInputRelayForConsumer(inputName string) (string, er
 		return "", fmt.Errorf("failed to start input relay for %s: %v", inputName, err)
 	}
 
-	// Wait for the RTSP stream to become ready
+	// Wait for the RTSP stream to become ready (robust, with cleanup)
 	if rm.rtspServer != nil {
 		rm.Logger.Info("Waiting for RTSP stream to become ready: %s", relayPath)
 		err = rm.rtspServer.WaitForStreamReady(relayPath, 30*time.Second)

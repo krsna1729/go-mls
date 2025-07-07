@@ -27,6 +27,10 @@ func TestApiStartRecording(t *testing.T) {
 
 	relayMgr := NewRelayManager(log, tempDir)
 	relayMgr.SetRTSPServer(rtspServer)
+
+	// Register input config for test input (fix for failing test)
+	relayMgr.RegisterInputConfig("test", "file://testsrc.mp4")
+
 	rm := NewRecordingManager(log, tempDir, relayMgr)
 	defer rm.Shutdown()
 

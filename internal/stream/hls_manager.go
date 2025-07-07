@@ -144,35 +144,6 @@ func (m *HLSManager) GetOrStartSession(inputName, localURL string) (*HLSSession,
 			m.relayManager.Logger.Error("Failed to start input relay for HLS: %v", err)
 			return nil, fmt.Errorf("failed to start input relay for HLS: %w", err)
 		}
-
-		// Wait for RTSP relay to become ready (robust, configurable)
-		readyTimeout := m.config.PlaylistReadyTimeout
-		if readyTimeout <= 0 {
-			readyTimeout = 10 * time.Second
-		}
-		pollInterval := m.config.PlaylistPollInterval
-		if pollInterval <= 0 {
-			pollInterval = 200 * time.Millisecond
-		}
-		start := time.Now()
-		for {
-			_, found := m.relayManager.InputRelays.FindLocalURLByInputName(inputName)
-			if found {
-				if m.relayManager.Logger != nil {
-					m.relayManager.Logger.Info("RTSP relay ready for inputName=%s after %.2fs", inputName, time.Since(start).Seconds())
-				}
-				break
-			}
-			if time.Since(start) > readyTimeout {
-				m.relayManager.StopInputRelayForConsumer(inputName)
-				m.relayManager.Logger.Error("RTSP relay failed to become ready for %s after %.2fs", inputName, time.Since(start).Seconds())
-				return nil, fmt.Errorf("input relay failed to start for %s (timeout)", inputName)
-			}
-			if m.relayManager.Logger != nil {
-				m.relayManager.Logger.Debug("Waiting for RTSP relay for inputName=%s (%.2fs elapsed)", inputName, time.Since(start).Seconds())
-			}
-			time.Sleep(pollInterval)
-		}
 	} else {
 		actualLocalURL = localURL
 	}

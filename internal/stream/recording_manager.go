@@ -87,7 +87,6 @@ func (rm *RecordingManager) StartRecording(ctx context.Context, name, sourceURL 
 
 	rm.mu.Lock()
 	// Check for existing active recordings by name and source
-	// This prevents multiple recordings with the same name+source combination
 	for _, rec := range rm.recordings {
 		if rec.Name == name && rec.Source == sourceURL && rec.Active {
 			rm.mu.Unlock()
@@ -97,7 +96,6 @@ func (rm *RecordingManager) StartRecording(ctx context.Context, name, sourceURL 
 	}
 
 	// Create a placeholder recording entry to prevent race conditions
-	// This ensures that concurrent StartRecording calls won't create duplicates
 	currentTime := time.Now()
 	timestamp := currentTime.Unix()
 	uniqueKey := fmt.Sprintf("%s_%d", recordingKey, timestamp)
@@ -110,47 +108,17 @@ func (rm *RecordingManager) StartRecording(ctx context.Context, name, sourceURL 
 	rm.recordings[uniqueKey] = placeholderRec
 	rm.mu.Unlock()
 
-	// Phase 2: Start the input relay
-	// Set up a local RTSP relay to handle the input source
-	// This provides a stable local URL for ffmpeg to record from
-	relayPath := fmt.Sprintf("relay/%s", name)
-	localRelayURL := fmt.Sprintf("rtsp://127.0.0.1:8554/%s", relayPath) // or use GetRTSPServerURL if available
-	// Use the configured timeout from the relay manager
-	_, err := rm.RelayMgr.InputRelays.StartInputRelay(name, sourceURL, localRelayURL, rm.RelayMgr.GetInputTimeout())
+	// Phase 2: Start the input relay and wait for stream to be ready (all logic internal)
+	localRelayURL, err := rm.RelayMgr.StartInputRelayForConsumer(name)
 	if err != nil {
 		rm.Logger.Error("Failed to start input relay for recording: %v", err)
-		// Clean up the placeholder recording entry on failure
 		rm.mu.Lock()
 		delete(rm.recordings, uniqueKey)
 		rm.mu.Unlock()
 		return err
 	}
 
-	// Wait for the RTSP stream to become ready before starting recording ffmpeg
-	rtspServer := rm.RelayMgr.GetRTSPServer()
-	if rtspServer != nil {
-		rm.Logger.Info("Waiting for RTSP stream to become ready for recording: %s", relayPath)
-		err = rtspServer.WaitForStreamReady(relayPath, 30*time.Second)
-		if err != nil {
-			rm.Logger.Error("Failed to wait for RTSP stream to become ready for recording %s: %v", name, err)
-			rm.Logger.Debug("Stream readiness check failed for %s, checking if stream exists...", relayPath)
-			if rtspServer.IsStreamReady(relayPath) {
-				rm.Logger.Warn("Stream %s appears ready but wait failed, continuing anyway", relayPath)
-			} else {
-				rm.RelayMgr.InputRelays.StopInputRelay(sourceURL)
-				// Clean up the placeholder recording entry
-				rm.mu.Lock()
-				delete(rm.recordings, uniqueKey)
-				rm.mu.Unlock()
-				return fmt.Errorf("RTSP stream not ready for recording: %v", err)
-			}
-		}
-		rm.Logger.Info("RTSP stream is ready for recording: %s", relayPath)
-	}
-
-	rm.mu.Lock()
-	defer rm.mu.Unlock()
-
+	// Craft ffmpeg args with localRelayURL and start ffmpeg
 	filePath := fmt.Sprintf("%s/%s_%d.mp4", rm.dir, name, timestamp)
 	rm.Logger.Debug("Starting ffmpeg for recording: %s", filePath)
 	ffmpegArgs := []string{"-y", "-i", localRelayURL, "-c", "copy", filePath}
@@ -164,16 +132,14 @@ func (rm *RecordingManager) StartRecording(ctx context.Context, name, sourceURL 
 	proc, err := NewFFmpegProcess(procCtx, ffmpegArgs...)
 	if err != nil {
 		rm.Logger.Error("Failed to create ffmpeg process: %v", err)
-		rm.RelayMgr.InputRelays.StopInputRelay(sourceURL)
-		// Clean up the placeholder recording entry
+		rm.RelayMgr.StopInputRelayForConsumer(name)
 		delete(rm.recordings, uniqueKey)
 		return err
 	}
 
 	if err := proc.Start(); err != nil {
 		rm.Logger.Error("Failed to start ffmpeg: %v", err)
-		rm.RelayMgr.InputRelays.StopInputRelay(sourceURL)
-		// Clean up the placeholder recording entry
+		rm.RelayMgr.StopInputRelayForConsumer(name)
 		delete(rm.recordings, uniqueKey)
 		return err
 	}
@@ -186,7 +152,7 @@ func (rm *RecordingManager) StartRecording(ctx context.Context, name, sourceURL 
 	done := make(chan struct{})
 	rm.dones[uniqueKey] = done
 	go func(key string, done chan struct{}) {
-		defer rm.RelayMgr.InputRelays.StopInputRelay(sourceURL)
+		defer rm.RelayMgr.StopInputRelayForConsumer(name)
 		cmdDone := make(chan error, 1)
 		go func() {
 			cmdDone <- proc.Wait()
