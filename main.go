@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -367,6 +368,62 @@ func apiHLSViewerHeartbeat(hlsMgr *stream.HLSManager) http.HandlerFunc {
 	}
 }
 
+// apiFFmpegInfo returns FFmpeg availability and version information
+func apiFFmpegInfo() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			httputil.WriteError(w, http.StatusMethodNotAllowed, "Only GET method allowed")
+			return
+		}
+
+		info := stream.CheckFFmpegAvailability("ffmpeg")
+		httputil.WriteJSON(w, http.StatusOK, info)
+	}
+}
+
+// apiFFmpegArgs returns the default FFmpeg arguments used by different components
+func apiFFmpegArgs() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			httputil.WriteError(w, http.StatusMethodNotAllowed, "Only GET method allowed")
+			return
+		}
+
+		args := stream.GetDefaultFFmpegArgs()
+		httputil.WriteJSON(w, http.StatusOK, args)
+	}
+}
+
+// apiFFmpegLogs returns recent log output from FFmpeg processes
+func apiFFmpegLogs(relayMgr *stream.RelayManager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			httputil.WriteError(w, http.StatusMethodNotAllowed, "Only GET method allowed")
+			return
+		}
+
+		// Get query parameters for filtering
+		inputURL := r.URL.Query().Get("input_url")
+		outputURL := r.URL.Query().Get("output_url")
+		linesStr := r.URL.Query().Get("lines")
+		
+		lines := 50 // default
+		if linesStr != "" {
+			if parsedLines, err := strconv.Atoi(linesStr); err == nil && parsedLines > 0 {
+				lines = parsedLines
+			}
+		}
+
+		logs := relayMgr.GetFFmpegLogs(inputURL, outputURL, lines)
+		httputil.WriteJSON(w, http.StatusOK, map[string]interface{}{
+			"logs": logs,
+			"input_url": inputURL,
+			"output_url": outputURL,
+			"lines": lines,
+		})
+	}
+}
+
 func main() {
 	var configFile string
 	var recordingsDir string
@@ -388,6 +445,17 @@ func main() {
 
 	logger := logger.NewLogger()
 	logger.Info("Starting Go-MLS Relay Manager")
+
+	// Check FFmpeg availability at startup
+	ffmpegInfo := stream.CheckFFmpegAvailability("ffmpeg")
+	if ffmpegInfo.Available {
+		logger.Info("FFmpeg is available: version %s", ffmpegInfo.Version)
+		logger.Info("FFmpeg build: %s", ffmpegInfo.BuildDate)
+		logger.Info("FFmpeg copyright: %s", ffmpegInfo.Copyright)
+	} else {
+		logger.Warn("FFmpeg is not available: %s", ffmpegInfo.Error)
+		logger.Warn("Some features may not work without FFmpeg installed")
+	}
 
 	// Get initial goroutine count
 	initialGoroutines := runtime.NumGoroutine()
@@ -438,6 +506,9 @@ func main() {
 	http.HandleFunc("/api/relay/import", apiImportRelays(relayMgr))
 	http.HandleFunc("/api/relay/presets", apiRelayPresets())
 	http.HandleFunc("/api/rtsp/status", apiRTSPStatus(rtspServer))
+	http.HandleFunc("/api/ffmpeg/info", apiFFmpegInfo())
+	http.HandleFunc("/api/ffmpeg/args", apiFFmpegArgs())
+	http.HandleFunc("/api/ffmpeg/logs", apiFFmpegLogs(relayMgr))
 
 	http.HandleFunc("/api/recording/start", stream.ApiStartRecording(recordingMgr))
 	http.HandleFunc("/api/recording/stop", stream.ApiStopRecording(recordingMgr))

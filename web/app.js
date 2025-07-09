@@ -445,6 +445,27 @@ document.addEventListener('DOMContentLoaded', function () {
             .then(data => updateUI(data));
     }
 
+    // Add global variables to store FFmpeg info
+    let ffmpegInfo = null;
+    let ffmpegArgs = null;
+
+    // Fetch FFmpeg info on page load
+    function fetchFFmpegInfo() {
+        Promise.all([
+            fetch('/api/ffmpeg/info').then(r => r.json()),
+            fetch('/api/ffmpeg/args').then(r => r.json())
+        ]).then(([info, args]) => {
+            ffmpegInfo = info;
+            ffmpegArgs = args;
+            // Re-render stats if they exist
+            if (window.latestRelayStatus) {
+                updateUI(window.latestRelayStatus);
+            }
+        }).catch(err => {
+            console.error('Failed to fetch FFmpeg info:', err);
+        });
+    }
+
     function updateUI(data) {
         // Expect data: { server: {cpu, mem}, relays: [...] }
         window.latestRelayStatus = data;
@@ -483,6 +504,24 @@ document.addEventListener('DOMContentLoaded', function () {
             : '<span class="badge badge-warning">Warning</span>';
         let totalCpuStr = (relayGroups + totalEndpoints) ? totalCpu.toFixed(1) + '%' : '0';
         let totalMemStr = (relayGroups + totalEndpoints) ? formatBytes(totalMem) : '0';
+        
+        // Generate FFmpeg info section
+        let ffmpegSection = '';
+        if (ffmpegInfo) {
+            const ffmpegStatusBadge = ffmpegInfo.available 
+                ? '<span class="badge badge-healthy">Available</span>'
+                : '<span class="badge badge-error">Unavailable</span>';
+            ffmpegSection = `
+      <div class="stat-block">
+        <div class="stat-label">FFmpeg Status</div>
+        <div class="stat-value">${ffmpegStatusBadge}</div>
+      </div>
+      <div class="stat-block">
+        <div class="stat-label">FFmpeg Version</div>
+        <div class="stat-value" title="${ffmpegInfo.copyright || ''}">${ffmpegInfo.version || 'N/A'}</div>
+      </div>`;
+        }
+        
         let serverHtml = `
   <div class="stats-card">
     <div class="stats-grid stats-grid-custom">
@@ -518,9 +557,37 @@ document.addEventListener('DOMContentLoaded', function () {
         <div class="stat-label">Total Bitrate</div>
         <div class="stat-value">${formatBitrate(totalBitrate)}</div>
       </div>
+      ${ffmpegSection}
     </div>
   </div>`;
         document.getElementById('serverStats').innerHTML = serverHtml;
+
+        // Add FFmpeg default args section after server stats if available
+        if (ffmpegArgs && ffmpegInfo && ffmpegInfo.available) {
+            const ffmpegArgsHtml = `
+  <div class="stats-card" style="margin-top: 16px;">
+    <h3 style="color: #1976d2; margin: 0 0 12px 0;">Default FFmpeg Arguments</h3>
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px;">
+      <div class="ffmpeg-args-section">
+        <h4 style="color: #333; margin: 0 0 8px 0;">Input Processing</h4>
+        <code class="ffmpeg-args">${ffmpegArgs.input.join(' ')}</code>
+      </div>
+      <div class="ffmpeg-args-section">
+        <h4 style="color: #333; margin: 0 0 8px 0;">Output Streaming</h4>
+        <code class="ffmpeg-args">${ffmpegArgs.output.join(' ')}</code>
+      </div>
+      <div class="ffmpeg-args-section">
+        <h4 style="color: #333; margin: 0 0 8px 0;">Recording</h4>
+        <code class="ffmpeg-args">${ffmpegArgs.recording.join(' ')}</code>
+      </div>
+      <div class="ffmpeg-args-section">
+        <h4 style="color: #333; margin: 0 0 8px 0;">HLS Streaming</h4>
+        <code class="ffmpeg-args">${ffmpegArgs.hls.join(' ')}</code>
+      </div>
+    </div>
+  </div>`;
+            document.getElementById('serverStats').innerHTML += ffmpegArgsHtml;
+        }
 
         // Render relay table with input/output separation - use filtered data
         let html = '';
@@ -723,8 +790,9 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     });
 
-    // Initial fetch to populate UI
-    fetchStatus();
+    // Initialize the app
+    fetchFFmpegInfo(); // Fetch FFmpeg info first
+    fetchStatus(); // Then fetch relay status
     // Periodically refresh status every 3 seconds
     setInterval(fetchStatus, 3000);
 

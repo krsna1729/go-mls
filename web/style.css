@@ -1027,3 +1027,26 @@ td .centered-cell, th .centered-cell {
   font-feature-settings: 'liga'; /* Standard property for compatibility */
   -webkit-font-smoothing: antialiased;
 }
+
+/* === FFmpeg Args Styling === */
+.ffmpeg-args-section {
+    background: #f8f9fa;
+    border: 1px solid #e1e5e9;
+    border-radius: 6px;
+    padding: 12px;
+}
+
+.ffmpeg-args {
+    display: block;
+    background: #2d3748;
+    color: #e2e8f0;
+    padding: 10px 12px;
+    border-radius: 4px;
+    font-family: 'Courier New', 'Monaco', monospace;
+    font-size: 0.85em;
+    line-height: 1.4;
+    word-break: break-all;
+    white-space: pre-wrap;
+    margin: 0;
+    overflow-x: auto;
+}

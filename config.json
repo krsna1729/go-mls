@@ -1,0 +1,19 @@
+{
+  "http": {
+    "host": "0.0.0.0",
+    "port": "8080"
+  },
+  "relay": {
+    "rtsp_server": {
+      "host": "127.0.0.1",
+      "port": 8554
+    }
+  },
+  "recording": {
+    "directory": "recordings"
+  },
+  "logging": {
+    "level": "info",
+    "file": ""
+  }
+}

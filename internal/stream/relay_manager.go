@@ -797,3 +797,66 @@ func (rm *RelayManager) StopInputRelayForConsumer(inputName string) {
 
 	rm.InputRelays.StopInputRelay(inputURL)
 }
+
+// FFmpegLogEntry represents a log entry from an FFmpeg process
+type FFmpegLogEntry struct {
+	Type      string   `json:"type"`       // "input" or "output"
+	ProcessID string   `json:"process_id"` // unique identifier for the process
+	InputURL  string   `json:"input_url,omitempty"`
+	OutputURL string   `json:"output_url,omitempty"`
+	Lines     []string `json:"lines"`
+}
+
+// GetFFmpegLogs returns recent log output from FFmpeg processes
+func (rm *RelayManager) GetFFmpegLogs(inputURL, outputURL string, lines int) []FFmpegLogEntry {
+	var logs []FFmpegLogEntry
+
+	// Get input relay logs if inputURL is specified or no filters
+	if inputURL != "" || (inputURL == "" && outputURL == "") {
+		rm.InputRelays.mu.Lock()
+		for url, relay := range rm.InputRelays.Relays {
+			if inputURL == "" || url == inputURL {
+				relay.mu.Lock()
+				if relay.Proc != nil {
+					logLines := relay.Proc.GetLastOutputLines(lines)
+					if len(logLines) > 0 {
+						logs = append(logs, FFmpegLogEntry{
+							Type:      "input",
+							ProcessID: fmt.Sprintf("input-%d", relay.Proc.PID),
+							InputURL:  url,
+							Lines:     logLines,
+						})
+					}
+				}
+				relay.mu.Unlock()
+			}
+		}
+		rm.InputRelays.mu.Unlock()
+	}
+
+	// Get output relay logs if outputURL is specified or no filters
+	if outputURL != "" || (inputURL == "" && outputURL == "") {
+		rm.OutputRelays.mu.Lock()
+		for url, relay := range rm.OutputRelays.Relays {
+			if outputURL == "" || url == outputURL {
+				relay.mu.Lock()
+				if relay.Proc != nil {
+					logLines := relay.Proc.GetLastOutputLines(lines)
+					if len(logLines) > 0 {
+						logs = append(logs, FFmpegLogEntry{
+							Type:      "output",
+							ProcessID: fmt.Sprintf("output-%d", relay.Proc.PID),
+							OutputURL: url,
+							InputURL:  relay.InputURL,
+							Lines:     logLines,
+						})
+					}
+				}
+				relay.mu.Unlock()
+			}
+		}
+		rm.OutputRelays.mu.Unlock()
+	}
+
+	return logs
+}
