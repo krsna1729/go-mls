@@ -332,6 +332,22 @@ document.addEventListener('DOMContentLoaded', function () {
                 }
             };
         });
+
+        // Add logs button handlers
+        document.querySelectorAll('.logsInputBtn').forEach(btn => {
+            btn.onclick = function () {
+                const inputUrl = btn.getAttribute('data-input-url');
+                showFFmpegLogs('input', inputUrl, '');
+            };
+        });
+
+        document.querySelectorAll('.logsOutputBtn').forEach(btn => {
+            btn.onclick = function () {
+                const outputUrl = btn.getAttribute('data-output-url');
+                showFFmpegLogs('output', '', outputUrl);
+            };
+        });
+
         // Add ripple effect to all buttons
         document.querySelectorAll('button').forEach(btn => {
             btn.addEventListener('click', function (e) {
@@ -642,6 +658,7 @@ document.addEventListener('DOMContentLoaded', function () {
                         <td style="padding:6px 8px; background:${inputBg}; text-align:center;">
         <button class="playInputBtn" data-input-name="${inputName}" data-local-url="${relay.input.local_url}" title="Play Input"><span class="material-icons">play_circle_outline</span></button>
         <button class="deleteInputBtn" data-input="${input}" data-input-name="${inputName}" title="Delete Input"><span class="material-icons">delete</span></button>
+        <button class="logsInputBtn" data-input-url="${input}" title="View Input Logs"><span class="material-icons">article</span></button>
     </td>
                         <td style="padding:6px 8px; font-style:italic; color:#999; text-align:center;">${inputError ? `<div style='color:red; font-size:0.85em; margin-top:2px; text-align:center;'>${inputError}</div>` : '<i>No outputs</i>'}</td>
                         <td style="padding:6px 8px; text-align:center;">-</td>
@@ -667,6 +684,7 @@ document.addEventListener('DOMContentLoaded', function () {
                             html += `<td rowspan="${relay.outputs.length}" style="padding:6px 8px; background:${inputBg}; vertical-align:middle; text-align:center;">
         <button class="playInputBtn" data-input-name="${inputName}" data-local-url="${relay.input.local_url}" title="Play Input"><span class="material-icons">play_circle_outline</span></button>
         <button class="deleteInputBtn" data-input="${input}" data-input-name="${inputName}" title="Delete Input"><span class="material-icons">delete</span></button>
+        <button class="logsInputBtn" data-input-url="${input}" title="View Input Logs"><span class="material-icons">article</span></button>
     </td>`;
                         }
                         // Output columns
@@ -686,6 +704,7 @@ document.addEventListener('DOMContentLoaded', function () {
                                     : `<button class="startRelayBtn relay-action-btn" data-input="${input}" data-output="${out.output_url}" data-input-name="${inputName}" data-output-name="${out.output_name || ''}" title="Start Output"><span class="material-icons" style="font-size:16px;">play_arrow</span></button>`
                                     }
                                     <button class="deleteOutputBtn" data-input="${input}" data-output="${out.output_url}" data-input-name="${inputName}" data-output-name="${out.output_name || ''}" title="Delete Output"><span class="material-icons" style="font-size:16px;">delete</span></button>
+                                    <button class="logsOutputBtn" data-output-url="${out.output_url}" title="View Output Logs"><span class="material-icons" style="font-size:16px;">article</span></button>
                                 </div>
                             </td>`;
                     });
@@ -789,6 +808,71 @@ document.addEventListener('DOMContentLoaded', function () {
             updateUI(window.latestRelayStatus);
         }
     });
+
+    // FFmpeg logs modal function
+    function showFFmpegLogs(type, inputUrl, outputUrl) {
+        // Create parameters for the API call
+        const params = new URLSearchParams();
+        if (inputUrl) params.append('input_url', inputUrl);
+        if (outputUrl) params.append('output_url', outputUrl);
+        params.append('lines', '100'); // Get last 100 lines
+
+        fetch(`/api/ffmpeg/logs?${params.toString()}`)
+            .then(r => r.json())
+            .then(data => {
+                const logs = data.logs || [];
+                if (logs.length === 0) {
+                    alert(`No logs available for ${type} process.`);
+                    return;
+                }
+
+                // Create logs modal
+                const modalHtml = `
+<div id="logsModal" class="modal" style="display: block;">
+    <div class="modal-content" style="max-width: 80vw; max-height: 80vh; padding: 20px;">
+        <button id="closeLogsModal" class="modal-close" aria-label="Close logs"><span class="material-icons">close</span></button>
+        <h3 style="color: #1976d2; margin: 0 0 16px 0;">FFmpeg ${type.charAt(0).toUpperCase() + type.slice(1)} Logs</h3>
+        <div style="background: #f8f9fa; border: 1px solid #e1e5e9; border-radius: 6px; padding: 12px; max-height: 60vh; overflow-y: auto;">
+            ${logs.map(log => `
+                <div style="margin-bottom: 16px;">
+                    <h4 style="color: #333; margin: 0 0 8px 0;">${log.type} Process (PID: ${log.process_id})</h4>
+                    <div style="background: #2d3748; color: #e2e8f0; padding: 10px 12px; border-radius: 4px; font-family: 'Courier New', monospace; font-size: 0.85em; line-height: 1.4; white-space: pre-wrap; overflow-x: auto;">
+${log.lines.join('\n')}</div>
+                </div>
+            `).join('')}
+        </div>
+        <div style="margin-top: 12px; text-align: right;">
+            <button onclick="showFFmpegLogs('${type}', '${inputUrl}', '${outputUrl}')" style="background: #1976d2; color: white; border: none; padding: 8px 16px; border-radius: 4px; margin-right: 8px;">Refresh</button>
+        </div>
+    </div>
+</div>`;
+
+                // Remove any existing modal
+                const existingModal = document.getElementById('logsModal');
+                if (existingModal) {
+                    existingModal.remove();
+                }
+
+                // Add modal to document
+                document.body.insertAdjacentHTML('beforeend', modalHtml);
+
+                // Add close handler
+                document.getElementById('closeLogsModal').onclick = function() {
+                    document.getElementById('logsModal').remove();
+                };
+
+                // Close on click outside
+                document.getElementById('logsModal').onclick = function(e) {
+                    if (e.target.id === 'logsModal') {
+                        document.getElementById('logsModal').remove();
+                    }
+                };
+            })
+            .catch(err => {
+                console.error('Failed to fetch logs:', err);
+                alert('Failed to fetch logs: ' + err.message);
+            });
+    }
 
     // Initialize the app
     fetchFFmpegInfo(); // Fetch FFmpeg info first
