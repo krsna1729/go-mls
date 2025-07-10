@@ -33,7 +33,7 @@ type Recording struct {
 // Now uses RelayManager for local relay and refcounting
 type RecordingManager struct {
 	// --- Mutable fields protected by mu ---
-	mu         sync.Mutex
+	mu         sync.RWMutex
 	recordings map[string]*Recording
 	processes  map[string]*FFmpegProcess // Now uses FFmpegProcess abstraction
 	dones      map[string]chan struct{}  // done channel for each recording
@@ -313,7 +313,7 @@ func (rm *RecordingManager) Shutdown() {
 
 // ListRecordings returns all recordings
 func (rm *RecordingManager) ListRecordings() []*Recording {
-	rm.mu.Lock()
+	rm.mu.RLock()
 	recs := make([]*Recording, 0, len(rm.recordings))
 	fileSet := make(map[string]struct{})
 	for _, r := range rm.recordings {
@@ -345,7 +345,7 @@ func (rm *RecordingManager) ListRecordings() []*Recording {
 			fileSet[recCopy.Filename] = struct{}{}
 		}
 	}
-	rm.mu.Unlock()
+	rm.mu.RUnlock()
 
 	// Scan disk for .mp4 files in recordings dir
 	files, err := os.ReadDir(rm.dir)
