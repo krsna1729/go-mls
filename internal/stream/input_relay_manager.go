@@ -142,6 +142,7 @@ func (irm *InputRelayManager) StartInputRelay(inputName, inputURL, localURL stri
 		return "", err
 	}
 	relay.Status = InputRunning
+	relay.LastError = "" // Clear any previous error on successful start
 	irm.Logger.Info("InputRelayManager: Started ffmpeg process PID %d for %s -> %s (refcount: %d)", proc.PID, inputURL, localURL, currentRefCount)
 	// Start process wait/monitor goroutine
 	go irm.RunInputRelay(relay)
