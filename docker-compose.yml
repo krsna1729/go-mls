@@ -9,7 +9,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 64m
+          memory: 32m
 
   input-rtmp-2:
     image: tiangolo/nginx-rtmp
@@ -21,7 +21,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 64m
+          memory: 32m
 
   output-rtmp-1:
     image: tiangolo/nginx-rtmp
@@ -33,7 +33,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 64m
+          memory: 32m
 
   output-rtmp-2:
     image: tiangolo/nginx-rtmp
@@ -45,7 +45,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 64m
+          memory: 32m
 
   output-rtmp-3:
     image: tiangolo/nginx-rtmp
@@ -57,7 +57,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 64m
+          memory: 32m
 
   output-rtmp-4:
     image: tiangolo/nginx-rtmp
@@ -69,7 +69,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 64m
+          memory: 32m
 
   ffmpeg-source:
     image: linuxserver/ffmpeg
@@ -89,7 +89,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 64m
+          memory: 32m
 
   prometheus:
     image: prom/prometheus:latest
@@ -138,7 +138,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 64m
+          memory: 32m
 
   cadvisor:
     image: gcr.io/cadvisor/cadvisor:latest
