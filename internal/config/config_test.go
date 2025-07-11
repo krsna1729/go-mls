@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"go-mls/internal/logger"
 	"os"
 	"path/filepath"
@@ -212,6 +213,56 @@ func TestLoadConfigInvalidValues(t *testing.T) {
 	}
 
 	_, err = LoadConfig(configFile, logger.NewLogger())
+	if err == nil {
+		t.Error("expected validation error, got nil")
+	}
+}
+
+func TestSaveConfig_MarshalError(t *testing.T) {
+	// Create a type that cannot be marshaled (func field)
+	type BadConfig struct {
+		F func()
+	}
+	bad := &BadConfig{F: func() {}}
+	_, err := json.Marshal(bad)
+	if err == nil {
+		t.Fatal("expected marshal error, got nil")
+	}
+}
+
+func TestSaveConfig_WriteError(t *testing.T) {
+	c := DefaultConfig()
+	// Try to write to a directory (should fail)
+	dir := t.TempDir()
+	err := c.SaveConfig(dir) // dir is a directory, not a file
+	if err == nil {
+		t.Error("expected error writing to directory, got nil")
+	}
+}
+
+func TestLoadConfig_ReadError(t *testing.T) {
+	// Try to load from a file that cannot be read (simulate permission error)
+	file := filepath.Join(t.TempDir(), "no_read.json")
+	os.WriteFile(file, []byte(`{}`), 0000) // no permissions
+	_, err := LoadConfig(file, logger.NewLogger())
+	if err == nil {
+		t.Error("expected error reading file, got nil")
+	}
+}
+
+func TestLoadConfig_ParseError(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "bad.json")
+	os.WriteFile(file, []byte(`notjson`), 0644)
+	_, err := LoadConfig(file, logger.NewLogger())
+	if err == nil {
+		t.Error("expected parse error, got nil")
+	}
+}
+
+func TestLoadConfig_ValidationError(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "badval.json")
+	os.WriteFile(file, []byte(`{"http": {"host": "0.0.0.0", "port": ""}}`), 0644)
+	_, err := LoadConfig(file, logger.NewLogger())
 	if err == nil {
 		t.Error("expected validation error, got nil")
 	}
