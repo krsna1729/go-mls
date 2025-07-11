@@ -1,6 +1,7 @@
 package stream
 
 import (
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -82,4 +83,55 @@ func TestOutputRelayManager_FailureCallback(t *testing.T) {
 	if atomic.LoadInt32(&called) == 0 {
 		t.Errorf("expected failure callback to be called")
 	}
+}
+
+func TestOutputRelayManager_ConcurrentAPI(t *testing.T) {
+	t.Parallel()
+	log := logger.NewLogger()
+	orm := NewOutputRelayManager(log)
+
+	num := 10
+	var wg sync.WaitGroup
+	configs := make([]OutputRelayConfig, num)
+	for i := 0; i < num; i++ {
+		configs[i] = OutputRelayConfig{
+			OutputURL:      "rtmp://example.com/live/" + string(rune('A'+i)),
+			OutputName:     "out" + string(rune('A'+i)),
+			InputURL:       "rtsp://localhost/relay/" + string(rune('A'+i)),
+			LocalURL:       "rtsp://localhost/relay/" + string(rune('A'+i)),
+			Timeout:        500 * time.Millisecond,
+			PlatformPreset: "",
+			FFmpegOptions:  map[string]string{},
+			FFmpegArgs:     []string{"-f", "null", "-"},
+		}
+	}
+
+	// Start output relays concurrently
+	for i := 0; i < num; i++ {
+		wg.Add(1)
+		go func(cfg OutputRelayConfig) {
+			defer wg.Done()
+			_ = orm.StartOutputRelay(cfg)
+		}(configs[i])
+	}
+
+	// Stop output relays concurrently
+	for i := 0; i < num; i++ {
+		wg.Add(1)
+		go func(cfg OutputRelayConfig) {
+			defer wg.Done()
+			orm.StopOutputRelay(cfg.OutputURL)
+		}(configs[i])
+	}
+
+	// Delete output relays concurrently
+	for i := 0; i < num; i++ {
+		wg.Add(1)
+		go func(cfg OutputRelayConfig) {
+			defer wg.Done()
+			_ = orm.DeleteOutput(cfg.OutputURL)
+		}(configs[i])
+	}
+
+	wg.Wait()
 }

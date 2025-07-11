@@ -4,6 +4,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -242,4 +243,52 @@ func TestInputRelayManager_StopNonExistentRelay(t *testing.T) {
 
 	// Stopping non-existent relay should not panic or error
 	irm.StopInputRelay("nonexistent")
+}
+
+func TestInputRelayManager_ConcurrentAccess(t *testing.T) {
+	t.Parallel()
+	log := logger.NewLogger()
+	dir := t.TempDir()
+	irm := NewInputRelayManager(log, dir)
+
+	num := 10
+	var wg sync.WaitGroup
+	inputNames := make([]string, num)
+	inputURLs := make([]string, num)
+	localURLs := make([]string, num)
+	for i := 0; i < num; i++ {
+		inputNames[i] = "input" + string(rune('A'+i))
+		inputURLs[i] = "rtmp://example.com/live/" + string(rune('A'+i))
+		localURLs[i] = "rtsp://localhost:8554/relay/" + string(rune('A'+i))
+	}
+	timeout := 500 * time.Millisecond
+
+	// Start input relays concurrently
+	for i := 0; i < num; i++ {
+		wg.Add(1)
+		go func(name, inputURL, localURL string) {
+			defer wg.Done()
+			_, _ = irm.StartInputRelay(name, inputURL, localURL, timeout)
+		}(inputNames[i], inputURLs[i], localURLs[i])
+	}
+
+	// Stop input relays concurrently
+	for i := 0; i < num; i++ {
+		wg.Add(1)
+		go func(inputURL string) {
+			defer wg.Done()
+			irm.StopInputRelay(inputURL)
+		}(inputURLs[i])
+	}
+
+	// Delete input relays concurrently
+	for i := 0; i < num; i++ {
+		wg.Add(1)
+		go func(inputURL string) {
+			defer wg.Done()
+			_ = irm.DeleteInput(inputURL)
+		}(inputURLs[i])
+	}
+
+	wg.Wait()
 }

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -125,4 +126,62 @@ func TestServeHLS_NotFoundRateLimit(t *testing.T) {
 	if time.Since(start) > 2*time.Second {
 		t.Fatal("test took too long, possible deadlock or leak")
 	}
+}
+
+func TestHLSManager_ConcurrentAPI(t *testing.T) {
+	t.Parallel()
+	logr := logger.NewLogger()
+	dir := t.TempDir()
+	relayMgr := NewRelayManager(logr, dir)
+	mgr := &HLSManager{
+		sessions:         make(map[string]*HLSSession),
+		failedInputs:     make(map[string]time.Time),
+		notFoundLogTimes: make(map[string]time.Time),
+		cleanupInterval:  time.Minute,
+		sessionTimeout:   time.Minute,
+		relayManager:     relayMgr,
+		mu:               sync.Mutex{},
+	}
+
+	num := 10
+	var wg sync.WaitGroup
+	inputNames := make([]string, num)
+	localURLs := make([]string, num)
+	for i := 0; i < num; i++ {
+		inputNames[i] = "input" + string(rune('A'+i))
+		localURLs[i] = "rtsp://localhost/relay/" + string(rune('A'+i))
+	}
+
+	// GetOrStartSession concurrently
+	for i := 0; i < num; i++ {
+		wg.Add(1)
+		go func(name, localURL string) {
+			defer wg.Done()
+			_, _ = mgr.GetOrStartSession(name, localURL)
+		}(inputNames[i], localURLs[i])
+	}
+
+	// ServeHLS concurrently (simulate playlist requests)
+	for i := 0; i < num; i++ {
+		wg.Add(1)
+		go func(name, localURL string) {
+			defer wg.Done()
+			w := httptest.NewRecorder()
+			r := httptest.NewRequest("GET", "/index.m3u8", nil)
+			mgr.ServeHLS(w, r, name, "index.m3u8", localURL)
+		}(inputNames[i], localURLs[i])
+	}
+
+	// AddViewer, UpdateViewerHeartbeat, RemoveViewer concurrently
+	for i := 0; i < num; i++ {
+		wg.Add(1)
+		go func(name, localURL string) {
+			defer wg.Done()
+			viewerID, _ := mgr.AddViewer(name, localURL)
+			mgr.UpdateViewerHeartbeat(name, viewerID)
+			mgr.RemoveViewer(name, viewerID)
+		}(inputNames[i], localURLs[i])
+	}
+
+	wg.Wait()
 }
