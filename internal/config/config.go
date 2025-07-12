@@ -184,6 +184,7 @@ func LoadConfig(filename string, log *logger.Logger) (*Config, error) {
 }
 
 // SaveConfig saves the configuration to a file
+// TODO: Use this for dynamic config updates and backup if/when runtime config changes are supported
 func (c *Config) SaveConfig(filename string) error {
 	data, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {

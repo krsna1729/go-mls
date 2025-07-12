@@ -267,3 +267,75 @@ func TestLoadConfig_ValidationError(t *testing.T) {
 		t.Error("expected validation error, got nil")
 	}
 }
+
+func TestDuration_UnmarshalJSON_InvalidString(t *testing.T) {
+	var d Duration
+	err := d.UnmarshalJSON([]byte(`"12min"`))
+	if err == nil {
+		t.Error("expected error for invalid duration string, got nil")
+	}
+}
+
+func TestDuration_UnmarshalJSON_NonString(t *testing.T) {
+	var d Duration
+	err := d.UnmarshalJSON([]byte(`123`)) // not a string
+	if err == nil {
+		t.Error("expected error for non-string JSON, got nil")
+	}
+}
+
+func TestLoadConfig_BadDurations(t *testing.T) {
+	tempDir := t.TempDir()
+	file := filepath.Join(tempDir, "bad_duration.json")
+	badConfig := `{
+		"http": {
+			"host": "0.0.0.0",
+			"port": "8080",
+			"read_timeout": "12min",
+			"write_timeout": "30s",
+			"idle_timeout": "120s"
+		},
+		"relay": {
+			"input_timeout": "30s",
+			"output_timeout": "60s",
+			"rtsp_server": {"host": "127.0.0.1", "port": 8554}
+		},
+		"recording": {"directory": "recordings"},
+		"logging": {"level": "info"},
+		"hls": {},
+		"ffmpeg": {"path": "ffmpeg", "loglevel": "info"}
+	}`
+	os.WriteFile(file, []byte(badConfig), 0644)
+	_, err := LoadConfig(file, logger.NewLogger())
+	if err == nil {
+		t.Error("expected error for bad duration string, got nil")
+	}
+}
+
+func TestLoadConfig_BadTypes(t *testing.T) {
+	tempDir := t.TempDir()
+	file := filepath.Join(tempDir, "bad_types.json")
+	badConfig := `{
+		"http": {
+			"host": "0.0.0.0",
+			"port": 8080,
+			"read_timeout": "30s",
+			"write_timeout": "30s",
+			"idle_timeout": "120s"
+		},
+		"relay": {
+			"input_timeout": "30s",
+			"output_timeout": "60s",
+			"rtsp_server": {"host": "127.0.0.1", "port": 8554}
+		},
+		"recording": {"directory": "recordings"},
+		"logging": {"level": "info"},
+		"hls": {},
+		"ffmpeg": {"path": "ffmpeg", "loglevel": "info"}
+	}`
+	os.WriteFile(file, []byte(badConfig), 0644)
+	_, err := LoadConfig(file, logger.NewLogger())
+	if err == nil {
+		t.Error("expected error for bad port type, got nil")
+	}
+}
