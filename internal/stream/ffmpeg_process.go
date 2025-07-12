@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -20,6 +21,25 @@ const (
 	FFmpegStopped
 	FFmpegError
 )
+
+// ProcessHandle abstracts process signaling for testability
+//go:generate mockgen -destination=mock_processhandle.go -package=stream . ProcessHandle
+
+type ProcessHandle interface {
+	Signal(sig syscall.Signal) error
+	Kill() error
+}
+
+type osProcessHandle struct {
+	p *os.Process
+}
+
+func (h *osProcessHandle) Signal(sig syscall.Signal) error {
+	return h.p.Signal(sig)
+}
+func (h *osProcessHandle) Kill() error {
+	return h.p.Kill()
+}
 
 // FFmpegProcess manages a single ffmpeg process and its lifecycle.
 //
@@ -51,6 +71,8 @@ type FFmpegProcess struct {
 	LastBitrate time.Time      // Last time bitrate was updated
 	outputBuf   bytes.Buffer   // Captured stdout/stderr for error reporting
 	mu          sync.Mutex     // Protects Status and all mutable fields above
+
+	Process ProcessHandle // Abstracted for testability
 }
 
 // NewFFmpegProcess creates a new FFmpegProcess with context and process group
@@ -111,6 +133,7 @@ func (p *FFmpegProcess) Start() error {
 	p.PID = p.Cmd.Process.Pid
 	p.Status = FFmpegRunning
 	p.StartTime = time.Now()
+	p.Process = &osProcessHandle{p: p.Cmd.Process}
 
 	// Start a goroutine to call Wait() exactly once
 	go func() {
@@ -249,21 +272,21 @@ func (p *FFmpegProcess) Wait() error {
 // Stop attempts graceful shutdown, then force kills if needed
 func (p *FFmpegProcess) Stop(timeout time.Duration) error {
 	p.mu.Lock()
-	if p.Status != FFmpegRunning || p.Cmd == nil || p.Cmd.Process == nil {
+	if p.Status != FFmpegRunning || p.Process == nil {
 		p.mu.Unlock()
 		return nil
 	}
 	p.mu.Unlock()
 	// Use SIGTERM for graceful shutdown (ffmpeg handles SIGTERM cleanly)
-	err := p.Cmd.Process.Signal(syscall.SIGTERM)
+	err := p.Process.Signal(syscall.SIGTERM)
 	if err != nil {
 		// Fallback to SIGKILL if SIGTERM fails
-		_ = p.Cmd.Process.Kill()
+		_ = p.Process.Kill()
 	}
 	// Wait for process to exit or timeout
 	select {
 	case <-time.After(timeout):
-		_ = p.Cmd.Process.Kill()
+		_ = p.Process.Kill()
 		return nil
 	case <-p.waitCh:
 		return nil
