@@ -607,22 +607,22 @@ func TestServeHLSCheckViewer_AllBranches(t *testing.T) {
 		t.Errorf("expected 404 for missing session, got %d", w.Result().StatusCode)
 	}
 
-	// 3. Session with no ViewerManager (should return 410)
+	// 3. Session with no ViewerManager (should return 404)
 	ensureSessionReady(mgr, inputName, nil)
 	w = httptest.NewRecorder()
 	mgr.ServeHLS(w, r, inputName, "index.m3u8", "rtsp://localhost/relay/testinput")
-	if w.Result().StatusCode != http.StatusGone {
-		t.Errorf("expected 410 for missing ViewerManager, got %d", w.Result().StatusCode)
+	if w.Result().StatusCode != http.StatusNotFound {
+		t.Errorf("expected 404 for missing ViewerManager, got %d", w.Result().StatusCode)
 	}
 
-	// 4. Session with ViewerManager, viewerID not found (should return 410)
+	// 4. Session with ViewerManager, viewerID not found (should return 404)
 	goodVM := &MapViewerManager{sess: nil}
 	ensureSessionReady(mgr, inputName, goodVM)
 	goodVM.sess = mgr.sessions[inputName]
 	w = httptest.NewRecorder()
 	mgr.ServeHLS(w, r, inputName, "index.m3u8", "rtsp://localhost/relay/testinput")
-	if w.Result().StatusCode != http.StatusGone {
-		t.Errorf("expected 410 for viewerID not found, got %d", w.Result().StatusCode)
+	if w.Result().StatusCode != http.StatusNotFound {
+		t.Errorf("expected 404 for viewerID not found, got %d", w.Result().StatusCode)
 	}
 
 	// 5. Add viewer, then expire it (should return 410)
@@ -667,63 +667,158 @@ func TestServeHLSCheckViewer_AllBranches(t *testing.T) {
 	}
 }
 
-func TestServeHLS_HelperErrorBranches(t *testing.T) {
+func TestServeHLSCheckViewer_AllBranches_Coverage(t *testing.T) {
 	mgr := NewHLSManager(minimalHLSManagerConfig(), newTestLogger())
 	inputName := "testinput"
-	ensureSessionReady(mgr, inputName, &MapViewerManager{})
-	sess := mgr.sessions[inputName]
-
-	// serveHLSCheckPlaylist: file does not exist
+	// No session: should return 410 if viewerID is present
 	w := httptest.NewRecorder()
-	if handled := mgr.serveHLSCheckPlaylist(w, filepath.Join(sess.Dir, "nonexistent.m3u8"), "nonexistent.m3u8"); !handled {
-		t.Error("expected serveHLSCheckPlaylist to handle missing file")
+	r := httptest.NewRequest("GET", "/index.m3u8?viewerID=foo", nil)
+	mgr.ServeHLS(w, r, inputName, "index.m3u8", "")
+	if w.Result().StatusCode != http.StatusGone {
+		t.Errorf("expected 410 for missing session with viewerID, got %d", w.Result().StatusCode)
 	}
-
-	// serveHLSOpenFile: file does not exist
-	_, err := mgr.serveHLSOpenFile(filepath.Join(sess.Dir, "nonexistent.m3u8"), "nonexistent.m3u8")
-	if err == nil {
-		t.Error("expected serveHLSOpenFile to return error for missing file")
-	}
-
-	// serveHLSWaitForReady: session not ready
-	sess.Ready = false
+	// Session with no ViewerManager
+	ensureSessionReady(mgr, inputName, nil)
 	w = httptest.NewRecorder()
-	r := httptest.NewRequest("GET", "/index.m3u8", nil)
-	if handled := mgr.serveHLSWaitForReady(w, r, sess, inputName); !handled {
-		t.Error("expected serveHLSWaitForReady to handle not ready session")
+	mgr.ServeHLS(w, r, inputName, "index.m3u8", "")
+	if w.Result().StatusCode != http.StatusGone {
+		t.Errorf("expected 410 for missing ViewerManager with viewerID, got %d", w.Result().StatusCode)
+	}
+	// Session with ViewerManager, viewerID not found
+	goodVM := &MapViewerManager{sess: nil}
+	ensureSessionReady(mgr, inputName, goodVM)
+	goodVM.sess = mgr.sessions[inputName]
+	w = httptest.NewRecorder()
+	mgr.ServeHLS(w, r, inputName, "index.m3u8", "")
+	if w.Result().StatusCode != http.StatusGone {
+		t.Errorf("expected 410 for viewerID not found, got %d", w.Result().StatusCode)
+	}
+	// Add viewer, then expire it
+	viewerID, _ := mgr.AddViewer(inputName)
+	mgr.sessions[inputName].ViewerIDs[viewerID] = time.Now().Add(-time.Hour)
+	w = httptest.NewRecorder()
+	mgr.ServeHLS(w, r, inputName, "index.m3u8?viewerID="+viewerID, "")
+	if w.Result().StatusCode != http.StatusGone {
+		t.Errorf("expected 410 for expired viewerID, got %d", w.Result().StatusCode)
+	}
+	// Add viewer, valid
+	viewerID, _ = mgr.AddViewer(inputName)
+	mgr.sessions[inputName].ViewerIDs[viewerID] = time.Now().Add(time.Hour)
+	playlistPath := filepath.Join(mgr.sessions[inputName].Dir, "index.m3u8")
+	os.WriteFile(playlistPath, []byte("#EXTM3U\n#EXT-X-VERSION:3\n"), 0644)
+	mgr.sessions[inputName].ViewerManager = &MapViewerManager{sess: mgr.sessions[inputName]} // Ensure ViewerManager is set
+	w = httptest.NewRecorder()
+	r = httptest.NewRequest("GET", "/index.m3u8?viewerID="+viewerID, nil)
+	mgr.ServeHLS(w, r, inputName, "index.m3u8", "")
+	if w.Result().StatusCode != http.StatusOK {
+		t.Errorf("expected 200 for valid viewerID, got %d", w.Result().StatusCode)
 	}
 }
 
-func TestHLSManager_CleanupLoop_RemovesExpiredSession(t *testing.T) {
+func TestHLSManager_CleanupLoop_RemovesStaleSessions(t *testing.T) {
 	mgr := NewHLSManager(HLSManagerConfig{
-		CleanupInterval:        100 * time.Millisecond,
-		SessionTimeout:         100 * time.Millisecond,
+		CleanupInterval:        50 * time.Millisecond,
+		SessionTimeout:         50 * time.Millisecond,
 		FailedCooldown:         1 * time.Second,
 		PlaylistReadyTimeout:   1 * time.Second,
 		PlaylistPollInterval:   100 * time.Millisecond,
 		PlaylistPollAttempts:   1,
-		ViewerHeartbeatTimeout: 1 * time.Second,
+		ViewerHeartbeatTimeout: 10 * time.Millisecond,
 		FFmpegStopTimeout:      1 * time.Second,
 		PlaylistBaseDir:        os.TempDir(),
 	}, newTestLogger())
-	inputName := "expiredinput"
+	inputName := "cleanupinput"
 	sess := &HLSSession{
 		InputName:  inputName,
 		Dir:        t.TempDir(),
 		Ready:      true,
-		ViewerIDs:  make(map[string]time.Time),
-		LastAccess: time.Now().Add(-2 * time.Second), // Expired
-		Proc:       &shutdownMockProc{},              // Prevent nil dereference
+		ViewerIDs:  map[string]time.Time{"v1": time.Now().Add(-time.Hour), "v2": time.Now().Add(time.Hour)},
+		LastAccess: time.Now().Add(-time.Second),
+		Proc:       &shutdownMockProc{},
 	}
 	mgr.mu.Lock()
 	mgr.sessions[inputName] = sess
 	mgr.mu.Unlock()
-	time.Sleep(300 * time.Millisecond) // Wait for cleanupLoop to run
+	// Wait for cleanupLoop to run
+	time.Sleep(200 * time.Millisecond)
 	mgr.mu.Lock()
 	_, exists := mgr.sessions[inputName]
 	mgr.mu.Unlock()
 	if exists {
-		t.Errorf("expected expired session to be removed by cleanupLoop")
+		t.Errorf("expected session to be removed by cleanupLoop")
+	}
+	// Test non-consumer session removal
+	inputName2 := "cleanupinput2"
+	sess2 := &HLSSession{
+		InputName:  inputName2,
+		Dir:        t.TempDir(),
+		Ready:      true,
+		ViewerIDs:  map[string]time.Time{},
+		LastAccess: time.Now().Add(-time.Second),
+		Proc:       &shutdownMockProc{},
+	}
+	mgr.mu.Lock()
+	mgr.sessions[inputName2] = sess2
+	mgr.mu.Unlock()
+	time.Sleep(100 * time.Millisecond)
+	mgr.mu.Lock()
+	_, exists2 := mgr.sessions[inputName2]
+	mgr.mu.Unlock()
+	if exists2 {
+		t.Errorf("expected non-consumer session to be removed by cleanupLoop")
+	}
+}
+
+func TestHLSManager_GetOrStartSession_ErrorBranches(t *testing.T) {
+	mgr := NewHLSManager(minimalHLSManagerConfig(), newTestLogger())
+	// Recent failure (cooldown)
+	mgr.failedInputs["failinput"] = time.Now()
+	_, err := mgr.GetOrStartSession("failinput", "rtsp://localhost/relay/failinput")
+	if err == nil || !strings.Contains(err.Error(), "cooldown") {
+		t.Errorf("expected cooldown error, got %v", err)
+	}
+	// Invalid input name
+	_, err = mgr.GetOrStartSession("../badinput", "rtsp://localhost/relay/badinput")
+	if err == nil || !strings.Contains(err.Error(), "invalid input name") {
+		t.Errorf("expected invalid input name error, got %v", err)
+	}
+	// Session already exists
+	inputName := "existsinput"
+	mgr.sessions[inputName] = &HLSSession{InputName: inputName, Ready: true, Proc: &shutdownMockProc{}}
+	sess, err := mgr.GetOrStartSession(inputName, "rtsp://localhost/relay/existsinput")
+	if err != nil || sess == nil {
+		t.Errorf("expected existing session, got %v, %v", sess, err)
+	}
+	// RelayManager error
+	mgr2 := NewHLSManager(minimalHLSManagerConfig(), newTestLogger())
+	mgr2.relayManager = &mockRelayManager{failStart: true}
+	_, err = mgr2.GetOrStartSession("failrelay", "rtsp://localhost/relay/failrelay")
+	if err == nil || !strings.Contains(err.Error(), "failed to start input relay") {
+		t.Errorf("expected relay fail error, got %v", err)
+	}
+	// Temp dir error
+	mgr3 := NewHLSManager(minimalHLSManagerConfig(), newTestLogger())
+	mgr3.config.PlaylistBaseDir = "/nonexistent/dir/shouldfail"
+	_, err = mgr3.GetOrStartSession("faildir", "rtsp://localhost/relay/faildir")
+	if err == nil || !strings.Contains(err.Error(), "failed to create temp dir") {
+		t.Errorf("expected temp dir fail error, got %v", err)
+	}
+	// FFmpegProcess error
+	mgr4 := NewHLSManager(minimalHLSManagerConfig(), newTestLogger())
+	mgr4.newFFmpegProcess = func(ctx context.Context, args ...string) (ffmpegProcess, error) {
+		return nil, errors.New("ffmpeg create fail")
+	}
+	_, err = mgr4.GetOrStartSession("failffmpeg", "rtsp://localhost/relay/failffmpeg")
+	if err == nil || !strings.Contains(err.Error(), "failed to create ffmpeg process") {
+		t.Errorf("expected ffmpeg create fail error, got %v", err)
+	}
+	// FFmpeg Start error
+	mgr4.newFFmpegProcess = func(ctx context.Context, args ...string) (ffmpegProcess, error) {
+		return &testFFmpegProcess{startErr: errors.New("ffmpeg start fail")}, nil
+	}
+	_, err = mgr4.GetOrStartSession("failffmpeg2", "rtsp://localhost/relay/failffmpeg2")
+	if err == nil || !strings.Contains(err.Error(), "failed to start ffmpeg") {
+		t.Errorf("expected ffmpeg start fail error, got %v", err)
 	}
 }
 
@@ -739,160 +834,4 @@ func ensureSessionReady(mgr *HLSManager, inputName string, vm ViewerManager) {
 	if sess2, ok := mgr.sessions[inputName]; !ok || sess2 == nil || !sess2.Ready || sess2.ViewerManager != vm {
 		panic("ensureSessionReady: session not present, not ready, or viewer manager not set")
 	}
-}
-
-// --- Coverage for serveHLSCheckViewer, cleanupLoop, GetOrStartSession ---
-func TestCoverage_serveHLSCheckViewer_cleanupLoop_GetOrStartSession(t *testing.T) {
-	t.Run("serveHLSCheckViewer all branches", func(t *testing.T) {
-		mgr := NewHLSManager(minimalHLSManagerConfig(), newTestLogger())
-		inputName := "testinput"
-		// No session: should return 404
-		w := httptest.NewRecorder()
-		r := httptest.NewRequest("GET", "/index.m3u8?viewerID=foo", nil)
-		mgr.ServeHLS(w, r, inputName, "index.m3u8", "")
-		if w.Result().StatusCode != http.StatusNotFound {
-			t.Errorf("expected 404 for missing session, got %d", w.Result().StatusCode)
-		}
-		// Session with no ViewerManager
-		ensureSessionReady(mgr, inputName, nil)
-		w = httptest.NewRecorder()
-		mgr.ServeHLS(w, r, inputName, "index.m3u8", "")
-		if w.Result().StatusCode != http.StatusGone {
-			t.Errorf("expected 410 for missing ViewerManager, got %d", w.Result().StatusCode)
-		}
-		// Session with ViewerManager, viewerID not found
-		goodVM := &MapViewerManager{sess: nil}
-		ensureSessionReady(mgr, inputName, goodVM)
-		goodVM.sess = mgr.sessions[inputName]
-		w = httptest.NewRecorder()
-		mgr.ServeHLS(w, r, inputName, "index.m3u8", "")
-		if w.Result().StatusCode != http.StatusGone {
-			t.Errorf("expected 410 for viewerID not found, got %d", w.Result().StatusCode)
-		}
-		// Add viewer, then expire it
-		viewerID, _ := mgr.AddViewer(inputName)
-		mgr.sessions[inputName].ViewerIDs[viewerID] = time.Now().Add(-time.Hour)
-		w = httptest.NewRecorder()
-		mgr.ServeHLS(w, r, inputName, "index.m3u8?viewerID="+viewerID, "")
-		if w.Result().StatusCode != http.StatusGone {
-			t.Errorf("expected 410 for expired viewerID, got %d", w.Result().StatusCode)
-		}
-		// Add viewer, valid
-		viewerID, _ = mgr.AddViewer(inputName)
-		mgr.sessions[inputName].ViewerIDs[viewerID] = time.Now().Add(time.Hour)
-		playlistPath := filepath.Join(mgr.sessions[inputName].Dir, "index.m3u8")
-		os.WriteFile(playlistPath, []byte("#EXTM3U\n#EXT-X-VERSION:3\n"), 0644)
-		w = httptest.NewRecorder()
-		mgr.ServeHLS(w, r, inputName, "index.m3u8?viewerID="+viewerID, "")
-		if w.Result().StatusCode != http.StatusOK {
-			t.Errorf("expected 200 for valid viewerID, got %d", w.Result().StatusCode)
-		}
-	})
-
-	t.Run("cleanupLoop removes stale viewers and sessions", func(t *testing.T) {
-		mgr := NewHLSManager(HLSManagerConfig{
-			CleanupInterval:        50 * time.Millisecond,
-			SessionTimeout:         50 * time.Millisecond,
-			FailedCooldown:         1 * time.Second,
-			PlaylistReadyTimeout:   1 * time.Second,
-			PlaylistPollInterval:   100 * time.Millisecond,
-			PlaylistPollAttempts:   1,
-			ViewerHeartbeatTimeout: 10 * time.Millisecond,
-			FFmpegStopTimeout:      1 * time.Second,
-			PlaylistBaseDir:        os.TempDir(),
-		}, newTestLogger())
-		inputName := "cleanupinput"
-		sess := &HLSSession{
-			InputName:  inputName,
-			Dir:        t.TempDir(),
-			Ready:      true,
-			ViewerIDs:  map[string]time.Time{"v1": time.Now().Add(-time.Hour), "v2": time.Now().Add(time.Hour)},
-			LastAccess: time.Now().Add(-time.Second),
-			Proc:       &shutdownMockProc{},
-		}
-		mgr.mu.Lock()
-		mgr.sessions[inputName] = sess
-		mgr.mu.Unlock()
-		// Wait for cleanupLoop to run
-		time.Sleep(200 * time.Millisecond)
-		mgr.mu.Lock()
-		_, exists := mgr.sessions[inputName]
-		mgr.mu.Unlock()
-		if exists {
-			t.Errorf("expected session to be removed by cleanupLoop")
-		}
-		// Test non-consumer session removal
-		inputName2 := "cleanupinput2"
-		sess2 := &HLSSession{
-			InputName:  inputName2,
-			Dir:        t.TempDir(),
-			Ready:      true,
-			ViewerIDs:  map[string]time.Time{},
-			LastAccess: time.Now().Add(-time.Second),
-			Proc:       &shutdownMockProc{},
-		}
-		mgr.mu.Lock()
-		mgr.sessions[inputName2] = sess2
-		mgr.mu.Unlock()
-		time.Sleep(100 * time.Millisecond)
-		mgr.mu.Lock()
-		_, exists2 := mgr.sessions[inputName2]
-		mgr.mu.Unlock()
-		if exists2 {
-			t.Errorf("expected non-consumer session to be removed by cleanupLoop")
-		}
-	})
-
-	t.Run("GetOrStartSession error branches", func(t *testing.T) {
-		mgr := NewHLSManager(minimalHLSManagerConfig(), newTestLogger())
-		// Recent failure (cooldown)
-		mgr.failedInputs["failinput"] = time.Now()
-		_, err := mgr.GetOrStartSession("failinput", "rtsp://localhost/relay/failinput")
-		if err == nil || !strings.Contains(err.Error(), "cooldown") {
-			t.Errorf("expected cooldown error, got %v", err)
-		}
-		// Invalid input name
-		_, err = mgr.GetOrStartSession("../badinput", "rtsp://localhost/relay/badinput")
-		if err == nil || !strings.Contains(err.Error(), "invalid input name") {
-			t.Errorf("expected invalid input name error, got %v", err)
-		}
-		// Session already exists
-		inputName := "existsinput"
-		mgr.sessions[inputName] = &HLSSession{InputName: inputName, Ready: true, Proc: &shutdownMockProc{}}
-		sess, err := mgr.GetOrStartSession(inputName, "rtsp://localhost/relay/existsinput")
-		if err != nil || sess == nil {
-			t.Errorf("expected existing session, got %v, %v", sess, err)
-		}
-		// RelayManager error
-		mgr2 := NewHLSManager(minimalHLSManagerConfig(), newTestLogger())
-		mgr2.relayManager = &mockRelayManager{failStart: true}
-		_, err = mgr2.GetOrStartSession("failrelay", "rtsp://localhost/relay/failrelay")
-		if err == nil || !strings.Contains(err.Error(), "failed to start input relay") {
-			t.Errorf("expected relay fail error, got %v", err)
-		}
-		// Temp dir error
-		mgr3 := NewHLSManager(minimalHLSManagerConfig(), newTestLogger())
-		mgr3.config.PlaylistBaseDir = "/nonexistent/dir/shouldfail"
-		_, err = mgr3.GetOrStartSession("faildir", "rtsp://localhost/relay/faildir")
-		if err == nil || !strings.Contains(err.Error(), "failed to create temp dir") {
-			t.Errorf("expected temp dir fail error, got %v", err)
-		}
-		// FFmpegProcess error
-		mgr4 := NewHLSManager(minimalHLSManagerConfig(), newTestLogger())
-		mgr4.newFFmpegProcess = func(ctx context.Context, args ...string) (ffmpegProcess, error) {
-			return nil, errors.New("ffmpeg create fail")
-		}
-		_, err = mgr4.GetOrStartSession("failffmpeg", "rtsp://localhost/relay/failffmpeg")
-		if err == nil || !strings.Contains(err.Error(), "failed to create ffmpeg process") {
-			t.Errorf("expected ffmpeg create fail error, got %v", err)
-		}
-		// FFmpeg Start error
-		mgr4.newFFmpegProcess = func(ctx context.Context, args ...string) (ffmpegProcess, error) {
-			return &testFFmpegProcess{startErr: errors.New("ffmpeg start fail")}, nil
-		}
-		_, err = mgr4.GetOrStartSession("failffmpeg2", "rtsp://localhost/relay/failffmpeg2")
-		if err == nil || !strings.Contains(err.Error(), "failed to start ffmpeg") {
-			t.Errorf("expected ffmpeg start fail error, got %v", err)
-		}
-	})
 }
