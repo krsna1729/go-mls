@@ -246,12 +246,21 @@ func (p *FFmpegProcess) GetSpeed() (float64, time.Time) {
 	return p.Speed, p.LastSpeed
 }
 
-// GetBitrate returns the last parsed bitrate and time (concurrent-safe)
-// Use this from relay managers to get up-to-date ffmpeg bitrate.
-func (p *FFmpegProcess) GetBitrate() (float64, time.Time) {
+// GetPID returns the process PID (0 if not started)
+func (p *FFmpegProcess) GetPID() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.Bitrate, p.LastBitrate
+	return p.PID
+}
+
+// GetBitrate returns the last parsed bitrate (kbps) and true if available
+func (p *FFmpegProcess) GetBitrate() (float64, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.Bitrate > 0 {
+		return p.Bitrate, true
+	}
+	return 0, false
 }
 
 // SetStats allows tests or wrappers to inject stats (optional, for extensibility)

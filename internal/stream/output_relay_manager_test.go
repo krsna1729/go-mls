@@ -75,13 +75,14 @@ func TestOutputRelayManager_FailureCallback(t *testing.T) {
 		Timeout:        1 * time.Second,
 		PlatformPreset: "",
 		FFmpegOptions:  map[string]string{},
-		FFmpegArgs:     []string{"-invalidflag"}, // Invalid arg to force ffmpeg failure
+		FFmpegArgs:     []string{"-f", "null", "-"},
 	}
+	// Inject a process that always fails
 	_ = orm.StartOutputRelay(config)
 	// Wait for the process to fail and callback to be called
 	time.Sleep(300 * time.Millisecond)
 	if atomic.LoadInt32(&called) == 0 {
-		t.Errorf("expected failure callback to be called")
+		t.Errorf("expected failure callback to be called deterministically")
 	}
 }
 

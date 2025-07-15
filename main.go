@@ -303,7 +303,7 @@ func apiStartHLSViewer(hlsMgr *stream.HLSManager, relayMgr *stream.RelayManager)
 		}
 
 		// HLS manager will handle starting input relay if needed
-		viewerID, err := hlsMgr.AddViewer(req.InputName, "")
+		viewerID, err := hlsMgr.AddViewer(req.InputName)
 		if err != nil {
 			relayMgr.Logger.Error("HLS start viewer: failed to add viewer for input %s: %v", req.InputName, err)
 			httputil.WriteError(w, http.StatusInternalServerError, "Failed to start HLS viewer")
@@ -423,14 +423,13 @@ func main() {
 		CleanupInterval:        time.Duration(cfg.HLS.CleanupInterval),
 		SessionTimeout:         time.Duration(cfg.HLS.SessionTimeout),
 		FailedCooldown:         time.Duration(cfg.HLS.FailedCooldown),
-		NotFoundLogInterval:    time.Duration(cfg.HLS.NotFoundLogInterval),
 		PlaylistReadyTimeout:   time.Duration(cfg.HLS.PlaylistReadyTimeout),
 		PlaylistPollInterval:   time.Duration(cfg.HLS.PlaylistPollInterval),
 		PlaylistPollAttempts:   cfg.HLS.PlaylistPollAttempts,
 		ViewerHeartbeatTimeout: time.Duration(cfg.HLS.ViewerHeartbeatTimeout),
 		FFmpegStopTimeout:      time.Duration(cfg.HLS.FFmpegStopTimeout),
 		PlaylistBaseDir:        cfg.HLS.PlaylistBaseDir,
-	})
+	}, logger)
 	hlsMgr.SetRelayManager(relayMgr)
 
 	// Use embedded static assets

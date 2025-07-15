@@ -39,7 +39,7 @@ type OutputRelay struct {
 	FFmpegArgs     []string          // set at Start, then read-only
 
 	// --- Mutable, protected by mu ---
-	Proc         *FFmpegProcess    // may be replaced on restart, protected by mu
+	Proc         ffmpegProcess     // may be replaced on restart, protected by mu
 	Status       OutputRelayStatus // protected by mu
 	LastError    string            // protected by mu
 	shuttingDown bool              // protected by mu
@@ -67,10 +67,11 @@ type OutputRelayConfig struct {
 // - All accesses to Relays map must hold mu.
 // - Logger and FailureCallback are set at construction and never changed.
 type OutputRelayManager struct {
-	Relays          map[string]*OutputRelay          // key: output URL, protected by mu
-	mu              sync.Mutex                       // protects Relays
-	Logger          *logger.Logger                   // immutable
-	FailureCallback func(inputURL, outputURL string) // immutable after set
+	Relays             map[string]*OutputRelay            // key: output URL, protected by mu
+	mu                 sync.Mutex                         // protects Relays
+	Logger             *logger.Logger                     // immutable
+	FailureCallback    func(inputURL, outputURL string)   // immutable after set
+	_testFFmpegFactory func(args ...string) ffmpegProcess // test-only, nil in prod
 }
 
 func NewOutputRelayManager(l *logger.Logger) *OutputRelayManager {
@@ -96,7 +97,14 @@ func (orm *OutputRelayManager) StartOutputRelay(config OutputRelayConfig) error 
 		return nil
 	}
 	ctx := context.Background() // Use background context for now; can be enhanced for cancellation
-	proc, err := NewFFmpegProcess(ctx, append(config.FFmpegArgs, "-progress", "pipe:1")...)
+	var proc ffmpegProcess
+	var err error
+	if orm._testFFmpegFactory != nil {
+		proc = orm._testFFmpegFactory(config.FFmpegArgs...)
+		err = nil
+	} else {
+		proc, err = NewFFmpegProcess(ctx, append(config.FFmpegArgs, "-progress", "pipe:1")...)
+	}
 	if err != nil {
 		orm.mu.Unlock()
 		orm.Logger.Error("Failed to create output relay ffmpeg process: %v", err)
@@ -126,7 +134,8 @@ func (orm *OutputRelayManager) StartOutputRelay(config OutputRelayConfig) error 
 		orm.Logger.Error("Failed to start output relay ffmpeg: %v", err)
 		return err
 	}
-	orm.Logger.Info("OutputRelayManager: Started ffmpeg process PID %d for %s -> %s", proc.PID, config.LocalURL, config.OutputURL)
+	// Remove PID logging for interface-based proc
+	orm.Logger.Info("OutputRelayManager: Started ffmpeg process for %s -> %s", config.LocalURL, config.OutputURL)
 	// Start process wait/monitor goroutine
 	go orm.RunOutputRelay(relay)
 	return nil
@@ -171,7 +180,7 @@ func (orm *OutputRelayManager) StopOutputRelay(outputURL string) {
 // RunOutputRelay runs and monitors the output relay process
 func (orm *OutputRelayManager) RunOutputRelay(relay *OutputRelay) {
 	orm.Logger.Info("OutputRelayManager: RunOutputRelay: running ffmpeg for %s -> %s", relay.LocalURL, relay.OutputURL)
-	var proc *FFmpegProcess
+	var proc ffmpegProcess
 	relay.mu.Lock()
 	proc = relay.Proc
 	relay.mu.Unlock()

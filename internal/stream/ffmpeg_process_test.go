@@ -70,7 +70,7 @@ func TestFFmpegProcess_StatsAccessors(t *testing.T) {
 	if lastSpeed.IsZero() {
 		t.Error("expected lastSpeed to be set")
 	}
-	if lastBitrate.IsZero() {
+	if !lastBitrate {
 		t.Error("expected lastBitrate to be set")
 	}
 

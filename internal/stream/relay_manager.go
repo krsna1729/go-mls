@@ -538,12 +538,13 @@ func (rm *RelayManager) StatusV2() StatusV2Response {
 			if out.InputURL == in.InputURL {
 				out.mu.Lock()
 				cpuO, memO := 0.0, uint64(0)
-				// Safely access process info to avoid data race
-				if out.Proc != nil && out.Proc.Cmd != nil && out.Proc.Cmd.Process != nil {
-					pid := out.Proc.PID
-					if usage, err := process.GetProcUsage(pid); err == nil {
-						cpuO = usage.CPU
-						memO = usage.Mem
+				if out.Proc != nil {
+					pid := out.Proc.GetPID()
+					if pid > 0 {
+						if usage, err := process.GetProcUsage(pid); err == nil {
+							cpuO = usage.CPU
+							memO = usage.Mem
+						}
 					}
 				}
 				outputStatus := OutputRelayStatusV2{
@@ -557,9 +558,10 @@ func (rm *RelayManager) StatusV2() StatusV2Response {
 					Mem:        memO,
 				}
 				if out.Proc != nil {
-					bitrate, _ := out.Proc.GetBitrate()
-					outputStatus.Bitrate = bitrate
-					rm.Logger.Debug("StatusV2: Output relay %s bitrate: %.2f kbps", out.OutputURL, bitrate)
+					if bitrate, ok := out.Proc.GetBitrate(); ok {
+						outputStatus.Bitrate = bitrate
+						rm.Logger.Debug("StatusV2: Output relay %s bitrate: %.2f kbps", out.OutputURL, bitrate)
+					}
 				}
 				outputs = append(outputs, outputStatus)
 				out.mu.Unlock()
@@ -799,3 +801,5 @@ func (rm *RelayManager) StopInputRelayForConsumer(inputName string) {
 
 	rm.InputRelays.StopInputRelay(inputURL)
 }
+
+var _ RelayManagerAPI = (*RelayManager)(nil)
