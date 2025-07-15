@@ -292,3 +292,91 @@ func TestInputRelayManager_ConcurrentAccess(t *testing.T) {
 
 	wg.Wait()
 }
+
+// --- Additional coverage tests ---
+func TestInputRelayManager_ForceStopInputRelay(t *testing.T) {
+	tmpDir := t.TempDir()
+	log := logger.NewLogger()
+	irm := NewInputRelayManager(log, tmpDir)
+
+	// Should not panic or error on non-existent relay
+	irm.ForceStopInputRelay("nonexistent")
+
+	// Create a relay and force stop it
+	inputName := "test"
+	inputURL := "rtmp://example.com/live/test"
+	localURL := "rtsp://localhost:8554/relay/test"
+	timeout := 1 * time.Second
+	_, _ = irm.StartInputRelay(inputName, inputURL, localURL, timeout)
+	irm.ForceStopInputRelay(inputURL)
+}
+
+func TestInputRelayManager_GetInputNameForURL(t *testing.T) {
+	tmpDir := t.TempDir()
+	log := logger.NewLogger()
+	irm := NewInputRelayManager(log, tmpDir)
+	inputName := "test"
+	inputURL := "rtmp://example.com/live/test"
+	localURL := "rtsp://localhost:8554/relay/test"
+	timeout := 1 * time.Second
+	_, _ = irm.StartInputRelay(inputName, inputURL, localURL, timeout)
+	name := irm.GetInputNameForURL(inputURL)
+	if name != inputName {
+		t.Errorf("expected %s, got %s", inputName, name)
+	}
+	// Non-existent URL
+	if irm.GetInputNameForURL("nonexistent") != "" {
+		t.Errorf("expected empty string for non-existent URL")
+	}
+}
+
+func TestInputRelayManager_RunInputRelay_ErrorBranches(t *testing.T) {
+	tmpDir := t.TempDir()
+	log := logger.NewLogger()
+	irm := NewInputRelayManager(log, tmpDir)
+	// Create a relay struct manually with nil process to force error
+	inputURL := "rtmp://example.com/live/test"
+	relay := &InputRelay{
+		InputName: inputURL,
+		InputURL:  inputURL,
+		LocalURL:  "rtsp://localhost:8554/relay/test",
+		Status:    InputRunning,
+		RefCount:  1,
+		// Proc is nil
+	}
+	irm.mu.Lock()
+	irm.Relays[inputURL] = relay
+	irm.mu.Unlock()
+	// Should handle nil Proc gracefully
+	go irm.RunInputRelay(relay)
+	time.Sleep(50 * time.Millisecond)
+}
+
+func TestInputRelayManager_StopInputRelay_AlreadyStopped(t *testing.T) {
+	tmpDir := t.TempDir()
+	log := logger.NewLogger()
+	irm := NewInputRelayManager(log, tmpDir)
+	inputName := "test"
+	inputURL := "rtmp://example.com/live/test"
+	localURL := "rtsp://localhost:8554/relay/test"
+	timeout := 1 * time.Second
+	_, _ = irm.StartInputRelay(inputName, inputURL, localURL, timeout)
+	// Stop relay
+	irm.StopInputRelay(inputURL)
+	// Stop again (should be already stopped)
+	irm.StopInputRelay(inputURL)
+}
+
+func TestInputRelayManager_StartInputRelay_InvalidURL(t *testing.T) {
+	tmpDir := t.TempDir()
+	log := logger.NewLogger()
+	irm := NewInputRelayManager(log, tmpDir)
+	inputName := "test"
+	inputURL := "file://doesnotexist.mp4"
+	localURL := "rtsp://localhost:8554/relay/test"
+	timeout := 1 * time.Second
+	_, err := irm.StartInputRelay(inputName, inputURL, localURL, timeout)
+	if err == nil {
+		t.Errorf("expected error for missing file inputURL")
+	}
+}
