@@ -2,12 +2,18 @@ package stream
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
 	"go-mls/internal/logger"
 )
+
+// ---- TEST HELPERS ----
 
 // TestRecordingManager_ConcurrentAPI exercises the public API concurrently to ensure thread safety.
 func TestRecordingManager_ConcurrentAPI(t *testing.T) {
@@ -55,4 +61,204 @@ func TestRecordingManager_ConcurrentAPI(t *testing.T) {
 	}
 
 	wg.Wait()
+}
+
+func TestRecordingManager_DeleteRecordingByFilename(t *testing.T) {
+	dir := t.TempDir()
+	filename := "testfile.mp4"
+	filePath := filepath.Join(dir, filename)
+	content := []byte("dummy recording data")
+	if err := os.WriteFile(filePath, content, 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+	log := logger.NewLogger()
+	rm := NewRecordingManager(log, dir, nil)
+	// Add a recording to the manager
+	rm.recordings["testkey"] = &Recording{
+		Name:     "test",
+		Source:   "source",
+		Filename: filename,
+		FilePath: filePath,
+		Active:   false,
+	}
+
+	// Test valid delete
+	err := rm.DeleteRecordingByFilename(filename)
+	if err != nil {
+		t.Errorf("expected nil error, got %v", err)
+	}
+	if _, err := os.Stat(filePath); !os.IsNotExist(err) {
+		t.Errorf("expected file to be deleted, got err=%v", err)
+	}
+	if _, ok := rm.recordings["testkey"]; ok {
+		t.Errorf("expected recording to be removed from map")
+	}
+
+	// Test deleting non-existent file
+	err = rm.DeleteRecordingByFilename("notfound.mp4")
+	if err == nil {
+		t.Errorf("expected error for missing file, got nil")
+	}
+}
+
+func TestRecordingManager_lastUnderscore(t *testing.T) {
+	if lastUnderscore("") != -1 {
+		t.Errorf("expected -1 for empty string")
+	}
+	if lastUnderscore("foo_bar_baz") != 7 {
+		t.Errorf("expected 7 for 'foo_bar_baz'")
+	}
+	if lastUnderscore("nounderscore") != -1 {
+		t.Errorf("expected -1 for 'nounderscore'")
+	}
+}
+
+func TestSSEBroker_AddRemoveClient(t *testing.T) {
+	ch := make(chan string, 1)
+	sseBroker.AddClient(ch)
+	sseBroker.NotifyAll("test event")
+	select {
+	case msg := <-ch:
+		if msg != "test event" {
+			t.Errorf("expected 'test event', got %q", msg)
+		}
+	default:
+		t.Errorf("expected to receive notification")
+	}
+	sseBroker.RemoveClient(ch)
+	sseBroker.NotifyAll("another event")
+	select {
+	case <-ch:
+		t.Errorf("should not receive after removal")
+	default:
+		// ok
+	}
+}
+
+func TestRecordingManager_ListRecordings_Empty(t *testing.T) {
+	log := logger.NewLogger()
+	dir := t.TempDir()
+	relayMgr := NewRelayManager(log, dir)
+	rm := NewRecordingManager(log, dir, relayMgr)
+	list := rm.ListRecordings()
+	if len(list) != 0 {
+		t.Errorf("expected empty list, got %v", list)
+	}
+}
+
+func TestApiRecordingsSSE(t *testing.T) {
+	ts := httptest.NewServer(ApiRecordingsSSE())
+	defer ts.Close()
+
+	client := &http.Client{Timeout: 500 * time.Millisecond}
+	resp, err := client.Get(ts.URL)
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200, got %d", resp.StatusCode)
+	}
+	// Read a small amount of data to ensure the connection is open, then exit
+	buf := make([]byte, 128)
+	_, _ = resp.Body.Read(buf)
+}
+
+func TestRecordingManager_ListRecordings_DiskAndMemory(t *testing.T) {
+	dir := t.TempDir()
+	log := logger.NewLogger()
+	rm := NewRecordingManager(log, dir, nil)
+
+	// Create a file on disk only
+	diskFile := "diskonly_1234.mp4"
+	diskFilePath := filepath.Join(dir, diskFile)
+	if err := os.WriteFile(diskFilePath, []byte("data"), 0644); err != nil {
+		t.Fatalf("failed to create disk file: %v", err)
+	}
+
+	// Create a recording in memory only
+	memFile := "memonly_5678.mp4"
+	memRec := &Recording{
+		Name:     "memonly",
+		Source:   "src",
+		Filename: memFile,
+		FilePath: filepath.Join(dir, memFile),
+		Active:   false,
+	}
+	rm.recordings["memkey"] = memRec
+
+	// Create a recording in both memory and disk
+	bothFile := "both_9999.mp4"
+	bothFilePath := filepath.Join(dir, bothFile)
+	if err := os.WriteFile(bothFilePath, []byte("data2"), 0644); err != nil {
+		t.Fatalf("failed to create both file: %v", err)
+	}
+	bothRec := &Recording{
+		Name:     "both",
+		Source:   "src",
+		Filename: bothFile,
+		FilePath: bothFilePath,
+		Active:   false,
+	}
+	rm.recordings["bothkey"] = bothRec
+
+	list := rm.ListRecordings()
+	var foundDisk, foundMem, foundBoth bool
+	for _, r := range list {
+		if r.Filename == diskFile {
+			foundDisk = true
+			if r.FileSize == 0 {
+				t.Errorf("expected disk file size to be set")
+			}
+		}
+		if r.Filename == memFile {
+			foundMem = true
+		}
+		if r.Filename == bothFile {
+			foundBoth = true
+		}
+	}
+	if !foundDisk {
+		t.Errorf("disk-only file not found in list")
+	}
+	if !foundMem {
+		t.Errorf("mem-only file not found in list")
+	}
+	if !foundBoth {
+		t.Errorf("both file not found in list")
+	}
+}
+
+func TestRecordingManager_StartRecording_Duplicate(t *testing.T) {
+	dir := t.TempDir()
+	log := logger.NewLogger()
+	rm := NewRecordingManager(log, dir, nil)
+	ctx := context.Background()
+	name := "recdup"
+	source := "srcdup"
+	// Add an active recording with the same name and source
+	rm.recordings["dupkey"] = &Recording{
+		Name:   name,
+		Source: source,
+		Active: true,
+	}
+	// Should return error for duplicate
+	err := rm.StartRecording(ctx, name, source)
+	if err == nil || err.Error() != "active recording for name recdup and source srcdup already exists" {
+		t.Errorf("expected duplicate error, got %v", err)
+	}
+}
+
+func TestRecordingManager_StartRecording_ErrorBranches(t *testing.T) {
+	dir := t.TempDir()
+	log := logger.NewLogger()
+	ctx := context.Background()
+	// Use a real RelayManager
+	relayMgr := NewRelayManager(log, dir)
+	rm := NewRecordingManager(log, dir, relayMgr)
+	// Try to start a recording with a non-existent source (should fail at ffmpeg step)
+	err := rm.StartRecording(ctx, "fail", "fail")
+	if err == nil {
+		t.Errorf("expected error, got nil")
+	}
 }

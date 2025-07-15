@@ -89,12 +89,19 @@ func (orm *OutputRelayManager) SetFailureCallback(callback func(inputURL, output
 // StartOutputRelay starts an output ffmpeg process from local RTSP to output URL
 func (orm *OutputRelayManager) StartOutputRelay(config OutputRelayConfig) error {
 	orm.Logger.Info("OutputRelayManager: StartOutputRelay: inputURL=%s, localURL=%s, outputURL=%s", config.InputURL, config.LocalURL, config.OutputURL)
+	// Validate config
+	if config.OutputURL == "" {
+		return fmt.Errorf("OutputURL cannot be empty")
+	}
+	if config.InputURL == "" {
+		return fmt.Errorf("InputURL cannot be empty")
+	}
 	orm.mu.Lock()
 	relay, exists := orm.Relays[config.OutputURL]
 	if exists && relay.Status == OutputRunning {
 		orm.Logger.Warn("Output relay already running for %s -> %s", config.LocalURL, config.OutputURL)
 		orm.mu.Unlock()
-		return nil
+		return fmt.Errorf("output relay already running for %s", config.OutputURL)
 	}
 	ctx := context.Background() // Use background context for now; can be enhanced for cancellation
 	var proc ffmpegProcess
@@ -128,15 +135,17 @@ func (orm *OutputRelayManager) StartOutputRelay(config OutputRelayConfig) error 
 	err = proc.Start()
 	if err != nil {
 		orm.mu.Lock()
+		relay.mu.Lock()
+		// Set status to OutputError so that restart is allowed
 		relay.Status = OutputError
 		relay.LastError = err.Error()
+		relay.Proc = nil
+		relay.mu.Unlock()
 		orm.mu.Unlock()
 		orm.Logger.Error("Failed to start output relay ffmpeg: %v", err)
 		return err
 	}
-	// Remove PID logging for interface-based proc
 	orm.Logger.Info("OutputRelayManager: Started ffmpeg process for %s -> %s", config.LocalURL, config.OutputURL)
-	// Start process wait/monitor goroutine
 	go orm.RunOutputRelay(relay)
 	return nil
 }

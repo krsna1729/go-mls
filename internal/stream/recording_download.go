@@ -45,15 +45,19 @@ func ApiDownloadRecording(rm *RecordingManager) http.HandlerFunc {
 			return
 		}
 
-		w.Header().Set("Content-Disposition", "attachment; filename="+filename)
-		w.Header().Set("Content-Type", "video/mp4")
-
 		f, err := os.Open(cleanPath)
 		if err != nil {
-			httputil.WriteError(w, http.StatusNotFound, "File not found")
+			if os.IsPermission(err) {
+				httputil.WriteError(w, http.StatusForbidden, "Access denied")
+			} else {
+				httputil.WriteError(w, http.StatusNotFound, "File not found")
+			}
 			return
 		}
 		defer f.Close()
+
+		w.Header().Set("Content-Disposition", "attachment; filename="+filename)
+		w.Header().Set("Content-Type", "video/mp4")
 
 		// Copy file to response (using io.Copy is efficient for large files)
 		if _, err := io.Copy(w, f); err != nil {
