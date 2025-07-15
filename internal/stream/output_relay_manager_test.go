@@ -136,3 +136,166 @@ func TestOutputRelayManager_ConcurrentAPI(t *testing.T) {
 
 	wg.Wait()
 }
+
+// --- Additional coverage tests ---
+func TestOutputRelayManager_StartOutputRelay_Duplicate(t *testing.T) {
+	log := logger.NewLogger()
+	orm := NewOutputRelayManager(log)
+	config := OutputRelayConfig{
+		OutputURL:      "rtmp://example.com/live/dup",
+		OutputName:     "dupout",
+		InputURL:       "rtsp://localhost/relay/dup",
+		LocalURL:       "rtsp://localhost/relay/dup",
+		Timeout:        1 * time.Second,
+		PlatformPreset: "",
+		FFmpegOptions:  map[string]string{},
+		FFmpegArgs:     []string{"-f", "null", "-"},
+	}
+	_ = orm.StartOutputRelay(config)
+	err := orm.StartOutputRelay(config)
+	if err == nil {
+		t.Errorf("expected error on duplicate StartOutputRelay")
+	}
+}
+
+func TestOutputRelayManager_StopOutputRelay_NonExistent(t *testing.T) {
+	log := logger.NewLogger()
+	orm := NewOutputRelayManager(log)
+	// Should not panic or error
+	orm.StopOutputRelay("nonexistent")
+}
+
+func TestOutputRelayManager_DeleteOutput_NonExistent(t *testing.T) {
+	log := logger.NewLogger()
+	orm := NewOutputRelayManager(log)
+	err := orm.DeleteOutput("nonexistent")
+	if err == nil {
+		t.Errorf("expected error deleting non-existent output relay")
+	}
+}
+
+func TestOutputRelayManager_RunOutputRelay_ErrorBranches(t *testing.T) {
+	log := logger.NewLogger()
+	orm := NewOutputRelayManager(log)
+	outputURL := "rtmp://example.com/live/error"
+	relay := &OutputRelay{
+		OutputURL: outputURL,
+		InputURL:  "rtsp://localhost/relay/error",
+		LocalURL:  "rtsp://localhost/relay/error",
+		Status:    OutputRunning,
+		// Proc is nil
+	}
+	orm.mu.Lock()
+	orm.Relays[outputURL] = relay
+	orm.mu.Unlock()
+	// Should handle nil Proc gracefully
+	go orm.RunOutputRelay(relay)
+	time.Sleep(50 * time.Millisecond)
+}
+
+func TestOutputRelayManager_StopOutputRelay_AlreadyStopped(t *testing.T) {
+	log := logger.NewLogger()
+	orm := NewOutputRelayManager(log)
+	config := OutputRelayConfig{
+		OutputURL:      "rtmp://example.com/live/stopped",
+		OutputName:     "stoppedout",
+		InputURL:       "rtsp://localhost/relay/stopped",
+		LocalURL:       "rtsp://localhost/relay/stopped",
+		Timeout:        1 * time.Second,
+		PlatformPreset: "",
+		FFmpegOptions:  map[string]string{},
+		FFmpegArgs:     []string{"-f", "null", "-"},
+	}
+	_ = orm.StartOutputRelay(config)
+	orm.StopOutputRelay(config.OutputURL)
+	// Stop again (should be already stopped)
+	orm.StopOutputRelay(config.OutputURL)
+}
+
+func TestOutputRelayManager_StartOutputRelay_InvalidConfig(t *testing.T) {
+	log := logger.NewLogger()
+	orm := NewOutputRelayManager(log)
+	// Empty OutputURL
+	config := OutputRelayConfig{
+		OutputURL:      "",
+		OutputName:     "emptyout",
+		InputURL:       "rtsp://localhost/relay/empty",
+		LocalURL:       "rtsp://localhost/relay/empty",
+		Timeout:        1 * time.Second,
+		PlatformPreset: "",
+		FFmpegOptions:  map[string]string{},
+		FFmpegArgs:     []string{"-f", "null", "-"},
+	}
+	err := orm.StartOutputRelay(config)
+	if err == nil {
+		t.Errorf("expected error for empty OutputURL")
+	}
+	// Empty InputURL
+	config = OutputRelayConfig{
+		OutputURL:      "rtmp://example.com/live/emptyinput",
+		OutputName:     "emptyinputout",
+		InputURL:       "",
+		LocalURL:       "rtsp://localhost/relay/emptyinput",
+		Timeout:        1 * time.Second,
+		PlatformPreset: "",
+		FFmpegOptions:  map[string]string{},
+		FFmpegArgs:     []string{"-f", "null", "-"},
+	}
+	err = orm.StartOutputRelay(config)
+	if err == nil {
+		t.Errorf("expected error for empty InputURL")
+	}
+}
+
+func TestOutputRelayManager_StartOutputRelay_FFmpegFail(t *testing.T) {
+	log := logger.NewLogger()
+	orm := NewOutputRelayManager(log)
+	// Use invalid FFmpeg args to force process creation failure
+	config := OutputRelayConfig{
+		OutputURL:      "rtmp://example.com/live/ffmpegfail",
+		OutputName:     "ffmpegfailout",
+		InputURL:       "rtsp://localhost/relay/ffmpegfail",
+		LocalURL:       "rtsp://localhost/relay/ffmpegfail",
+		Timeout:        1 * time.Second,
+		PlatformPreset: "",
+		FFmpegOptions:  map[string]string{},
+		FFmpegArgs:     []string{"-invalidflag"},
+	}
+	err := orm.StartOutputRelay(config)
+	if err == nil {
+		t.Errorf("expected error for FFmpeg process creation failure")
+	}
+}
+
+func TestOutputRelayManager_StartOutputRelay_RestartStoppedOrError(t *testing.T) {
+	log := logger.NewLogger()
+	orm := NewOutputRelayManager(log)
+	config := OutputRelayConfig{
+		OutputURL:      "rtmp://example.com/live/restart",
+		OutputName:     "restartout",
+		InputURL:       "rtsp://localhost/relay/restart",
+		LocalURL:       "rtsp://localhost/relay/restart",
+		Timeout:        1 * time.Second,
+		PlatformPreset: "",
+		FFmpegOptions:  map[string]string{},
+		FFmpegArgs:     []string{"-f", "null", "-"},
+	}
+	_ = orm.StartOutputRelay(config)
+	// Simulate stopped relay
+	orm.mu.Lock()
+	relay := orm.Relays[config.OutputURL]
+	relay.Status = OutputStopped
+	orm.mu.Unlock()
+	err := orm.StartOutputRelay(config)
+	if err != nil {
+		t.Errorf("expected no error restarting stopped relay, got %v", err)
+	}
+	// Simulate error relay
+	orm.mu.Lock()
+	relay.Status = OutputError
+	orm.mu.Unlock()
+	err = orm.StartOutputRelay(config)
+	if err != nil {
+		t.Errorf("expected no error restarting error relay, got %v", err)
+	}
+}
