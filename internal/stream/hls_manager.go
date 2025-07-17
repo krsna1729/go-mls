@@ -41,8 +41,8 @@ type MapViewerManager struct {
 }
 
 func (v *MapViewerManager) AddViewer() (string, error) {
-	v.sess.ReadyMu.Lock()
-	defer v.sess.ReadyMu.Unlock()
+	v.sess.Mu.Lock()
+	defer v.sess.Mu.Unlock()
 	viewerID := generateViewerID()
 	v.sess.ViewerIDs[viewerID] = time.Now()
 	v.sess.LastAccess = time.Now()
@@ -50,8 +50,8 @@ func (v *MapViewerManager) AddViewer() (string, error) {
 }
 
 func (v *MapViewerManager) UpdateViewerHeartbeat(viewerID string) error {
-	v.sess.ReadyMu.Lock()
-	defer v.sess.ReadyMu.Unlock()
+	v.sess.Mu.Lock()
+	defer v.sess.Mu.Unlock()
 	if _, exists := v.sess.ViewerIDs[viewerID]; !exists {
 		return errors.New("viewerID not found")
 	}
@@ -61,8 +61,8 @@ func (v *MapViewerManager) UpdateViewerHeartbeat(viewerID string) error {
 }
 
 func (v *MapViewerManager) RemoveViewer(viewerID string) error {
-	v.sess.ReadyMu.Lock()
-	defer v.sess.ReadyMu.Unlock()
+	v.sess.Mu.Lock()
+	defer v.sess.Mu.Unlock()
 	delete(v.sess.ViewerIDs, viewerID)
 	return nil
 }
@@ -78,16 +78,14 @@ type HLSSession struct {
 	Dir        string
 	IsConsumer bool // Whether this session is registered as an input relay consumer
 
-	// --- Concurrency: mutable fields below are protected by HLSManager.mu ---
+	// --- Concurrency: mutable fields below are protected by Mu ---
 	ViewerIDs  map[string]time.Time // Track individual viewers with heartbeat
 	LastAccess time.Time            // Last time any viewer accessed this session
+	Ready      bool                 // Session readiness flag
+	Mu         sync.RWMutex         // Protects all mutable fields above
 
 	// --- Process management (concurrent-safe via ffmpegProcess interface) ---
 	Proc ffmpegProcess // FFmpeg process abstraction (handles concurrency and output capture)
-
-	// --- Readiness flag (protected by ReadyMu) ---
-	Ready   bool
-	ReadyMu sync.RWMutex // Protects Ready flag
 
 	ViewerManager ViewerManager // Per-session viewer management
 }
@@ -408,9 +406,9 @@ func (m *HLSManager) tryPollPlaylistReady(playlistPath string) bool {
 
 // setSessionReadiness sets the session readiness and logs output/errors.
 func (m *HLSManager) setSessionReadiness(sess *HLSSession, inputName string, ready bool) {
-	sess.ReadyMu.Lock()
+	sess.Mu.Lock()
 	sess.Ready = ready
-	sess.ReadyMu.Unlock()
+	sess.Mu.Unlock()
 	if ready {
 		m.logger.Info("HLS session ready for inputName=%s (fsnotify/poll)", inputName)
 		return
@@ -612,8 +610,8 @@ func (m *HLSManager) serveHLSGetSession(w http.ResponseWriter, inputName, file s
 // serveHLSWaitForReady waits for session readiness, returns true if handled.
 func (m *HLSManager) serveHLSWaitForReady(w http.ResponseWriter, r *http.Request, sess *HLSSession, inputName string) bool {
 	ready := func() bool {
-		sess.ReadyMu.RLock()
-		defer sess.ReadyMu.RUnlock()
+		sess.Mu.RLock()
+		defer sess.Mu.RUnlock()
 		return sess.Ready
 	}
 	waitCtx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
