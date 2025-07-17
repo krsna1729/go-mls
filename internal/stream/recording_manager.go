@@ -73,7 +73,7 @@ func NewRecordingManager(l *logger.Logger, dir string, relayMgr *RelayManager) *
 
 // startRecordingPlaceholder checks for duplicates and creates a placeholder recording entry.
 func (rm *RecordingManager) startRecordingPlaceholder(name, sourceURL string) (string, *Recording, error) {
-	recordingKey := fmt.Sprintf("%s_%s", name, sourceURL)
+	rm.Logger.Debug("startRecordingPlaceholder called: name=%s, sourceURL=%s", name, sourceURL)
 	rm.mu.Lock()
 	// Check for existing active recordings by name and source
 	for _, rec := range rm.recordings {
@@ -87,7 +87,7 @@ func (rm *RecordingManager) startRecordingPlaceholder(name, sourceURL string) (s
 	// Create a placeholder recording entry to prevent race conditions
 	currentTime := time.Now()
 	timestamp := currentTime.Unix()
-	uniqueKey := fmt.Sprintf("%s_%d", recordingKey, timestamp)
+	uniqueKey := fmt.Sprintf("%s_%d", name, timestamp) // Only use name and timestamp for uniqueKey
 	placeholderRec := &Recording{
 		Name:      name,
 		Source:    sourceURL,
@@ -100,7 +100,8 @@ func (rm *RecordingManager) startRecordingPlaceholder(name, sourceURL string) (s
 }
 
 // startRecordingProcess starts the relay and ffmpeg process, handling errors and cleanup.
-func (rm *RecordingManager) startRecordingProcess(name, sourceURL, uniqueKey string, rec *Recording) (string, *FFmpegProcess, error) {
+func (rm *RecordingManager) startRecordingProcess(name, uniqueKey string) (string, *FFmpegProcess, error) {
+	rm.Logger.Debug("startRecordingProcess called: name=%s, uniqueKey=%s", name, uniqueKey)
 	localRelayURL, err := rm.RelayMgr.StartInputRelayForConsumer(name)
 	if err != nil {
 		rm.Logger.Error("Failed to start input relay for recording: %v", err)
@@ -109,23 +110,26 @@ func (rm *RecordingManager) startRecordingProcess(name, sourceURL, uniqueKey str
 		rm.mu.Unlock()
 		return "", nil, err
 	}
-	filePath := fmt.Sprintf("%s/%s_%s.mp4", rm.dir, name, uniqueKey[len(name)+1:])
-	rm.Logger.Debug("Starting ffmpeg for recording: %s", filePath)
+	filePath := fmt.Sprintf("%s/%s.mp4", rm.dir, uniqueKey) // Filename is now name_timestamp.mp4
+	rm.Logger.Debug("Starting ffmpeg for recording: %s (name=%s, uniqueKey=%s, localRelayURL=%s)", filePath, name, uniqueKey, localRelayURL)
 	ffmpegArgs := []string{"-y", "-i", localRelayURL, "-c", "copy", filePath}
 	procCtx, procCancel := context.WithCancel(context.Background())
+	defer procCancel() // Ensure cancel is called on all paths
 	proc, err := NewFFmpegProcess(procCtx, ffmpegArgs...)
 	if err != nil {
 		rm.Logger.Error("Failed to create ffmpeg process: %v", err)
 		rm.RelayMgr.StopInputRelayForConsumer(name)
+		rm.mu.Lock()
 		delete(rm.recordings, uniqueKey)
-		procCancel()
+		rm.mu.Unlock()
 		return "", nil, err
 	}
 	if err := proc.Start(); err != nil {
 		rm.Logger.Error("Failed to start ffmpeg: %v", err)
 		rm.RelayMgr.StopInputRelayForConsumer(name)
+		rm.mu.Lock()
 		delete(rm.recordings, uniqueKey)
-		procCancel()
+		rm.mu.Unlock()
 		return "", nil, err
 	}
 	// Ownership transferred to process
@@ -200,7 +204,7 @@ func (rm *RecordingManager) StartRecording(ctx context.Context, name, sourceURL 
 	if err != nil {
 		return err
 	}
-	filePath, proc, err := rm.startRecordingProcess(name, sourceURL, uniqueKey, placeholderRec)
+	filePath, proc, err := rm.startRecordingProcess(name, uniqueKey)
 	if err != nil {
 		return err
 	}
