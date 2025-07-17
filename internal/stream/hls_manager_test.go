@@ -123,7 +123,7 @@ func TestHLSManager_ConcurrentAPI(t *testing.T) {
 	logr := logger.NewLogger()
 	dir := t.TempDir()
 	mgr := NewHLSManager(minimalHLSManagerConfig(), logr)
-	mgr.relayManager = NewRelayManager(logr, dir)
+	mgr.relayManager = NewRelayManager(logr, dir, "")
 
 	num := 10
 	var wg sync.WaitGroup

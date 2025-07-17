@@ -41,18 +41,19 @@ type RelayManager struct {
 	startMutexesMu sync.Mutex
 }
 
-func NewRelayManager(l *logger.Logger, recDir string) *RelayManager {
+func NewRelayManager(l *logger.Logger, recDir string, ffmpegLogLevel string) *RelayManager {
 	irm := NewInputRelayManager(l, recDir)
 	orm := NewOutputRelayManager(l)
 	rm := &RelayManager{
-		InputRelays:   irm,
-		OutputRelays:  orm,
-		Logger:        l,
-		recDir:        recDir,
-		inputConfigs:  make(map[string]*InputConfig),
-		inputTimeout:  30 * time.Second, // Default values, can be overridden
-		outputTimeout: 60 * time.Second,
-		startMutexes:  make(map[string]*sync.Mutex),
+		InputRelays:    irm,
+		OutputRelays:   orm,
+		Logger:         l,
+		recDir:         recDir,
+		inputConfigs:   make(map[string]*InputConfig),
+		inputTimeout:   30 * time.Second, // Default values, can be overridden
+		outputTimeout:  60 * time.Second,
+		startMutexes:   make(map[string]*sync.Mutex),
+		ffmpegLogLevel: ffmpegLogLevel,
 	}
 
 	// Set up failure callback for output relays to clean up input relay refcount
@@ -62,19 +63,6 @@ func NewRelayManager(l *logger.Logger, recDir string) *RelayManager {
 	})
 
 	return rm
-}
-
-// NewRelayManagerWithFFmpegLoglevel creates a relay manager with configurable ffmpeg loglevel
-func NewRelayManagerWithFFmpegLoglevel(l *logger.Logger, recDir string, ffmpegLogLevel string) *RelayManager {
-	return &RelayManager{
-		InputRelays:    NewInputRelayManager(l, recDir),
-		OutputRelays:   NewOutputRelayManager(l),
-		Logger:         l,
-		recDir:         recDir,
-		inputConfigs:   make(map[string]*InputConfig),
-		startMutexes:   make(map[string]*sync.Mutex),
-		ffmpegLogLevel: ffmpegLogLevel,
-	}
 }
 
 // SetRTSPServer sets the RTSP server instance
@@ -803,3 +791,6 @@ func (rm *RelayManager) StopInputRelayForConsumer(inputName string) {
 }
 
 var _ RelayManagerAPI = (*RelayManager)(nil)
+
+// NewRelayManagerWithFFmpegLoglevel creates a relay manager with configurable ffmpeg loglevel
+// (removed, use NewRelayManager with ffmpegLogLevel argument)

@@ -411,7 +411,7 @@ func main() {
 		logger.Fatal("Failed to start RTSP server: %v", err)
 	}
 
-	relayMgr := stream.NewRelayManagerWithFFmpegLoglevel(logger, absDir, cfg.FFmpeg.LogLevel)
+	relayMgr := stream.NewRelayManager(logger, absDir, cfg.FFmpeg.LogLevel)
 	relayMgr.SetRTSPServer(rtspServer)
 	// Set relay configuration timeouts
 	relayMgr.SetTimeouts(time.Duration(cfg.Relay.InputTimeout), time.Duration(cfg.Relay.OutputTimeout))

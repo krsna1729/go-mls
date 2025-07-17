@@ -25,7 +25,7 @@ func TestApiStartRecording(t *testing.T) {
 	}
 	defer rtspServer.Stop()
 
-	relayMgr := NewRelayManager(log, tempDir)
+	relayMgr := NewRelayManager(log, tempDir, "")
 	relayMgr.SetRTSPServer(rtspServer)
 
 	// Register input config for test input (fix for failing test)
@@ -162,7 +162,7 @@ func TestApiStopRecording(t *testing.T) {
 	// Setup test environment
 	tempDir := t.TempDir()
 	log := logger.NewLogger()
-	relayMgr := NewRelayManager(log, tempDir)
+	relayMgr := NewRelayManager(log, tempDir, "")
 	rm := NewRecordingManager(log, tempDir, relayMgr)
 	defer rm.Shutdown()
 
@@ -229,7 +229,7 @@ func TestApiListRecordings(t *testing.T) {
 	// Setup test environment
 	tempDir := t.TempDir()
 	log := logger.NewLogger()
-	relayMgr := NewRelayManager(log, tempDir)
+	relayMgr := NewRelayManager(log, tempDir, "")
 	rm := NewRecordingManager(log, tempDir, relayMgr)
 	defer rm.Shutdown()
 
@@ -286,7 +286,7 @@ func TestApiDeleteRecording(t *testing.T) {
 	// Setup test environment
 	tempDir := t.TempDir()
 	log := logger.NewLogger()
-	relayMgr := NewRelayManager(log, tempDir)
+	relayMgr := NewRelayManager(log, tempDir, "")
 	rm := NewRecordingManager(log, tempDir, relayMgr)
 	defer rm.Shutdown()
 
@@ -375,7 +375,7 @@ func TestApiHandlers_ContentType(t *testing.T) {
 	// Setup test environment
 	tempDir := t.TempDir()
 	log := logger.NewLogger()
-	relayMgr := NewRelayManager(log, tempDir)
+	relayMgr := NewRelayManager(log, tempDir, "")
 	rm := NewRecordingManager(log, tempDir, relayMgr)
 	defer rm.Shutdown()
 

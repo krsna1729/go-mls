@@ -20,7 +20,7 @@ import (
 func TestRecordingManager_ConcurrentAPI(t *testing.T) {
 	log := logger.NewLogger()
 	dir := t.TempDir()
-	relayMgr := NewRelayManager(log, dir)
+	relayMgr := NewRelayManager(log, dir, "")
 	rm := NewRecordingManager(log, dir, relayMgr)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -139,7 +139,7 @@ func TestSSEBroker_AddRemoveClient(t *testing.T) {
 func TestRecordingManager_ListRecordings_Empty(t *testing.T) {
 	log := logger.NewLogger()
 	dir := t.TempDir()
-	relayMgr := NewRelayManager(log, dir)
+	relayMgr := NewRelayManager(log, dir, "")
 	rm := NewRecordingManager(log, dir, relayMgr)
 	list := rm.ListRecordings()
 	if len(list) != 0 {
@@ -255,7 +255,7 @@ func TestRecordingManager_StartRecording_ErrorBranches(t *testing.T) {
 	log := logger.NewLogger()
 	ctx := context.Background()
 	// Use a real RelayManager
-	relayMgr := NewRelayManager(log, dir)
+	relayMgr := NewRelayManager(log, dir, "")
 	rm := NewRecordingManager(log, dir, relayMgr)
 	// Try to start a recording with a non-existent source (should fail at ffmpeg step)
 	err := rm.StartRecording(ctx, "fail", "fail")
@@ -276,7 +276,7 @@ func TestRecordingManager_StartRecording_Success(t *testing.T) {
 	}
 	defer rtspServer.Stop()
 
-	relayMgr := NewRelayManager(log, dir)
+	relayMgr := NewRelayManager(log, dir, "")
 	relayMgr.SetRTSPServer(rtspServer)
 
 	// Copy testsrc.mp4 to temp dir and chdir
