@@ -763,9 +763,9 @@ func (rm *RelayManager) StartInputRelayForConsumer(inputName string) (string, er
 		return "", fmt.Errorf("input configuration not found for: %s", inputName)
 	}
 
-	// Compose local RTSP relay path and URL
+	// Compose local RTSP relay path and URL using the correct dynamic port
 	relayPath := fmt.Sprintf("relay/%s", inputName)
-	localRelayURL := fmt.Sprintf("%s/%s", GetRTSPServerURL(), relayPath)
+	localRelayURL := rm.rtspServer.GetRTSPURL(relayPath)
 
 	// Start the input relay with consumer counting
 	localURL, err := rm.InputRelays.StartInputRelay(inputName, inputURL, localRelayURL, rm.inputTimeout)

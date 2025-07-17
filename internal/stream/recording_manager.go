@@ -100,7 +100,7 @@ func (rm *RecordingManager) startRecordingPlaceholder(name, sourceURL string) (s
 }
 
 // startRecordingProcess starts the relay and ffmpeg process, handling errors and cleanup.
-func (rm *RecordingManager) startRecordingProcess(name, uniqueKey string) (string, *FFmpegProcess, error) {
+func (rm *RecordingManager) startRecordingProcess(name, uniqueKey string) (string, *FFmpegProcess, context.CancelFunc, error) {
 	rm.Logger.Debug("startRecordingProcess called: name=%s, uniqueKey=%s", name, uniqueKey)
 	localRelayURL, err := rm.RelayMgr.StartInputRelayForConsumer(name)
 	if err != nil {
@@ -108,36 +108,38 @@ func (rm *RecordingManager) startRecordingProcess(name, uniqueKey string) (strin
 		rm.mu.Lock()
 		delete(rm.recordings, uniqueKey)
 		rm.mu.Unlock()
-		return "", nil, err
+		return "", nil, nil, err
 	}
 	filePath := fmt.Sprintf("%s/%s.mp4", rm.dir, uniqueKey) // Filename is now name_timestamp.mp4
 	rm.Logger.Debug("Starting ffmpeg for recording: %s (name=%s, uniqueKey=%s, localRelayURL=%s)", filePath, name, uniqueKey, localRelayURL)
 	ffmpegArgs := []string{"-y", "-i", localRelayURL, "-c", "copy", filePath}
 	procCtx, procCancel := context.WithCancel(context.Background())
-	defer procCancel() // Ensure cancel is called on all paths
 	proc, err := NewFFmpegProcess(procCtx, ffmpegArgs...)
 	if err != nil {
+		procCancel() // prevent context leak
 		rm.Logger.Error("Failed to create ffmpeg process: %v", err)
 		rm.RelayMgr.StopInputRelayForConsumer(name)
 		rm.mu.Lock()
 		delete(rm.recordings, uniqueKey)
 		rm.mu.Unlock()
-		return "", nil, err
+		return "", nil, nil, err
 	}
 	if err := proc.Start(); err != nil {
+		procCancel() // prevent context leak
 		rm.Logger.Error("Failed to start ffmpeg: %v", err)
 		rm.RelayMgr.StopInputRelayForConsumer(name)
 		rm.mu.Lock()
 		delete(rm.recordings, uniqueKey)
 		rm.mu.Unlock()
-		return "", nil, err
+		return "", nil, nil, err
 	}
-	// Ownership transferred to process
-	return filePath, proc, nil
+	// Ownership of procCancel is transferred to the lifecycle goroutine
+	return filePath, proc, procCancel, nil
 }
 
 // handleRecordingLifecycle runs the recording lifecycle goroutine.
-func (rm *RecordingManager) handleRecordingLifecycle(name, uniqueKey string, proc *FFmpegProcess, done chan struct{}) {
+func (rm *RecordingManager) handleRecordingLifecycle(name, uniqueKey string, proc *FFmpegProcess, procCancel context.CancelFunc, done chan struct{}) {
+	defer procCancel() // Ensure process context is canceled when lifecycle ends
 	defer rm.RelayMgr.StopInputRelayForConsumer(name)
 	cmdDone := make(chan error, 1)
 	go func() { cmdDone <- proc.Wait() }()
@@ -162,6 +164,7 @@ func (rm *RecordingManager) handleRecordingLifecycle(name, uniqueKey string, pro
 		sseBroker.NotifyAll("update")
 		if err != nil {
 			ffmpegOutput := proc.GetOutput()
+			rm.Logger.Debug("[DEBUG] handleRecordingLifecycle: ffmpegOutput length = %d", len(ffmpegOutput))
 			rm.Logger.Error("ffmpeg exited with error for %s (%s): %v\nOutput:\n%s", name, filePath, err, ffmpegOutput)
 		} else {
 			rm.Logger.Info("Recording finished for %s (%s)", name, filePath)
@@ -204,7 +207,7 @@ func (rm *RecordingManager) StartRecording(ctx context.Context, name, sourceURL 
 	if err != nil {
 		return err
 	}
-	filePath, proc, err := rm.startRecordingProcess(name, uniqueKey)
+	filePath, proc, procCancel, err := rm.startRecordingProcess(name, uniqueKey)
 	if err != nil {
 		return err
 	}
@@ -213,7 +216,7 @@ func (rm *RecordingManager) StartRecording(ctx context.Context, name, sourceURL 
 	rm.processes[uniqueKey] = proc
 	done := make(chan struct{})
 	rm.dones[uniqueKey] = done
-	go rm.handleRecordingLifecycle(name, uniqueKey, proc, done)
+	go rm.handleRecordingLifecycle(name, uniqueKey, proc, procCancel, done)
 	sseBroker.NotifyAll("update")
 	return nil
 }

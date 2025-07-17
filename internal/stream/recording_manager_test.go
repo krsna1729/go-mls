@@ -2,6 +2,7 @@ package stream
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -260,5 +261,84 @@ func TestRecordingManager_StartRecording_ErrorBranches(t *testing.T) {
 	err := rm.StartRecording(ctx, "fail", "fail")
 	if err == nil {
 		t.Errorf("expected error, got nil")
+	}
+}
+
+func TestRecordingManager_StartRecording_Success(t *testing.T) {
+	t.Parallel()
+	log := logger.NewLogger()
+	dir := t.TempDir()
+
+	// Start RTSP server on dynamic port
+	rtspServer := NewRTSPServerManagerWithConfig(log, "127.0.0.1", 0)
+	if err := rtspServer.Start(); err != nil {
+		t.Fatalf("failed to start RTSP server: %v", err)
+	}
+	defer rtspServer.Stop()
+
+	relayMgr := NewRelayManager(log, dir)
+	relayMgr.SetRTSPServer(rtspServer)
+
+	// Copy testsrc.mp4 to temp dir and chdir
+	testSrcPath := filepath.Join("..", "..", "testdata", "testsrc.mp4")
+	testDestPath := filepath.Join(dir, "testsrc.mp4")
+	srcFile, err := os.Open(testSrcPath)
+	if err != nil {
+		t.Fatalf("failed to open testsrc.mp4: %v", err)
+	}
+	defer srcFile.Close()
+	destFile, err := os.Create(testDestPath)
+	if err != nil {
+		t.Fatalf("failed to create dest testsrc.mp4: %v", err)
+	}
+	defer destFile.Close()
+	_, _ = io.Copy(destFile, srcFile)
+
+	// Change working directory to temp dir so file://testsrc.mp4 resolves
+	oldwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get wd: %v", err)
+	}
+	defer os.Chdir(oldwd)
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("failed to chdir: %v", err)
+	}
+
+	// Register input config for testsrc (relative path)
+	relayMgr.RegisterInputConfig("testrec", "file://testsrc.mp4")
+	if _, err := relayMgr.StartInputRelayForConsumer("testrec"); err != nil {
+		t.Fatalf("failed to start input relay for consumer: %v", err)
+	}
+
+	rm := NewRecordingManager(log, dir, relayMgr)
+	defer rm.Shutdown()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	name := "testrec"
+	source := "testrec"
+
+	err = rm.StartRecording(ctx, name, source)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	// Check that the recording is present and active
+	found := false
+	for _, rec := range rm.ListRecordings() {
+		if rec.Name == name && rec.Source == source && rec.Active {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("recording not found or not active after StartRecording")
+	}
+
+	// Cleanup: stop the recording
+	err = rm.StopRecording(name, source)
+	if err != nil {
+		t.Errorf("failed to stop recording: %v", err)
 	}
 }

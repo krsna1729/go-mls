@@ -3,6 +3,7 @@ package stream
 import (
 	"context"
 	"fmt"
+	"net"
 	"strings"
 	"sync"
 	"time"
@@ -92,14 +93,30 @@ func NewRTSPServerManagerWithConfig(l *logger.Logger, host string, port int) *RT
 func (rm *RTSPServerManager) Start() error {
 	rm.logger.Info("Starting RTSP server on %s:%d", rm.config.Interface, rm.config.Port)
 
-	// Create RTSP server instance with more permissive configuration
+	// Custom Listen function to capture the real port
+	customListen := func(network, address string) (net.Listener, error) {
+		ln, err := net.Listen(network, address)
+		if err != nil {
+			return nil, err
+		}
+		// Update config.Port with the real port after binding
+		if rm.config.Port == 0 {
+			if tcpAddr, ok := ln.Addr().(*net.TCPAddr); ok {
+				rm.config.Port = tcpAddr.Port
+				rm.logger.Info("RTSP server bound to dynamic port: %d", rm.config.Port)
+			}
+		}
+		return ln, nil
+	}
+
 	rm.server = &gortsplib.Server{
-		Handler:        rm,
-		RTSPAddress:    fmt.Sprintf("%s:%d", rm.config.Interface, rm.config.Port),
-		UDPRTPAddress:  fmt.Sprintf("%s:8000", rm.config.Interface),
-		UDPRTCPAddress: fmt.Sprintf("%s:8001", rm.config.Interface),
-		ReadTimeout:    5 * time.Second, // More generous timeouts
-		WriteTimeout:   5 * time.Second,
+		Handler:     rm,
+		RTSPAddress: fmt.Sprintf("%s:%d", rm.config.Interface, rm.config.Port),
+		// UDPRTPAddress:  fmt.Sprintf("%s:8000", rm.config.Interface),
+		// UDPRTCPAddress: fmt.Sprintf("%s:8001", rm.config.Interface),
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 5 * time.Second,
+		Listen:       customListen, // Inject custom Listen
 	}
 
 	// Start the server
@@ -109,9 +126,9 @@ func (rm *RTSPServerManager) Start() error {
 		if err != nil {
 			rm.logger.Error("RTSP server error: %v", err)
 			serverReady <- false
-		} else {
-			serverReady <- true
+			return
 		}
+		serverReady <- true
 	}()
 
 	// Wait for server to be ready with timeout

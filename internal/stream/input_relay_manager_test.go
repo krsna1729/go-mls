@@ -62,9 +62,16 @@ func TestInputRelayManager_StartInputRelay_fileURL(t *testing.T) {
 		t.Fatalf("failed to create test file: %v", err)
 	}
 
+	rtspServer := NewRTSPServerManagerWithConfig(log, "127.0.0.1", 0)
+	if err := rtspServer.Start(); err != nil {
+		t.Fatalf("failed to start RTSP server: %v", err)
+	}
+	defer rtspServer.Stop()
+	irm.SetRTSPServer(rtspServer)
+
 	inputName := "test"
 	inputURL := "file://" + relative
-	localURL := "rtsp://localhost:8554/relay/test"
+	localURL := rtspServer.GetRTSPURL("relay/test")
 	timeout := 1 * time.Second
 
 	// Start relay (should resolve file:// and not error)
@@ -107,7 +114,7 @@ func TestInputRelayManager_RefCounting(t *testing.T) {
 	irm := NewInputRelayManager(log, tempDir)
 
 	// Start a test RTSP server (required for ffmpeg relay output)
-	rtspServer := NewRTSPServerManager(log)
+	rtspServer := NewRTSPServerManagerWithConfig(log, "127.0.0.1", 0)
 	if err := rtspServer.Start(); err != nil {
 		t.Fatalf("failed to start RTSP server: %v", err)
 	}
@@ -115,7 +122,7 @@ func TestInputRelayManager_RefCounting(t *testing.T) {
 	irm.SetRTSPServer(rtspServer)
 
 	inputName := "test"
-	localURL := "rtsp://localhost:8554/relay/test"
+	localURL := rtspServer.GetRTSPURL("relay/test")
 	timeout := 1 * time.Second
 
 	// Start relay twice - should reuse existing relay
@@ -251,6 +258,13 @@ func TestInputRelayManager_ConcurrentAccess(t *testing.T) {
 	dir := t.TempDir()
 	irm := NewInputRelayManager(log, dir)
 
+	rtspServer := NewRTSPServerManagerWithConfig(log, "127.0.0.1", 0)
+	if err := rtspServer.Start(); err != nil {
+		t.Fatalf("failed to start RTSP server: %v", err)
+	}
+	defer rtspServer.Stop()
+	irm.SetRTSPServer(rtspServer)
+
 	num := 10
 	var wg sync.WaitGroup
 	inputNames := make([]string, num)
@@ -259,7 +273,7 @@ func TestInputRelayManager_ConcurrentAccess(t *testing.T) {
 	for i := 0; i < num; i++ {
 		inputNames[i] = "input" + string(rune('A'+i))
 		inputURLs[i] = "rtmp://example.com/live/" + string(rune('A'+i))
-		localURLs[i] = "rtsp://localhost:8554/relay/" + string(rune('A'+i))
+		localURLs[i] = rtspServer.GetRTSPURL("relay/" + string(rune('A'+i)))
 	}
 	timeout := 500 * time.Millisecond
 
@@ -305,7 +319,15 @@ func TestInputRelayManager_ForceStopInputRelay(t *testing.T) {
 	// Create a relay and force stop it
 	inputName := "test"
 	inputURL := "rtmp://example.com/live/test"
-	localURL := "rtsp://localhost:8554/relay/test"
+
+	rtspServer := NewRTSPServerManagerWithConfig(log, "127.0.0.1", 0)
+	if err := rtspServer.Start(); err != nil {
+		t.Fatalf("failed to start RTSP server: %v", err)
+	}
+	defer rtspServer.Stop()
+	irm.SetRTSPServer(rtspServer)
+
+	localURL := rtspServer.GetRTSPURL("relay/test")
 	timeout := 1 * time.Second
 	_, _ = irm.StartInputRelay(inputName, inputURL, localURL, timeout)
 	irm.ForceStopInputRelay(inputURL)
@@ -317,7 +339,15 @@ func TestInputRelayManager_GetInputNameForURL(t *testing.T) {
 	irm := NewInputRelayManager(log, tmpDir)
 	inputName := "test"
 	inputURL := "rtmp://example.com/live/test"
-	localURL := "rtsp://localhost:8554/relay/test"
+
+	rtspServer := NewRTSPServerManagerWithConfig(log, "127.0.0.1", 0)
+	if err := rtspServer.Start(); err != nil {
+		t.Fatalf("failed to start RTSP server: %v", err)
+	}
+	defer rtspServer.Stop()
+	irm.SetRTSPServer(rtspServer)
+
+	localURL := rtspServer.GetRTSPURL("relay/test")
 	timeout := 1 * time.Second
 	_, _ = irm.StartInputRelay(inputName, inputURL, localURL, timeout)
 	name := irm.GetInputNameForURL(inputURL)
@@ -358,7 +388,15 @@ func TestInputRelayManager_StopInputRelay_AlreadyStopped(t *testing.T) {
 	irm := NewInputRelayManager(log, tmpDir)
 	inputName := "test"
 	inputURL := "rtmp://example.com/live/test"
-	localURL := "rtsp://localhost:8554/relay/test"
+
+	rtspServer := NewRTSPServerManagerWithConfig(log, "127.0.0.1", 0)
+	if err := rtspServer.Start(); err != nil {
+		t.Fatalf("failed to start RTSP server: %v", err)
+	}
+	defer rtspServer.Stop()
+	irm.SetRTSPServer(rtspServer)
+
+	localURL := rtspServer.GetRTSPURL("relay/test")
 	timeout := 1 * time.Second
 	_, _ = irm.StartInputRelay(inputName, inputURL, localURL, timeout)
 	// Stop relay
@@ -373,7 +411,15 @@ func TestInputRelayManager_StartInputRelay_InvalidURL(t *testing.T) {
 	irm := NewInputRelayManager(log, tmpDir)
 	inputName := "test"
 	inputURL := "file://doesnotexist.mp4"
-	localURL := "rtsp://localhost:8554/relay/test"
+
+	rtspServer := NewRTSPServerManagerWithConfig(log, "127.0.0.1", 0)
+	if err := rtspServer.Start(); err != nil {
+		t.Fatalf("failed to start RTSP server: %v", err)
+	}
+	defer rtspServer.Stop()
+	irm.SetRTSPServer(rtspServer)
+
+	localURL := rtspServer.GetRTSPURL("relay/test")
 	timeout := 1 * time.Second
 	_, err := irm.StartInputRelay(inputName, inputURL, localURL, timeout)
 	if err == nil {
