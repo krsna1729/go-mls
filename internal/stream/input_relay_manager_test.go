@@ -62,7 +62,7 @@ func TestInputRelayManager_StartInputRelay_fileURL(t *testing.T) {
 		t.Fatalf("failed to create test file: %v", err)
 	}
 
-	rtspServer := NewRTSPServerManagerWithConfig(log, "127.0.0.1", 0)
+	rtspServer := NewRTSPServerManager(log, "127.0.0.1", 0)
 	if err := rtspServer.Start(); err != nil {
 		t.Fatalf("failed to start RTSP server: %v", err)
 	}
@@ -114,7 +114,7 @@ func TestInputRelayManager_RefCounting(t *testing.T) {
 	irm := NewInputRelayManager(log, tempDir)
 
 	// Start a test RTSP server (required for ffmpeg relay output)
-	rtspServer := NewRTSPServerManagerWithConfig(log, "127.0.0.1", 0)
+	rtspServer := NewRTSPServerManager(log, "127.0.0.1", 0)
 	if err := rtspServer.Start(); err != nil {
 		t.Fatalf("failed to start RTSP server: %v", err)
 	}
@@ -258,7 +258,7 @@ func TestInputRelayManager_ConcurrentAccess(t *testing.T) {
 	dir := t.TempDir()
 	irm := NewInputRelayManager(log, dir)
 
-	rtspServer := NewRTSPServerManagerWithConfig(log, "127.0.0.1", 0)
+	rtspServer := NewRTSPServerManager(log, "127.0.0.1", 0)
 	if err := rtspServer.Start(); err != nil {
 		t.Fatalf("failed to start RTSP server: %v", err)
 	}
@@ -320,7 +320,7 @@ func TestInputRelayManager_ForceStopInputRelay(t *testing.T) {
 	inputName := "test"
 	inputURL := "rtmp://example.com/live/test"
 
-	rtspServer := NewRTSPServerManagerWithConfig(log, "127.0.0.1", 0)
+	rtspServer := NewRTSPServerManager(log, "127.0.0.1", 0)
 	if err := rtspServer.Start(); err != nil {
 		t.Fatalf("failed to start RTSP server: %v", err)
 	}
@@ -340,7 +340,7 @@ func TestInputRelayManager_GetInputNameForURL(t *testing.T) {
 	inputName := "test"
 	inputURL := "rtmp://example.com/live/test"
 
-	rtspServer := NewRTSPServerManagerWithConfig(log, "127.0.0.1", 0)
+	rtspServer := NewRTSPServerManager(log, "127.0.0.1", 0)
 	if err := rtspServer.Start(); err != nil {
 		t.Fatalf("failed to start RTSP server: %v", err)
 	}
@@ -389,7 +389,7 @@ func TestInputRelayManager_StopInputRelay_AlreadyStopped(t *testing.T) {
 	inputName := "test"
 	inputURL := "rtmp://example.com/live/test"
 
-	rtspServer := NewRTSPServerManagerWithConfig(log, "127.0.0.1", 0)
+	rtspServer := NewRTSPServerManager(log, "127.0.0.1", 0)
 	if err := rtspServer.Start(); err != nil {
 		t.Fatalf("failed to start RTSP server: %v", err)
 	}
@@ -412,7 +412,7 @@ func TestInputRelayManager_StartInputRelay_InvalidURL(t *testing.T) {
 	inputName := "test"
 	inputURL := "file://doesnotexist.mp4"
 
-	rtspServer := NewRTSPServerManagerWithConfig(log, "127.0.0.1", 0)
+	rtspServer := NewRTSPServerManager(log, "127.0.0.1", 0)
 	if err := rtspServer.Start(); err != nil {
 		t.Fatalf("failed to start RTSP server: %v", err)
 	}

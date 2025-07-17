@@ -56,25 +56,11 @@ type RTSPServerManager struct {
 	streamReady  map[string]chan bool // Channel to signal when stream is ready for reading
 }
 
-// NewRTSPServerManager creates a new RTSP server manager
-func NewRTSPServerManager(l *logger.Logger) *RTSPServerManager {
-	ctx, cancel := context.WithCancel(context.Background())
-
-	return &RTSPServerManager{
-		config: RTSPServerConfig{
-			Port:      DefaultRTSPPort,
-			Interface: DefaultRTSPInterface,
-		},
-		logger:      l,
-		streams:     make(map[string]*RTSPStreamInfo),
-		streamReady: make(map[string]chan bool),
-		ctx:         ctx,
-		cancel:      cancel,
+// NewRTSPServerManager creates a new RTSP server manager with the given host and port.
+func NewRTSPServerManager(l *logger.Logger, host string, port int) *RTSPServerManager {
+	if host == "" {
+		host = DefaultRTSPInterface
 	}
-}
-
-// NewRTSPServerManagerWithConfig creates a new RTSP server manager with custom host/port
-func NewRTSPServerManagerWithConfig(l *logger.Logger, host string, port int) *RTSPServerManager {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &RTSPServerManager{
 		config: RTSPServerConfig{

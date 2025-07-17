@@ -406,7 +406,7 @@ func main() {
 	logger.Info("Using recordings directory: %s", absDir)
 
 	// Initialize RTSP server with configuration
-	rtspServer := stream.NewRTSPServerManagerWithConfig(logger, cfg.Relay.RTSPServer.Host, cfg.Relay.RTSPServer.Port)
+	rtspServer := stream.NewRTSPServerManager(logger, cfg.Relay.RTSPServer.Host, cfg.Relay.RTSPServer.Port)
 	if err := rtspServer.Start(); err != nil {
 		logger.Fatal("Failed to start RTSP server: %v", err)
 	}

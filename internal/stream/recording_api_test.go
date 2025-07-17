@@ -19,7 +19,7 @@ func TestApiStartRecording(t *testing.T) {
 	log := logger.NewLogger()
 
 	// Start RTSP server (production-like setup)
-	rtspServer := NewRTSPServerManagerWithConfig(log, "127.0.0.1", 0)
+	rtspServer := NewRTSPServerManager(log, "127.0.0.1", 0)
 	if err := rtspServer.Start(); err != nil {
 		t.Fatalf("failed to start RTSP server: %v", err)
 	}
