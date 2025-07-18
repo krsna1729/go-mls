@@ -694,24 +694,41 @@ func (m *HLSManager) cleanupLoop(ctx context.Context) {
 			for name, sess := range m.sessions {
 				// --- Remove stale viewers ---
 				// Any viewer with no heartbeat for more than the configured timeout is removed.
+				// Collect stale viewer IDs first to avoid concurrent map iteration and modification
+				var staleViewers []string
+				sess.Mu.RLock()
 				for viewerID, lastHeartbeat := range sess.ViewerIDs {
 					if now.Sub(lastHeartbeat) > m.getViewerHeartbeatTimeout() {
-						if sess.ViewerManager != nil {
-							sess.ViewerManager.RemoveViewer(viewerID)
-						} else {
-							m.logger.Warn("No ViewerManager set for session %s when removing viewer %s", name, viewerID)
-						}
-						m.logger.Info("Removed stale viewer %s from inputName=%s", viewerID, name)
+						staleViewers = append(staleViewers, viewerID)
 					}
 				}
+				lastAccess := sess.LastAccess
+				sess.Mu.RUnlock()
+
+				// Remove stale viewers using the proper API
+				for _, viewerID := range staleViewers {
+					if sess.ViewerManager != nil {
+						if err := sess.ViewerManager.RemoveViewer(viewerID); err != nil {
+							m.logger.Warn("Failed to remove stale viewer %s from inputName=%s: %v", viewerID, name, err)
+						} else {
+							m.logger.Info("Removed stale viewer %s from inputName=%s", viewerID, name)
+						}
+					}
+				}
+
+				// Get the current number of viewers after cleanup
+				sess.Mu.RLock()
+				numViewers := len(sess.ViewerIDs)
+				sess.Mu.RUnlock()
+
 				// --- Decide if session should be cleaned up ---
 				// If no viewers, session is cleaned up after sessionTimeout.
 				// If viewers remain, session is cleaned up after 3x sessionTimeout (zombie session protection).
 				shouldCleanup := false
-				if len(sess.ViewerIDs) == 0 {
-					shouldCleanup = now.Sub(sess.LastAccess) > m.sessionTimeout
+				if numViewers == 0 {
+					shouldCleanup = now.Sub(lastAccess) > m.sessionTimeout
 				} else {
-					shouldCleanup = now.Sub(sess.LastAccess) > (m.sessionTimeout * 3)
+					shouldCleanup = now.Sub(lastAccess) > (m.sessionTimeout * 3)
 				}
 				if shouldCleanup {
 					// --- Cleanup logic: stop relay, stop ffmpeg, remove files, delete session ---
