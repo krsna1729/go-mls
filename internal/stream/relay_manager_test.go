@@ -4,6 +4,7 @@ import (
 	"context"
 	"go-mls/internal/logger"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -764,4 +765,215 @@ func TestStopInputRelayForConsumer_Basic(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Errorf("input relay not stopped, got status %v", rl.InputRelays.Relays[inputURL].Status)
+}
+
+// Additional tests to improve coverage
+
+func TestDeleteInput_WithOutputDeletionError(t *testing.T) {
+	t.Parallel()
+	rl := newTestRelayManager()
+	inputName := "testInput"
+	inputURL := "rtsp://localhost:8554/test"
+	outputURL := "rtmp://localhost/live/test"
+
+	// Register input config
+	rl.RegisterInputConfig(inputName, inputURL)
+
+	// Simulate input relay and output relay
+	rl.InputRelays.Relays[inputURL] = &InputRelay{
+		InputURL:  inputURL,
+		InputName: inputName,
+		LocalURL:  "local",
+		Status:    InputRunning,
+	}
+	rl.OutputRelays.Relays[outputURL] = &OutputRelay{
+		OutputURL:  outputURL,
+		OutputName: "testOutput",
+		InputURL:   inputURL,
+		LocalURL:   "local",
+		Status:     OutputRunning,
+	}
+
+	// Delete input - should handle output deletion error gracefully
+	err := rl.DeleteInput(inputURL, inputName)
+	if err != nil {
+		t.Errorf("expected no error, got %v", err)
+	}
+
+	// Input should still be deleted even if output deletion had issues
+	if _, ok := rl.InputRelays.Relays[inputURL]; ok {
+		t.Errorf("input relay not removed after DeleteInput")
+	}
+}
+
+func TestStatusV2_WithProcessInfo(t *testing.T) {
+	t.Parallel()
+	rl := newTestRelayManager()
+
+	// Simulate input relay with process info
+	inURL := "rtsp://localhost:8554/test"
+	rl.InputRelays.Relays[inURL] = &InputRelay{
+		InputURL:  inURL,
+		InputName: "in",
+		LocalURL:  "local",
+		Status:    InputRunning,
+		LastError: "test error",
+		Proc: &FFmpegProcess{
+			PID: 12345,
+		},
+	}
+
+	// Simulate output relay with process info
+	outURL := "rtmp://localhost/live/test"
+	rl.OutputRelays.Relays[outURL] = &OutputRelay{
+		OutputURL:  outURL,
+		OutputName: "out",
+		InputURL:   inURL,
+		LocalURL:   "local",
+		Status:     OutputRunning,
+		LastError:  "output error",
+		Proc: &FFmpegProcess{
+			PID: 12346,
+		},
+	}
+
+	status := rl.StatusV2()
+
+	// Check that we have the relay
+	if len(status.Relays) != 1 {
+		t.Errorf("expected 1 relay, got %d", len(status.Relays))
+	}
+
+	relay := status.Relays[0]
+	if relay.Input.LastError != "test error" {
+		t.Errorf("expected input error 'test error', got %s", relay.Input.LastError)
+	}
+
+	if len(relay.Outputs) != 1 {
+		t.Errorf("expected 1 output, got %d", len(relay.Outputs))
+	}
+
+	if relay.Outputs[0].LastError != "output error" {
+		t.Errorf("expected output error 'output error', got %s", relay.Outputs[0].LastError)
+	}
+}
+
+func TestStatusV2_WithNilProcess(t *testing.T) {
+	t.Parallel()
+	rl := newTestRelayManager()
+
+	// Simulate input relay with nil process
+	inURL := "rtsp://localhost:8554/test"
+	rl.InputRelays.Relays[inURL] = &InputRelay{
+		InputURL:  inURL,
+		InputName: "in",
+		LocalURL:  "local",
+		Status:    InputError,
+		Proc:      nil, // This should not cause panic
+	}
+
+	// Simulate output relay with nil process
+	outURL := "rtmp://localhost/live/test"
+	rl.OutputRelays.Relays[outURL] = &OutputRelay{
+		OutputURL:  outURL,
+		OutputName: "out",
+		InputURL:   inURL,
+		LocalURL:   "local",
+		Status:     OutputError,
+		Proc:       nil, // This should not cause panic
+	}
+
+	status := rl.StatusV2()
+
+	// Should not panic and should return valid status
+	if len(status.Relays) != 1 {
+		t.Errorf("expected 1 relay, got %d", len(status.Relays))
+	}
+
+	relay := status.Relays[0]
+	if relay.Input.Status != "Error" {
+		t.Errorf("expected input status 'Error', got %s", relay.Input.Status)
+	}
+
+	if len(relay.Outputs) != 1 {
+		t.Errorf("expected 1 output, got %d", len(relay.Outputs))
+	}
+
+	if relay.Outputs[0].Status != "Error" {
+		t.Errorf("expected output status 'Error', got %s", relay.Outputs[0].Status)
+	}
+}
+
+func TestStatusV2_WithInvalidProcess(t *testing.T) {
+	t.Parallel()
+	rl := newTestRelayManager()
+
+	// Simulate input relay with process that has invalid PID
+	inURL := "rtsp://localhost:8554/test"
+	mockCmd := &exec.Cmd{}
+	rl.InputRelays.Relays[inURL] = &InputRelay{
+		InputURL:  inURL,
+		InputName: "in",
+		LocalURL:  "local",
+		Status:    InputRunning,
+		Proc: &FFmpegProcess{
+			PID: -1, // Invalid PID
+			Cmd: mockCmd,
+		},
+	}
+
+	// Simulate output relay with process that has zero PID
+	outURL := "rtmp://localhost/live/test"
+	rl.OutputRelays.Relays[outURL] = &OutputRelay{
+		OutputURL:  outURL,
+		OutputName: "out",
+		InputURL:   inURL,
+		LocalURL:   "local",
+		Status:     OutputRunning,
+		Proc: &FFmpegProcess{
+			PID: 0, // Zero PID should be handled
+		},
+	}
+
+	status := rl.StatusV2()
+
+	// Should not panic with invalid process info
+	if len(status.Relays) != 1 {
+		t.Errorf("expected 1 relay, got %d", len(status.Relays))
+	}
+}
+
+func TestStopInputRelayForConsumer_InputNotFound(t *testing.T) {
+	t.Parallel()
+	rl := newTestRelayManager()
+
+	// Try to stop a non-existent input relay
+	rl.StopInputRelayForConsumer("nonexistent")
+
+	// Should not panic or error - this tests the warning path
+	// The test passes if no panic occurs
+}
+
+func TestStopInputRelayForConsumer_Success(t *testing.T) {
+	t.Parallel()
+	rl := newTestRelayManager()
+	inputName := "testInput"
+	inputURL := "rtsp://localhost:8554/test"
+
+	// Register input config
+	rl.RegisterInputConfig(inputName, inputURL)
+
+	// Simulate input relay
+	rl.InputRelays.Relays[inputURL] = &InputRelay{
+		InputURL:  inputURL,
+		InputName: inputName,
+		LocalURL:  "local",
+		Status:    InputRunning,
+	}
+
+	// Stop input relay for consumer
+	rl.StopInputRelayForConsumer(inputName)
+
+	// Should call through to StopInputRelay
+	// This tests the success path where input config exists
 }
