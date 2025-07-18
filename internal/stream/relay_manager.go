@@ -764,7 +764,7 @@ func (rm *RelayManager) StartInputRelayForConsumer(inputName string) (string, er
 	// Wait for the RTSP stream to become ready (robust, with cleanup)
 	if rm.rtspServer != nil {
 		rm.Logger.Info("Waiting for RTSP stream to become ready: %s", relayPath)
-		err = rm.rtspServer.WaitForStreamReady(relayPath, 30*time.Second)
+		err = rm.rtspServer.WaitForStreamReady(relayPath, rm.inputTimeout)
 		if err != nil {
 			rm.Logger.Error("Failed to wait for RTSP stream to become ready for %s: %v", inputName, err)
 			if !rm.rtspServer.IsStreamReady(relayPath) {
