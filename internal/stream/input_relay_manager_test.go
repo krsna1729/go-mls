@@ -1,7 +1,6 @@
 package stream
 
 import (
-	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -52,15 +51,10 @@ func TestInputRelayManager_resolveInputURL(t *testing.T) {
 
 func TestInputRelayManager_StartInputRelay_fileURL(t *testing.T) {
 	t.Parallel()
-	tmpDir := t.TempDir()
+	dir, _ := copyTestSrcToTempDir(t)
+	chdirTo(t, dir)
 	log := logger.NewLogger()
-	irm := NewInputRelayManager(log, tmpDir)
-
-	relative := "testsrc.mp4"
-	filePath := filepath.Join(tmpDir, relative)
-	if err := os.WriteFile(filePath, []byte("dummy"), 0644); err != nil {
-		t.Fatalf("failed to create test file: %v", err)
-	}
+	irm := NewInputRelayManager(log, dir)
 
 	rtspServer := NewRTSPServerManager(log, "127.0.0.1", 0)
 	if err := rtspServer.Start(); err != nil {
@@ -70,7 +64,7 @@ func TestInputRelayManager_StartInputRelay_fileURL(t *testing.T) {
 	irm.SetRTSPServer(rtspServer)
 
 	inputName := "test"
-	inputURL := "file://" + relative
+	inputURL := "file://testsrc.mp4"
 	localURL := rtspServer.GetRTSPURL("relay/test")
 	timeout := 1 * time.Second
 
@@ -86,32 +80,13 @@ func TestInputRelayManager_StartInputRelay_fileURL(t *testing.T) {
 
 func TestInputRelayManager_RefCounting(t *testing.T) {
 	t.Parallel()
-
-	// Step 1: Create a temp directory for this test
-	tempDir := t.TempDir()
-
-	// Step 2: Copy testdata/testsrc.mp4 into the temp directory
-	src := filepath.Join("..", "..", "testdata", "testsrc.mp4")
-	dst := filepath.Join(tempDir, "testsrc.mp4")
-	srcFile, err := os.Open(src)
-	if err != nil {
-		t.Fatalf("failed to open source file: %v", err)
-	}
-	defer srcFile.Close()
-	dstFile, err := os.Create(dst)
-	if err != nil {
-		t.Fatalf("failed to create destination file: %v", err)
-	}
-	defer dstFile.Close()
-	if _, err := io.Copy(dstFile, srcFile); err != nil {
-		t.Fatalf("failed to copy file: %v", err)
-	}
-
-	// Step 3: Construct a file:// URL for the copied file
+	// Use helpers for file-based input
+	dir, _ := copyTestSrcToTempDir(t)
+	chdirTo(t, dir)
 	inputURL := "file://testsrc.mp4"
 
 	log := logger.NewLogger()
-	irm := NewInputRelayManager(log, tempDir)
+	irm := NewInputRelayManager(log, dir)
 
 	// Start a test RTSP server (required for ffmpeg relay output)
 	rtspServer := NewRTSPServerManager(log, "127.0.0.1", 0)

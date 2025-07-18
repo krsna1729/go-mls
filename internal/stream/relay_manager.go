@@ -621,6 +621,8 @@ func (rm *RelayManager) StopAllRelays() {
 		} else {
 			rm.Logger.Debug("RelayManager: Skipping output relay %s (status: %s)",
 				output.OutputName, outputRelayStatusString(output.Status))
+			// Explicitly set status to OutputStopped for skipped relays
+			output.Status = OutputStopped
 		}
 		output.mu.Unlock()
 	}
@@ -675,6 +677,15 @@ func (rm *RelayManager) StopAllRelays() {
 	} else {
 		rm.Logger.Info("RelayManager: All input relays properly stopped via reference counting")
 	}
+
+	// Explicitly set all input relay statuses to InputStopped
+	rm.InputRelays.mu.Lock()
+	for _, inputRelay := range rm.InputRelays.Relays {
+		inputRelay.mu.Lock()
+		inputRelay.Status = InputStopped
+		inputRelay.mu.Unlock()
+	}
+	rm.InputRelays.mu.Unlock()
 
 	rm.Logger.Info("RelayManager: All relays stopped")
 }
@@ -751,6 +762,10 @@ func (rm *RelayManager) StartInputRelayForConsumer(inputName string) (string, er
 		return "", fmt.Errorf("input configuration not found for: %s", inputName)
 	}
 
+	if rm.rtspServer == nil {
+		return "", fmt.Errorf("RTSP server manager is not initialized")
+	}
+
 	// Compose local RTSP relay path and URL using the correct dynamic port
 	relayPath := fmt.Sprintf("relay/%s", inputName)
 	localRelayURL := rm.rtspServer.GetRTSPURL(relayPath)
@@ -762,17 +777,15 @@ func (rm *RelayManager) StartInputRelayForConsumer(inputName string) (string, er
 	}
 
 	// Wait for the RTSP stream to become ready (robust, with cleanup)
-	if rm.rtspServer != nil {
-		rm.Logger.Info("Waiting for RTSP stream to become ready: %s", relayPath)
-		err = rm.rtspServer.WaitForStreamReady(relayPath, rm.inputTimeout)
-		if err != nil {
-			rm.Logger.Error("Failed to wait for RTSP stream to become ready for %s: %v", inputName, err)
-			if !rm.rtspServer.IsStreamReady(relayPath) {
-				rm.InputRelays.StopInputRelay(inputURL)
-				return "", fmt.Errorf("RTSP stream not ready: %v", err)
-			}
-			rm.Logger.Warn("Stream %s appears ready but wait failed, continuing anyway", relayPath)
+	rm.Logger.Info("Waiting for RTSP stream to become ready: %s", relayPath)
+	err = rm.rtspServer.WaitForStreamReady(relayPath, rm.inputTimeout)
+	if err != nil {
+		rm.Logger.Error("Failed to wait for RTSP stream to become ready for %s: %v", inputName, err)
+		if !rm.rtspServer.IsStreamReady(relayPath) {
+			rm.InputRelays.StopInputRelay(inputURL)
+			return "", fmt.Errorf("RTSP stream not ready: %v", err)
 		}
+		rm.Logger.Warn("Stream %s appears ready but wait failed, continuing anyway", relayPath)
 	}
 
 	return localURL, nil
