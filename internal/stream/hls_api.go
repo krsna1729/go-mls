@@ -104,11 +104,23 @@ func ApiHLSViewerHeartbeat(hlsMgr *HLSManager) http.HandlerFunc {
 		}
 
 		if req.InputName == "" || req.ViewerID == "" {
+			hlsMgr.logger.WarnRateLimited("HLS heartbeat: missing input name or viewer ID (input=%s, viewerID=%s)", req.InputName, req.ViewerID)
 			httputil.WriteError(w, http.StatusBadRequest, "Input name and viewer ID are required")
 			return
 		}
 
-		hlsMgr.UpdateViewerHeartbeat(req.InputName, req.ViewerID)
+		err := hlsMgr.UpdateViewerHeartbeat(req.InputName, req.ViewerID)
+		if err != nil {
+			if err.Error() == "session not found" {
+				hlsMgr.logger.WarnRateLimited("HLS heartbeat: session not found (input=%s, viewerID=%s)", req.InputName, req.ViewerID)
+				httputil.WriteError(w, http.StatusGone, "Viewer session expired or input deleted")
+				return
+			}
+			// Other errors (e.g., viewerID not found)
+			hlsMgr.logger.WarnRateLimited("HLS heartbeat: %v (input=%s, viewerID=%s)", err, req.InputName, req.ViewerID)
+			httputil.WriteError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	}
 }

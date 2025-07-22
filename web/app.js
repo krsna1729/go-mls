@@ -877,6 +877,14 @@ document.addEventListener('DOMContentLoaded', function () {
                 })
             })
             .then(resp => {
+                if (resp.status === 410) {
+                    // Session expired or input deleted, stop polling immediately
+                    clearInterval(heartbeatInterval);
+                    heartbeatInterval = null;
+                    closeHLSModal();
+                    alert('Stream ended or deleted.');
+                    return;
+                }
                 if (!resp.ok) throw new Error('Heartbeat not ok');
                 heartbeatErrorCount = 0; // Reset on success
             })

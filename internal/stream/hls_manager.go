@@ -600,6 +600,13 @@ func (m *HLSManager) serveHLSGetSession(w http.ResponseWriter, inputName, file s
 	sess, exists := m.sessions[inputName]
 	m.mu.Unlock()
 	if !exists {
+		if file == "index.m3u8" {
+			m.logger.Info("HLSManager: input %s not found, serving dummy playlist for file %s", inputName, file)
+			w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("#EXTM3U\n#EXT-X-ENDLIST\n"))
+			return nil, true
+		}
 		m.logger.WarnRateLimited("HLSManager: input %s not found for file %s", inputName, file)
 		http.Error(w, "HLS session not found", http.StatusNotFound)
 		return nil, true
@@ -746,32 +753,73 @@ func (m *HLSManager) cleanupLoop(ctx context.Context) {
 	}
 }
 
-// WriteEndlistToAll writes a final playlist with #EXT-X-ENDLIST for all active HLS sessions.
+// WriteEndlist writes #EXT-X-ENDLIST to the playlist for a single inputName.
+func (m *HLSManager) WriteEndlist(inputName string) {
+	m.mu.Lock()
+	sess, exists := m.sessions[inputName]
+	m.mu.Unlock()
+	if !exists || sess == nil {
+		m.logger.Warn("WriteEndlist: session not found for inputName=%s", inputName)
+		return
+	}
+	playlistPath := filepath.Join(sess.Dir, "index.m3u8")
+	var lines []string
+	if data, err := os.ReadFile(playlistPath); err == nil {
+		lines = strings.Split(string(data), "\n")
+		var filtered []string
+		for _, l := range lines {
+			if !strings.HasPrefix(l, "#EXT-X-ENDLIST") {
+				filtered = append(filtered, l)
+			}
+		}
+		lines = filtered
+	}
+	lines = append(lines, "#EXT-X-ENDLIST")
+	final := strings.Join(lines, "\n")
+	if err := os.WriteFile(playlistPath, []byte(final), 0644); err == nil {
+		m.logger.Info("Wrote #EXT-X-ENDLIST to playlist for inputName=%s", inputName)
+	}
+}
+
+// WriteEndlistToAll writes #EXT-X-ENDLIST for all active HLS sessions.
 func (m *HLSManager) WriteEndlistToAll() {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	for name, sess := range m.sessions {
-		playlistPath := filepath.Join(sess.Dir, "index.m3u8")
-		// Read the current playlist (if exists)
-		var lines []string
-		if data, err := os.ReadFile(playlistPath); err == nil {
-			lines = strings.Split(string(data), "\n")
-			// Remove any existing #EXT-X-ENDLIST
-			var filtered []string
-			for _, l := range lines {
-				if !strings.HasPrefix(l, "#EXT-X-ENDLIST") {
-					filtered = append(filtered, l)
-				}
-			}
-			lines = filtered
-		}
-		// Append #EXT-X-ENDLIST
-		lines = append(lines, "#EXT-X-ENDLIST")
-		final := strings.Join(lines, "\n")
-		if err := os.WriteFile(playlistPath, []byte(final), 0644); err == nil {
-			m.logger.Info("Wrote #EXT-X-ENDLIST to playlist for inputName=%s", name)
-		}
+	names := make([]string, 0, len(m.sessions))
+	for name := range m.sessions {
+		names = append(names, name)
 	}
+	m.mu.Unlock()
+	for _, name := range names {
+		m.WriteEndlist(name)
+	}
+}
+
+// DeleteSession immediately stops and removes the HLS session for the given inputName, but waits before deleting dir.
+func (m *HLSManager) DeleteSession(inputName string) {
+	m.mu.Lock()
+	sess, exists := m.sessions[inputName]
+	if !exists {
+		m.mu.Unlock()
+		m.logger.Warn("HLSManager: DeleteSession called for non-existent inputName=%s", inputName)
+		return
+	}
+	if sess.Proc != nil {
+		sess.Proc.Stop(m.getFFmpegStopTimeout())
+	}
+	m.mu.Unlock()
+	m.WriteEndlist(inputName)
+	// Remove session from map immediately so new viewers can't join
+	m.mu.Lock()
+	delete(m.sessions, inputName)
+	m.mu.Unlock()
+	m.logger.Info("HLSManager: Marked HLS session for inputName=%s as deleted, will remove dir after delay", inputName)
+	// Wait for clients to fetch endlist, then delete dir in background
+	const endlistWait = 20 * time.Second // tune as needed
+	go func(dir string, name string) {
+		time.Sleep(endlistWait)
+		os.RemoveAll(dir)
+		m.logger.Info("HLSManager: Deleted HLS session directory for inputName=%s after endlist wait", name)
+	}(sess.Dir, inputName)
 }
 
 // Helper methods to get config-driven durations/intervals (with sane defaults)

@@ -25,6 +25,10 @@ type RelayManager struct {
 	rtspServer   *RTSPServerManager // RTSP server for local relays
 	recDir       string             // Directory for playing recordings from
 
+	// Add references for HLSManager and RecordingManager
+	HLSManager       *HLSManager
+	RecordingManager *RecordingManager
+
 	// Configuration registry for persistent input mappings
 	inputConfigs map[string]*InputConfig // inputName -> InputConfig
 	configMu     sync.RWMutex            // Protects inputConfigs
@@ -251,11 +255,24 @@ func (rm *RelayManager) DeleteInput(inputURL, inputName string) error {
 		}
 	}
 
+	// Stop any active recordings for this input
+	if rm.RecordingManager != nil {
+		err := rm.RecordingManager.StopRecording(inputName, inputURL)
+		if err != nil {
+			rm.Logger.Warn("Failed to stop recording for input %s: %v", inputName, err)
+		}
+	}
+
 	// Delete the input relay
 	err := rm.InputRelays.DeleteInput(inputURL)
 	if err != nil {
 		rm.Logger.Error("Failed to delete input relay %s: %v", inputURL, err)
 		return err
+	}
+
+	// Delete HLS session for this input
+	if rm.HLSManager != nil {
+		rm.HLSManager.DeleteSession(inputName)
 	}
 
 	rm.Logger.Info("Deleted input relay and all associated outputs: %s [%s]", inputName, inputURL)
@@ -807,3 +824,13 @@ var _ RelayManagerAPI = (*RelayManager)(nil)
 
 // NewRelayManagerWithFFmpegLoglevel creates a relay manager with configurable ffmpeg loglevel
 // (removed, use NewRelayManager with ffmpegLogLevel argument)
+
+// SetHLSManager sets the HLSManager reference for relay manager
+func (rm *RelayManager) SetHLSManager(hlsMgr *HLSManager) {
+	rm.HLSManager = hlsMgr
+}
+
+// SetRecordingManager sets the RecordingManager reference for relay manager
+func (rm *RelayManager) SetRecordingManager(recMgr *RecordingManager) {
+	rm.RecordingManager = recMgr
+}

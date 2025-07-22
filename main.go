@@ -86,6 +86,10 @@ func main() {
 		FFmpegStopTimeout:      time.Duration(cfg.HLS.FFmpegStopTimeout),
 		PlaylistBaseDir:        cfg.HLS.PlaylistBaseDir,
 	}, logger)
+
+	// Wire up references for proper integration
+	relayMgr.SetHLSManager(hlsMgr)
+	relayMgr.SetRecordingManager(recordingMgr)
 	hlsMgr.SetRelayManager(relayMgr)
 
 	// Use embedded static assets
