@@ -124,13 +124,15 @@ func TestExportImportConfig_RoundTrip(t *testing.T) {
 func TestExportConfig_AndImportConfig_RoundTripWithRelays(t *testing.T) {
 	t.Parallel()
 	// Setup file-based input using helpers
-	rl := newTestRelayManager()
 	inputName := "testInput"
 	outputName := "testOutput"
 	dir, _ := copyTestSrcToTempDir(t)
 	chdirTo(t, dir)
 	inputURL := "file://testsrc.mp4"
 	outputURL := "rtmp://localhost/live/test"
+	// Use the test's temp directory for the recordings directory
+	log := logger.NewLoggerWithConfig("debug", "")
+	rl := NewRelayManager(log, dir, "error")
 	// Register input config and relays
 	rl.RegisterInputConfig(inputName, inputURL)
 	rl.InputRelays.Relays[inputURL] = &InputRelay{
@@ -157,7 +159,6 @@ func TestExportConfig_AndImportConfig_RoundTripWithRelays(t *testing.T) {
 	rl.inputConfigs = make(map[string]*InputConfig)
 	// Ensure testsrc.mp4 is present before import (already present in dir)
 	// Start RTSP server before import
-	log := logger.NewLoggerWithConfig("debug", "")
 	rtspServer := NewRTSPServerManager(log, "127.0.0.1", 0)
 	if err := rtspServer.Start(); err != nil {
 		t.Fatalf("failed to start RTSP server: %v", err)
