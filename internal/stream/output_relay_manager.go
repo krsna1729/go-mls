@@ -88,7 +88,7 @@ func (orm *OutputRelayManager) SetFailureCallback(callback func(inputURL, output
 
 // StartOutputRelay starts an output ffmpeg process from local RTSP to output URL
 func (orm *OutputRelayManager) StartOutputRelay(config OutputRelayConfig) error {
-	orm.Logger.Info("OutputRelayManager: StartOutputRelay: inputURL=%s, localURL=%s, outputURL=%s", config.InputURL, config.LocalURL, config.OutputURL)
+	orm.Logger.Info("Starting output relay", "inputURL", config.InputURL, "localURL", config.LocalURL, "outputURL", config.OutputURL)
 	// Validate config
 	if config.OutputURL == "" {
 		return fmt.Errorf("OutputURL cannot be empty")
@@ -99,7 +99,7 @@ func (orm *OutputRelayManager) StartOutputRelay(config OutputRelayConfig) error 
 	orm.mu.Lock()
 	relay, exists := orm.Relays[config.OutputURL]
 	if exists && relay.Status == OutputRunning {
-		orm.Logger.Warn("Output relay already running for %s -> %s", config.LocalURL, config.OutputURL)
+		orm.Logger.Warn("Output relay already running", "localURL", config.LocalURL, "outputURL", config.OutputURL)
 		orm.mu.Unlock()
 		return fmt.Errorf("output relay already running for %s", config.OutputURL)
 	}
@@ -114,7 +114,7 @@ func (orm *OutputRelayManager) StartOutputRelay(config OutputRelayConfig) error 
 	}
 	if err != nil {
 		orm.mu.Unlock()
-		orm.Logger.Error("Failed to create output relay ffmpeg process: %v", err)
+		orm.Logger.Error("Failed to create output relay ffmpeg process", "err", err)
 		return err
 	}
 	relay = &OutputRelay{
@@ -142,21 +142,21 @@ func (orm *OutputRelayManager) StartOutputRelay(config OutputRelayConfig) error 
 		relay.Proc = nil
 		relay.mu.Unlock()
 		orm.mu.Unlock()
-		orm.Logger.Error("Failed to start output relay ffmpeg: %v", err)
+		orm.Logger.Error("Failed to start output relay ffmpeg", "err", err)
 		return err
 	}
-	orm.Logger.Info("OutputRelayManager: Started ffmpeg process for %s -> %s", config.LocalURL, config.OutputURL)
+	orm.Logger.Info("Started ffmpeg process", "inputURL", config.InputURL, "localURL", config.LocalURL, "outputURL", config.OutputURL)
 	go orm.RunOutputRelay(relay)
 	return nil
 }
 
 // StopOutputRelay stops an output ffmpeg process
 func (orm *OutputRelayManager) StopOutputRelay(outputURL string) {
-	orm.Logger.Info("OutputRelayManager: StopOutputRelay: outputURL=%s", outputURL)
+	orm.Logger.Info("Stopping output relay", "outputURL", outputURL)
 	orm.mu.Lock()
 	relay, exists := orm.Relays[outputURL]
 	if !exists {
-		orm.Logger.Warn("OutputRelayManager: relay for %s not found", outputURL)
+		orm.Logger.Warn("relay not found", "outputURL", outputURL)
 		orm.mu.Unlock()
 		return
 	}
@@ -174,27 +174,27 @@ func (orm *OutputRelayManager) StopOutputRelay(outputURL string) {
 	if proc != nil {
 		err := proc.Stop(2 * time.Second)
 		if err != nil {
-			orm.Logger.Warn("OutputRelayManager: Error stopping ffmpeg process for %s: %v", outputURL, err)
+			orm.Logger.Warn("Error stopping ffmpeg process", "outputURL", outputURL, "err", err)
 		}
 	}
 	// Only call failure callback if this is NOT a graceful shutdown
 	if !shuttingDown && orm.FailureCallback != nil {
-		orm.Logger.Debug("OutputRelayManager: Calling failure callback for failed output inputURL=%s, outputURL=%s", inputURL, outputURL)
+		orm.Logger.Debug("Calling failure callback for failed output", "inputURL", inputURL, "outputURL", outputURL)
 		orm.FailureCallback(inputURL, outputURL)
 	} else if shuttingDown {
-		orm.Logger.Debug("OutputRelayManager: Graceful shutdown for %s, not calling failure callback", outputURL)
+		orm.Logger.Debug("Graceful shutdown, not calling failure callback", "outputURL", outputURL)
 	}
 }
 
 // RunOutputRelay runs and monitors the output relay process
 func (orm *OutputRelayManager) RunOutputRelay(relay *OutputRelay) {
-	orm.Logger.Info("OutputRelayManager: RunOutputRelay: running ffmpeg for %s -> %s", relay.LocalURL, relay.OutputURL)
+	orm.Logger.Info("Running output relay", "localURL", relay.LocalURL, "outputURL", relay.OutputURL)
 	var proc ffmpegProcess
 	relay.mu.Lock()
 	proc = relay.Proc
 	relay.mu.Unlock()
 	if proc == nil {
-		orm.Logger.Error("OutputRelayManager: RunOutputRelay: FFmpegProcess is nil for %s", relay.OutputURL)
+		orm.Logger.Error("FFmpegProcess is nil", "outputURL", relay.OutputURL)
 		return
 	}
 	err := proc.Wait()
@@ -221,33 +221,33 @@ func (orm *OutputRelayManager) RunOutputRelay(relay *OutputRelay) {
 
 	if status == OutputStopped {
 		if err != nil {
-			orm.Logger.Info("Output relay for %s stopped (signal: %v)", outputURL, err)
+			orm.Logger.Info("Output relay stopped (signal)", "outputURL", outputURL, "signal", err)
 		} else {
-			orm.Logger.Info("Output relay for %s stopped cleanly", outputURL)
+			orm.Logger.Info("Output relay stopped cleanly", "outputURL", outputURL)
 		}
 		return
 	}
 	if err != nil {
-		orm.Logger.Error("Output relay process exited with error for %s: %v", outputURL, err)
+		orm.Logger.Error("Output relay process exited with error", "outputURL", outputURL, "err", err)
 		if !shuttingDown && orm.FailureCallback != nil {
-			orm.Logger.Debug("OutputRelayManager: Calling failure callback for inputURL=%s, outputURL=%s", inputURL, outputURL)
+			orm.Logger.Debug("Calling failure callback", "inputURL", inputURL, "outputURL", outputURL)
 			orm.FailureCallback(inputURL, outputURL)
 			return
 		} else {
-			orm.Logger.Debug("Output relay exited with error during graceful shutdown for %s, skipping failure callback", outputURL)
+			orm.Logger.Debug("Output relay exited with error during graceful shutdown, skipping failure callback", "outputURL", outputURL)
 		}
 	} else {
-		orm.Logger.Info("Output relay process for %s completed successfully", outputURL)
+		orm.Logger.Info("Output relay process completed successfully", "outputURL", outputURL)
 	}
 }
 
 // DeleteOutput completely removes an output relay
 func (orm *OutputRelayManager) DeleteOutput(outputURL string) error {
-	orm.Logger.Info("OutputRelayManager: DeleteOutput: outputURL=%s", outputURL)
+	orm.Logger.Info("Deleting output", "outputURL", outputURL)
 	orm.mu.Lock()
 	relay, exists := orm.Relays[outputURL]
 	if !exists {
-		orm.Logger.Warn("OutputRelayManager: relay for %s not found", outputURL)
+		orm.Logger.Warn("relay not found", "outputURL", outputURL)
 		orm.mu.Unlock()
 		return fmt.Errorf("output relay not found: %s", outputURL)
 	}
@@ -266,15 +266,15 @@ func (orm *OutputRelayManager) DeleteOutput(outputURL string) error {
 	if proc != nil {
 		err := proc.Stop(1 * time.Second)
 		if err != nil {
-			orm.Logger.Warn("OutputRelayManager: Error deleting ffmpeg process for %s: %v", outputURL, err)
+			orm.Logger.Warn("Error deleting ffmpeg process", "outputURL", outputURL, "err", err)
 		}
 	}
 
 	// Always call failure callback for deleted outputs to decrement input relay refcount
 	if orm.FailureCallback != nil {
-		orm.Logger.Debug("OutputRelayManager: Calling failure callback for deleted output inputURL=%s, outputURL=%s", inputURL, outputURL)
+		orm.Logger.Debug("Calling failure callback for deleted output", "inputURL", inputURL, "outputURL", outputURL)
 		orm.FailureCallback(inputURL, outputURL)
 	}
-	orm.Logger.Info("OutputRelayManager: Output relay %s deleted successfully", outputURL)
+	orm.Logger.Info("Output relay deleted successfully", "outputURL", outputURL)
 	return nil
 }

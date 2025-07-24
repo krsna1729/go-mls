@@ -61,7 +61,7 @@ func ApiDownloadRecording(rm *RecordingManager) http.HandlerFunc {
 
 		// Copy file to response (using io.Copy is efficient for large files)
 		if _, err := io.Copy(w, f); err != nil {
-			rm.Logger.Error("Failed to serve recording file %s: %v", filename, err)
+			rm.Logger.Error("Failed to serve recording file", "filename", filename, "err", err)
 		}
 	}
 }

@@ -238,7 +238,7 @@ func (m *HLSManager) GetOrStartSession(inputName, localURL string) (*HLSSession,
 	m.mu.Lock()
 	m.sessions[inputName] = sess
 	m.mu.Unlock()
-	m.logger.Info("Created new HLS session for inputName=%s", inputName)
+	m.logger.Info("Created new HLS session", "inputName", inputName)
 
 	// Start playlist readiness monitoring in a separate goroutine
 	go m.monitorPlaylistReadiness(sess, inputName)
@@ -252,7 +252,7 @@ func (m *HLSManager) GetOrStartSession(inputName, localURL string) (*HLSSession,
 func (m *HLSManager) checkFailedCooldown(inputName string) error {
 	if failTime, failed := m.failedInputs[inputName]; failed {
 		if time.Since(failTime) < m.failedCooldown {
-			m.logger.Warn("Input %s is in failed cooldown, refusing to start session", inputName)
+			m.logger.Warn("Input in failed cooldown, refusing to start session", "inputName", inputName)
 			return errors.New("input unavailable (cooldown)")
 		}
 		// Cooldown expired, remove
@@ -264,7 +264,7 @@ func (m *HLSManager) checkFailedCooldown(inputName string) error {
 // validateInputName checks for path traversal or invalid characters.
 func (m *HLSManager) validateInputName(inputName string) error {
 	if strings.Contains(inputName, "..") || strings.ContainsAny(inputName, "/\\") {
-		m.logger.Error("Invalid input name: %s", inputName)
+		m.logger.Error("Invalid input name", "inputName", inputName)
 		return errors.New("invalid input name")
 	}
 	return nil
@@ -275,7 +275,7 @@ func (m *HLSManager) startInputRelayIfNeeded(inputName, localURL string) (string
 	if m.relayManager != nil {
 		actualLocalURL, err := m.relayManager.StartInputRelayForConsumer(inputName)
 		if err != nil {
-			m.logger.Error("Failed to start input relay for HLS: %v", err)
+			m.logger.Error("Failed to start input relay for HLS", "inputName", inputName, "err", err)
 			return "", fmt.Errorf("failed to start input relay for HLS: %w", err)
 		}
 		return actualLocalURL, nil
@@ -294,10 +294,10 @@ func (m *HLSManager) stopInputRelayIfNeeded(inputName string) {
 func (m *HLSManager) createHLSTempDir(inputName string) (string, error) {
 	dir, err := os.MkdirTemp(m.config.PlaylistBaseDir, "hls_"+inputName+"_")
 	if err != nil {
-		m.logger.Error("Failed to create temp dir: %v", err)
+		m.logger.Error("Failed to create temp dir", "inputName", inputName, "err", err)
 		return "", fmt.Errorf("failed to create temp dir: %w", err)
 	}
-	m.logger.Info("Created HLS temp dir for inputName=%s: %s", inputName, dir)
+	m.logger.Info("Created HLS temp dir", "inputName", inputName, "dir", dir)
 	return dir, nil
 }
 
@@ -348,7 +348,7 @@ func (m *HLSManager) monitorPlaylistReadiness(sess *HLSSession, inputName string
 	playlistPath := filepath.Join(sess.Dir, "index.m3u8")
 	ready := m.tryFsnotifyPlaylistReady(playlistPath)
 	if !ready {
-		m.logger.Warn("Falling back to polling for playlist readiness: %s", playlistPath)
+		m.logger.Warn("Falling back to polling for playlist readiness", "playlistPath", playlistPath)
 		ready = m.tryPollPlaylistReady(playlistPath)
 	}
 	m.setSessionReadiness(sess, inputName, ready)
@@ -366,15 +366,15 @@ func (m *HLSManager) tryFsnotifyPlaylistReady(playlistPath string) bool {
 	timeout := time.After(playlistReadyTimeout)
 	for {
 		if fi, err := os.Stat(playlistPath); err == nil && fi.Size() > 0 {
-			m.logger.Debug("[fsnotify] Stat playlist: path=%s, size=%d, mod=%s", playlistPath, fi.Size(), fi.ModTime())
+			m.logger.Debug("[fsnotify] Stat playlist", "path", playlistPath, "size", fi.Size(), "mod", fi.ModTime())
 			return true
 		}
 		select {
 		case event := <-watcher.Events:
-			m.logger.Debug("[fsnotify] Event: %v", event)
+			m.logger.Debug("[fsnotify] Event", "event", event)
 			if event.Name == playlistPath && (event.Op&fsnotify.Create != 0 || event.Op&fsnotify.Write != 0) {
 				if fi, err := os.Stat(playlistPath); err == nil && fi.Size() > 0 {
-					m.logger.Debug("[fsnotify] Write/Create: path=%s, size=%d, mod=%s", playlistPath, fi.Size(), fi.ModTime())
+					m.logger.Debug("[fsnotify] Write/Create", "path", playlistPath, "size", fi.Size(), "mod", fi.ModTime())
 					return true
 				}
 			}
@@ -392,12 +392,12 @@ func (m *HLSManager) tryPollPlaylistReady(playlistPath string) bool {
 	for i := 0; i < pollAttempts; i++ {
 		fileInfo, err := os.Stat(playlistPath)
 		if err == nil {
-			m.logger.Debug("[poll] Attempt %d: path=%s, size=%d, mod=%s", i+1, playlistPath, fileInfo.Size(), fileInfo.ModTime())
+			m.logger.Debug("[poll] Attempt", "attempt", i+1, "path", playlistPath, "size", fileInfo.Size(), "mod", fileInfo.ModTime())
 			if fileInfo.Size() > 0 {
 				return true
 			}
 		} else {
-			m.logger.Debug("[poll] Attempt %d: stat error: %v", i+1, err)
+			m.logger.Debug("[poll] Stat error", "attempt", i+1, "err", err)
 		}
 		time.Sleep(m.getPlaylistPollInterval())
 	}
@@ -410,15 +410,15 @@ func (m *HLSManager) setSessionReadiness(sess *HLSSession, inputName string, rea
 	sess.Ready = ready
 	sess.Mu.Unlock()
 	if ready {
-		m.logger.Info("HLS session ready for inputName=%s (fsnotify/poll)", inputName)
+		m.logger.Info("HLS session ready", "inputName", inputName)
 		return
 	}
-	m.logger.Error("HLS session failed to become ready for inputName=%s", inputName)
+	m.logger.Error("HLS session failed to become ready", "inputName", inputName)
 	if sess.Proc != nil {
 		lines := sess.Proc.GetLastOutputLines(40)
 		for _, line := range lines {
 			if line != "" {
-				m.logger.Error("ffmpeg output: %s", line)
+				m.logger.Error("ffmpeg output", "line", line)
 			}
 		}
 	}
@@ -434,20 +434,20 @@ func (m *HLSManager) AddViewer(inputName string) (string, error) {
 		var err error
 		sess, err = m.GetOrStartSession(inputName, "")
 		if err != nil {
-			m.logger.Error("AddViewer: failed to create session for inputName=%s: %v", inputName, err)
+			m.logger.Error("AddViewer: failed to create session", "inputName", inputName, "err", err)
 			return "", errors.New("failed to create session: " + err.Error())
 		}
-		m.logger.Info("AddViewer: created session on-demand for inputName=%s", inputName)
+		m.logger.Info("AddViewer: created session on-demand", "inputName", inputName)
 	}
 	if sess.ViewerManager == nil {
 		return "", errors.New("session ViewerManager not set")
 	}
 	viewerID, err := sess.ViewerManager.AddViewer()
 	if err != nil {
-		m.logger.Error("AddViewer: failed to add viewer for inputName=%s: %v", inputName, err)
+		m.logger.Error("AddViewer: failed to add viewer", "inputName", inputName, "err", err)
 		return "", err
 	}
-	m.logger.Info("AddViewer: added viewer %s for inputName=%s", viewerID, inputName)
+	m.logger.Info("AddViewer: added viewer", "viewerID", viewerID, "inputName", inputName)
 	return viewerID, nil
 }
 
@@ -497,20 +497,20 @@ func (m *HLSManager) Shutdown() {
 		if sess.Proc != nil {
 			err := sess.Proc.Stop(m.getFFmpegStopTimeout())
 			if err != nil {
-				m.logger.Warn("Error stopping ffmpeg process for HLS session inputName=%s: %v", sess.InputName, err)
+				m.logger.Warn("Error stopping ffmpeg process for HLS session", "inputName", sess.InputName, "err", err)
 			}
 			if err := sess.Proc.Wait(); err != nil {
-				m.logger.Warn("Error waiting for ffmpeg process for HLS session inputName=%s: %v", sess.InputName, err)
+				m.logger.Warn("Error waiting for ffmpeg process for HLS session", "inputName", sess.InputName, "err", err)
 			}
 		}
 		os.RemoveAll(sess.Dir)
-		m.logger.Info("Cleaned up HLS session for inputName=%s (shutdown)", sess.InputName)
+		m.logger.Info("Cleaned up HLS session", "inputName", sess.InputName)
 	}
 }
 
 // ServeHLS serves HLS playlist or segment, concurrency-safe and with detailed logging
 func (m *HLSManager) ServeHLS(w http.ResponseWriter, r *http.Request, inputName, file string, localURL string) {
-	m.logger.Debug("ServeHLS: inputName=%s, file=%s", inputName, file)
+	m.logger.Debug("ServeHLS request", "inputName", inputName, "file", file)
 
 	// --- Stale viewer check ---
 	if handled := m.serveHLSCheckViewer(w, r, inputName); handled {
@@ -549,14 +549,14 @@ func (m *HLSManager) ServeHLS(w http.ResponseWriter, r *http.Request, inputName,
 
 	f, openErr := m.serveHLSOpenFile(path, file)
 	if openErr != nil {
-		m.logger.Error("HLS file access error: %s", openErr.Error())
+		m.logger.Error("HLS file access error", "err", openErr)
 		http.Error(w, openErr.Error(), http.StatusNotFound)
 		return
 	}
 	defer f.Close()
 
 	m.serveHLSWriteHeaders(w, file)
-	m.logger.Debug("Serving file: %s", path)
+	m.logger.Debug("Serving file", "path", path)
 	io.Copy(w, f)
 }
 
@@ -570,20 +570,20 @@ func (m *HLSManager) serveHLSCheckViewer(w http.ResponseWriter, r *http.Request,
 	sess, exists := m.sessions[inputName]
 	if !exists {
 		m.mu.Unlock()
-		m.logger.Warn("ServeHLS: inputName=%s not found for viewerID=%s", inputName, viewerID)
+		m.logger.Warn("ServeHLS: inputName not found for viewerID", "inputName", inputName, "viewerID", viewerID)
 		http.Error(w, "Viewer session expired or invalid", http.StatusGone) // Use 410 for missing session
 		return true
 	}
 	if sess.ViewerManager == nil {
 		m.mu.Unlock()
-		m.logger.Warn("ServeHLS: ViewerManager missing for inputName=%s viewerID=%s", inputName, viewerID)
+		m.logger.Warn("ServeHLS: ViewerManager missing for inputName viewerID", "inputName", inputName, "viewerID", viewerID)
 		http.Error(w, "Viewer session expired or invalid", http.StatusGone) // Use 410 for missing ViewerManager
 		return true
 	}
 	last, ok := sess.ViewerIDs[viewerID]
 	if !ok || time.Since(last) > m.getViewerHeartbeatTimeout() {
 		delete(sess.ViewerIDs, viewerID)
-		m.logger.Warn("Stale or missing viewerID %s for inputName=%s; denying request", viewerID, inputName)
+		m.logger.Warn("Stale or missing viewerID; denying request", "viewerID", viewerID, "inputName", inputName)
 		m.mu.Unlock()
 		http.Error(w, "Viewer session expired or invalid", http.StatusGone)
 		return true
@@ -601,13 +601,13 @@ func (m *HLSManager) serveHLSGetSession(w http.ResponseWriter, inputName, file s
 	m.mu.Unlock()
 	if !exists {
 		if file == "index.m3u8" {
-			m.logger.Info("HLSManager: input %s not found, serving dummy playlist for file %s", inputName, file)
+			m.logger.Info("Input not found, serving dummy HLS playlist", "inputName", inputName, "file", file)
 			w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("#EXTM3U\n#EXT-X-ENDLIST\n"))
 			return nil, true
 		}
-		m.logger.WarnRateLimited("HLSManager: input %s not found for file %s", inputName, file)
+		m.logger.WarnRateLimited("HLSManager: input not found for file", "inputName", inputName, "file", file)
 		http.Error(w, "HLS session not found", http.StatusNotFound)
 		return nil, true
 	}
@@ -626,7 +626,7 @@ func (m *HLSManager) serveHLSWaitForReady(w http.ResponseWriter, r *http.Request
 	for !ready() {
 		select {
 		case <-waitCtx.Done():
-			m.logger.Error("HLS session not ready for inputName=%s", inputName)
+			m.logger.Error("HLS session not ready for inputName", "inputName", inputName)
 			http.Error(w, "HLS session not ready yet, please try again", http.StatusServiceUnavailable)
 			return true
 		default:
@@ -641,7 +641,7 @@ func (m *HLSManager) serveHLSCheckPlaylist(w http.ResponseWriter, path, file str
 	if strings.HasSuffix(file, ".m3u8") {
 		fileInfo, statErr := os.Stat(path)
 		if statErr != nil {
-			m.logger.Error("HLS playlist not available: %v", statErr)
+			m.logger.Error("HLS playlist not available", "err", statErr)
 			http.Error(w, "HLS playlist not available: "+statErr.Error(), http.StatusNotFound)
 			return true
 		}
@@ -649,7 +649,7 @@ func (m *HLSManager) serveHLSCheckPlaylist(w http.ResponseWriter, path, file str
 			// If the file exists but is empty, wait a bit for it to be populated
 			time.Sleep(500 * time.Millisecond)
 		}
-		m.logger.Debug("HLS playlist request: path=%s, size=%d, mode=%s", path, fileInfo.Size(), fileInfo.Mode().String())
+		m.logger.Debug("HLS playlist request", "path", path, "size", fileInfo.Size(), "mode", fileInfo.Mode().String())
 	}
 	return false
 }
@@ -716,9 +716,9 @@ func (m *HLSManager) cleanupLoop(ctx context.Context) {
 				for _, viewerID := range staleViewers {
 					if sess.ViewerManager != nil {
 						if err := sess.ViewerManager.RemoveViewer(viewerID); err != nil {
-							m.logger.Warn("Failed to remove stale viewer %s from inputName=%s: %v", viewerID, name, err)
+							m.logger.Warn("Failed to remove stale viewer", "viewerID", viewerID, "inputName", name, "err", err)
 						} else {
-							m.logger.Info("Removed stale viewer %s from inputName=%s", viewerID, name)
+							m.logger.Info("Removed stale viewer", "viewerID", viewerID, "inputName", name)
 						}
 					}
 				}
@@ -745,7 +745,7 @@ func (m *HLSManager) cleanupLoop(ctx context.Context) {
 					sess.Proc.Stop(m.getFFmpegStopTimeout())
 					os.RemoveAll(sess.Dir)
 					delete(m.sessions, name)
-					m.logger.Info("Cleaned up HLS session for inputName=%s", name)
+					m.logger.Info("Cleaned up HLS session", "inputName", name)
 				}
 			}
 			m.mu.Unlock()
@@ -759,7 +759,7 @@ func (m *HLSManager) WriteEndlist(inputName string) {
 	sess, exists := m.sessions[inputName]
 	m.mu.Unlock()
 	if !exists || sess == nil {
-		m.logger.Warn("WriteEndlist: session not found for inputName=%s", inputName)
+		m.logger.Warn("WriteEndlist: session not found", "inputName", inputName)
 		return
 	}
 	playlistPath := filepath.Join(sess.Dir, "index.m3u8")
@@ -777,7 +777,7 @@ func (m *HLSManager) WriteEndlist(inputName string) {
 	lines = append(lines, "#EXT-X-ENDLIST")
 	final := strings.Join(lines, "\n")
 	if err := os.WriteFile(playlistPath, []byte(final), 0644); err == nil {
-		m.logger.Info("Wrote #EXT-X-ENDLIST to playlist for inputName=%s", inputName)
+		m.logger.Info("Wrote #EXT-X-ENDLIST to playlist", "inputName", inputName)
 	}
 }
 
@@ -800,7 +800,7 @@ func (m *HLSManager) DeleteSession(inputName string) {
 	sess, exists := m.sessions[inputName]
 	if !exists {
 		m.mu.Unlock()
-		m.logger.Warn("HLSManager: DeleteSession called for non-existent inputName=%s", inputName)
+		m.logger.Warn("HLSManager: DeleteSession called for non-existent inputName", "inputName", inputName)
 		return
 	}
 	if sess.Proc != nil {
@@ -812,13 +812,13 @@ func (m *HLSManager) DeleteSession(inputName string) {
 	m.mu.Lock()
 	delete(m.sessions, inputName)
 	m.mu.Unlock()
-	m.logger.Info("HLSManager: Marked HLS session for inputName=%s as deleted, will remove dir after delay", inputName)
+	m.logger.Info("Marked HLS session as deleted, will remove dir after delay", "inputName", inputName)
 	// Wait for clients to fetch endlist, then delete dir in background
 	const endlistWait = 20 * time.Second // tune as needed
 	go func(dir string, name string) {
 		time.Sleep(endlistWait)
 		os.RemoveAll(dir)
-		m.logger.Info("HLSManager: Deleted HLS session directory for inputName=%s after endlist wait", name)
+		m.logger.Info("Deleted HLS session directory after endlist wait", "inputName", name)
 	}(sess.Dir, inputName)
 }
 

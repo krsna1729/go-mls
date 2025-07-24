@@ -54,17 +54,17 @@ func main() {
 
 	absDir, err := filepath.Abs(cfg.Recording.Directory)
 	if err != nil {
-		logger.Fatal("Failed to resolve recordings directory: %v", err)
+		logger.Fatal("Failed to resolve recordings directory", "err", err)
 	}
 	if err := os.MkdirAll(absDir, 0755); err != nil {
-		logger.Fatal("Failed to create recordings directory: %v", err)
+		logger.Fatal("Failed to create recordings directory", "err", err)
 	}
-	logger.Info("Using recordings directory: %s", absDir)
+	logger.Info("Using recordings directory", "dir", absDir)
 
 	// Initialize RTSP server with configuration
 	rtspServer := stream.NewRTSPServerManager(logger, cfg.Relay.RTSPServer.Host, cfg.Relay.RTSPServer.Port)
 	if err := rtspServer.Start(); err != nil {
-		logger.Fatal("Failed to start RTSP server: %v", err)
+		logger.Fatal("Failed to start RTSP server", "err", err)
 	}
 
 	relayMgr := stream.NewRelayManager(logger, absDir, cfg.FFmpeg.LogLevel)
@@ -95,7 +95,7 @@ func main() {
 	// Use embedded static assets
 	staticFS, err := fs.Sub(webAssets, "web")
 	if err != nil {
-		logger.Error("Failed to create sub FS for web assets: %v", err)
+		logger.Error("Failed to create sub FS for web assets", "err", err)
 		os.Exit(1)
 	}
 	fs := http.FileServer(http.FS(staticFS))
@@ -146,10 +146,10 @@ func main() {
 
 	// Start server in a goroutine
 	go func() {
-		logger.Info("Go-MLS relay manager running at http://%s:%s ...", cfg.HTTP.Host, cfg.HTTP.Port)
-		logger.Debug("main: server starting on %s:%s", cfg.HTTP.Host, cfg.HTTP.Port)
+		logger.Info("Go-MLS relay manager running", "host", cfg.HTTP.Host, "port", cfg.HTTP.Port)
+		logger.Debug("main: server starting", "host", cfg.HTTP.Host, "port", cfg.HTTP.Port)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Error("Server error: %v", err)
+			logger.Error("Server error", "err", err)
 		}
 	}()
 
@@ -171,7 +171,7 @@ func main() {
 	// Shutdown HTTP server
 	logger.Info("Shutting down HTTP server...")
 	if err := server.Shutdown(ctx); err != nil {
-		logger.Error("Server shutdown error: %v", err)
+		logger.Error("Server shutdown error", "err", err)
 	}
 
 	// Shutdown HLS manager and clean up all HLS sessions/ffmpeg processes
@@ -270,41 +270,36 @@ func dumpGoroutineProfiles(logger *logger.Logger) {
 		}
 
 		if isSystemGoroutine {
-			logger.Info("  [SYSTEM] %s", goroutineInfo)
+			logger.Info("System goroutine", "info", goroutineInfo)
 		} else {
 			applicationGoroutines++
-			logger.Info("  [APP] %s", goroutineInfo)
+			logger.Info("Application goroutine", "info", goroutineInfo)
 			// Show first few lines of stack trace for application goroutines
 			lines := strings.Split(goroutine, "\n")
 			for j := 1; j < len(lines) && j < 4; j++ {
 				if strings.TrimSpace(lines[j]) != "" {
-					logger.Info("    └─ %s", strings.TrimSpace(lines[j]))
+					logger.Info("App goroutine stack", "line", strings.TrimSpace(lines[j]))
 				}
 			}
 		}
 	}
 
-	logger.Info("Goroutine Summary:")
-	logger.Info("  Total: %d", totalGoroutines)
-	logger.Info("  System/Expected: %d", systemGoroutines)
-	logger.Info("  Application: %d", applicationGoroutines)
+	logger.Info("Goroutine summary", "total", totalGoroutines, "system", systemGoroutines, "application", applicationGoroutines)
 
 	// Also dump simplified stack trace for debugging if needed
 	if applicationGoroutines > 0 {
-		logger.Info("\n=== Full Stack Trace (last 50 lines) ===")
+		logger.Info("Full stack trace (last 50 lines)")
 		stackLines := strings.Split(stackStr, "\n")
-
-		// Show last 50 lines to avoid overwhelming output
 		start := len(stackLines) - 50
 		if start < 0 {
 			start = 0
 		}
 		for i := start; i < len(stackLines); i++ {
-			logger.Info("%s", stackLines[i])
+			logger.Info("Stack line", "line", stackLines[i])
 		}
 	}
 
-	logger.Info("===============================")
+	logger.Info("==============================")
 }
 
 // printResourceUsage prints current resource usage statistics
@@ -317,29 +312,18 @@ func printResourceUsage(logger *logger.Logger, initialGoroutines int) {
 	runtime.ReadMemStats(&memStats)
 
 	logger.Info("=== Resource Usage Report ===")
-	logger.Info("Goroutines:")
-	logger.Info("  Initial: %d", initialGoroutines)
-	logger.Info("  Current: %d", currentGoroutines)
-	logger.Info("  Difference: %+d", currentGoroutines-initialGoroutines)
+	logger.Info("Goroutine counts", "initial", initialGoroutines, "current", currentGoroutines, "difference", currentGoroutines-initialGoroutines)
 
 	if currentGoroutines > initialGoroutines {
-		logger.Warn("WARNING: %d goroutines may have leaked!", currentGoroutines-initialGoroutines)
+		logger.Warn("Goroutines may have leaked!", "leaked", currentGoroutines-initialGoroutines)
 		dumpGoroutineProfiles(logger)
 	} else {
-		logger.Info("✓ No goroutine leaks detected")
+		logger.Info("No goroutine leaks detected")
 	}
 
-	logger.Info("Memory Usage:")
-	logger.Info("  Allocated: %s", formatBytes(memStats.Alloc))
-	logger.Info("  Total Allocations: %s", formatBytes(memStats.TotalAlloc))
-	logger.Info("  System Memory: %s", formatBytes(memStats.Sys))
-	logger.Info("  GC Cycles: %d", memStats.NumGC)
-	logger.Info("  Heap Objects: %d", memStats.HeapObjects)
+	logger.Info("Memory usage", "allocated", formatBytes(memStats.Alloc), "total_alloc", formatBytes(memStats.TotalAlloc), "system", formatBytes(memStats.Sys), "gc_cycles", memStats.NumGC, "heap_objects", memStats.HeapObjects)
 
-	logger.Info("System Info:")
-	logger.Info("  CPU Cores: %d", runtime.NumCPU())
-	logger.Info("  Go Version: %s", runtime.Version())
-	logger.Info("  OS/Arch: %s/%s", runtime.GOOS, runtime.GOARCH)
+	logger.Info("System info", "cpu_cores", runtime.NumCPU(), "go_version", runtime.Version(), "os", runtime.GOOS, "arch", runtime.GOARCH)
 
 	logger.Info("==============================")
 }

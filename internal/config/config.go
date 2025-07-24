@@ -164,7 +164,7 @@ func LoadConfig(filename string, log *logger.Logger) (*Config, error) {
 		return config, nil
 	}
 
-	log.Info("Loading configuration from: %s", filename)
+	log.Info("Loading configuration from", "filename", filename)
 
 	data, err := os.ReadFile(filename)
 	if err != nil {

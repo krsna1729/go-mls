@@ -76,7 +76,7 @@ func (irm *InputRelayManager) resolveInputURL(inputURL string) (string, error) {
 		if _, err := os.Stat(filePath); err != nil {
 			return "", err
 		}
-		irm.Logger.Debug("Resolved input URL: %s -> %s", inputURL, filePath)
+		irm.Logger.Debug("Resolved input URL", "inputURL", inputURL, "filePath", filePath)
 		return filePath, nil
 	}
 	return inputURL, nil
@@ -85,11 +85,11 @@ func (irm *InputRelayManager) resolveInputURL(inputURL string) (string, error) {
 // StartInputRelay starts the input relay process if not running, returns local RTSP URL
 // Increments reference count for each consumer
 func (irm *InputRelayManager) StartInputRelay(inputName, inputURL, localURL string, timeout time.Duration) (string, error) {
-	irm.Logger.Info("InputRelayManager: StartInputRelay: inputName=%s, inputURL=%s", inputName, inputURL)
+	irm.Logger.Info("Starting input relay", "inputName", inputName, "inputURL", inputURL)
 	// Resolve input URL (handle file://)
 	resolvedInputURL, err := irm.resolveInputURL(inputURL)
 	if err != nil {
-		irm.Logger.Error("Failed to resolve input URL: %v", err)
+		irm.Logger.Error("Failed to resolve input URL", "err", err)
 		return "", err
 	}
 	irm.mu.Lock()
@@ -109,12 +109,12 @@ func (irm *InputRelayManager) StartInputRelay(inputName, inputURL, localURL stri
 	// Increment reference count
 	relay.RefCount++
 	currentRefCount := relay.RefCount // Capture while holding lock
-	irm.Logger.Debug("InputRelayManager: Incremented refcount for %s to %d", inputURL, currentRefCount)
+	irm.Logger.Debug("Incremented refcount", "inputURL", inputURL, "refcount", currentRefCount)
 	if relay.Status == InputStarting || relay.Status == InputRunning {
 		local := relay.LocalURL
 		relay.mu.Unlock()
 		irm.mu.Unlock()
-		irm.Logger.Debug("InputRelayManager: Reusing existing relay for %s (refcount: %d)", inputURL, currentRefCount)
+		irm.Logger.Debug("Reusing existing relay", "inputURL", inputURL, "refcount", currentRefCount)
 		return local, nil
 	}
 	relay.Status = InputStarting
@@ -127,7 +127,7 @@ func (irm *InputRelayManager) StartInputRelay(inputName, inputURL, localURL stri
 		relay.RefCount-- // Decrement on failure
 		relay.mu.Unlock()
 		irm.mu.Unlock()
-		irm.Logger.Error("Failed to create input relay ffmpeg process: %v", err)
+		irm.Logger.Error("Failed to create input relay ffmpeg process", "err", err)
 		return "", err
 	}
 	relay.Proc = proc
@@ -138,12 +138,12 @@ func (irm *InputRelayManager) StartInputRelay(inputName, inputURL, localURL stri
 		relay.RefCount-- // Decrement on failure
 		relay.mu.Unlock()
 		irm.mu.Unlock()
-		irm.Logger.Error("Failed to start input relay ffmpeg: %v", err)
+		irm.Logger.Error("Failed to start input relay ffmpeg", "err", err)
 		return "", err
 	}
 	relay.Status = InputRunning
 	relay.LastError = "" // Clear any previous error on successful start
-	irm.Logger.Info("InputRelayManager: Started ffmpeg process PID %d for %s -> %s (refcount: %d)", proc.PID, inputURL, localURL, currentRefCount)
+	irm.Logger.Info("Started ffmpeg process", "PID", proc.PID, "inputURL", inputURL, "localURL", localURL, "refcount", currentRefCount)
 	// Start process wait/monitor goroutine
 	go irm.RunInputRelay(relay)
 	local := relay.LocalURL
@@ -156,11 +156,10 @@ func (irm *InputRelayManager) StartInputRelay(inputName, inputURL, localURL stri
 // This implements a reference counting mechanism to handle multiple consumers (recordings + output relays)
 // Returns true if the relay was actually stopped (refcount reached 0)
 func (irm *InputRelayManager) StopInputRelay(inputURL string) bool {
-	irm.Logger.Info("InputRelayManager: StopInputRelay: inputURL=%s", inputURL)
 	irm.mu.Lock()
 	relay, exists := irm.Relays[inputURL]
 	if !exists {
-		irm.Logger.Warn("InputRelayManager: relay for %s not found", inputURL)
+		irm.Logger.Warn("relay for not found", "inputURL", inputURL)
 		irm.mu.Unlock()
 		return false
 	}
@@ -170,9 +169,9 @@ func (irm *InputRelayManager) StopInputRelay(inputURL string) bool {
 	if relay.RefCount > 0 {
 		relay.RefCount--
 		currentRefCount := relay.RefCount
-		irm.Logger.Debug("InputRelayManager: Decremented refcount for %s to %d", inputURL, currentRefCount)
+		irm.Logger.Debug("Decremented refcount", "inputURL", inputURL, "refcount", currentRefCount)
 	} else {
-		irm.Logger.Warn("InputRelayManager: refcount for %s is already 0, cannot decrement", inputURL)
+		irm.Logger.Warn("refcount is already 0, cannot decrement", "inputURL", inputURL)
 		relay.mu.Unlock()
 		irm.mu.Unlock()
 		return false
@@ -190,13 +189,13 @@ func (irm *InputRelayManager) StopInputRelay(inputURL string) bool {
 	if shouldStop && proc != nil {
 		err := proc.Stop(2 * time.Second)
 		if err != nil {
-			irm.Logger.Warn("InputRelayManager: Error stopping ffmpeg process for %s: %v", inputURL, err)
+			irm.Logger.Warn("Error stopping ffmpeg process", "inputURL", inputURL, "err", err)
 		}
 	}
 	// Clean up RTSP stream when input relay is fully stopped
 	if shouldStop && irm.rtspServer != nil && inputName != "" {
 		relayPath := "relay/" + inputName
-		irm.Logger.Debug("InputRelayManager: Cleaning up RTSP stream for stopped input relay: %s", relayPath)
+		irm.Logger.Debug("Cleaning up RTSP stream for stopped input relay", "relayPath", relayPath)
 		irm.rtspServer.RemoveStream(relayPath)
 	}
 	// Do NOT delete relay from map here. Deletion is only performed by explicit user action (DeleteInput).
@@ -207,17 +206,17 @@ func (irm *InputRelayManager) StopInputRelay(inputURL string) bool {
 // ForceStopInputRelay forcefully stops an input relay without regard to reference count
 // This should only be used during shutdown or when there are refcount inconsistencies
 func (irm *InputRelayManager) ForceStopInputRelay(inputURL string) bool {
-	irm.Logger.Warn("InputRelayManager: ForceStopInputRelay: inputURL=%s (ignoring refcount)", inputURL)
+	irm.Logger.Warn("Force stopping input relay", "inputURL", inputURL, "ignoring refcount")
 	irm.mu.Lock()
 	relay, exists := irm.Relays[inputURL]
 	if !exists {
-		irm.Logger.Warn("InputRelayManager: relay for %s not found", inputURL)
+		irm.Logger.Warn("relay for not found", "inputURL", inputURL)
 		irm.mu.Unlock()
 		return false
 	}
 	relay.mu.Lock()
 	currentRefCount := relay.RefCount
-	irm.Logger.Warn("InputRelayManager: Force stopping relay %s (previous refcount: %d)", inputURL, currentRefCount)
+	irm.Logger.Warn("Force stopping relay", "inputURL", inputURL, "previous refcount", currentRefCount)
 	proc := relay.Proc
 	relay.RefCount = 0
 	relay.Proc = nil
@@ -229,13 +228,13 @@ func (irm *InputRelayManager) ForceStopInputRelay(inputURL string) bool {
 	if proc != nil {
 		err := proc.Stop(1 * time.Second)
 		if err != nil {
-			irm.Logger.Warn("InputRelayManager: Error force stopping ffmpeg process for %s: %v", inputURL, err)
+			irm.Logger.Warn("Error force stopping ffmpeg process", "inputURL", inputURL, "err", err)
 		}
 	}
 	// Clean up RTSP stream when input relay is fully stopped
 	if irm.rtspServer != nil && inputName != "" {
 		relayPath := "relay/" + inputName
-		irm.Logger.Debug("InputRelayManager: Cleaning up RTSP stream for force-stopped input relay: %s", relayPath)
+		irm.Logger.Debug("Cleaning up RTSP stream for force-stopped input relay", "relayPath", relayPath)
 		irm.rtspServer.RemoveStream(relayPath)
 	}
 	return true
@@ -243,13 +242,13 @@ func (irm *InputRelayManager) ForceStopInputRelay(inputURL string) bool {
 
 // RunInputRelay runs and monitors the input relay process
 func (irm *InputRelayManager) RunInputRelay(relay *InputRelay) {
-	irm.Logger.Info("InputRelayManager: RunInputRelay: running ffmpeg for %s -> %s", relay.InputURL, relay.LocalURL)
+	irm.Logger.Info("Running input relay", "inputURL", relay.InputURL, "localURL", relay.LocalURL)
 	var proc *FFmpegProcess
 	relay.mu.Lock()
 	proc = relay.Proc
 	relay.mu.Unlock()
 	if proc == nil {
-		irm.Logger.Error("InputRelayManager: RunInputRelay: FFmpegProcess is nil for %s", relay.InputURL)
+		irm.Logger.Error("RunInputRelay: FFmpegProcess is nil", "inputURL", relay.InputURL)
 		return
 	}
 	err := proc.Wait()
@@ -276,17 +275,17 @@ func (irm *InputRelayManager) RunInputRelay(relay *InputRelay) {
 
 	if status == InputStopped {
 		if err != nil {
-			irm.Logger.Info("Input relay for %s stopped (signal: %v)", inputURL, err)
+			irm.Logger.Info("Input relay stopped", "inputURL", inputURL, "signal", err)
 		} else {
-			irm.Logger.Info("Input relay for %s stopped cleanly", inputURL)
+			irm.Logger.Info("Input relay stopped cleanly", "inputURL", inputURL)
 		}
 		return
 	}
 	if err != nil {
-		irm.Logger.Error("Input relay process exited with error for %s (PID=%d): %v", inputURL, proc.PID, err)
+		irm.Logger.Error("Input relay process exited with error", "inputURL", inputURL, "PID", proc.PID, "err", err)
 		irm.Logger.Error("[ffmpeg output] for %s:\n%s", inputURL, output)
 	} else {
-		irm.Logger.Info("Input relay process for %s completed successfully (PID=%d)", inputURL, proc.PID)
+		irm.Logger.Info("Input relay process completed successfully", "inputURL", inputURL, "PID", proc.PID)
 	}
 }
 
@@ -320,11 +319,11 @@ func (irm *InputRelayManager) FindLocalURLByInputName(inputName string) (string,
 
 // DeleteInput completely removes an input relay and all associated outputs
 func (irm *InputRelayManager) DeleteInput(inputURL string) error {
-	irm.Logger.Info("InputRelayManager: DeleteInput: inputURL=%s", inputURL)
+	irm.Logger.Info("Deleting input", "inputURL", inputURL)
 	irm.mu.Lock()
 	relay, exists := irm.Relays[inputURL]
 	if !exists {
-		irm.Logger.Warn("InputRelayManager: relay for %s not found", inputURL)
+		irm.Logger.Warn("relay for not found", "inputURL", inputURL)
 		irm.mu.Unlock()
 		return fmt.Errorf("input relay not found: %s", inputURL)
 	}
@@ -342,16 +341,16 @@ func (irm *InputRelayManager) DeleteInput(inputURL string) error {
 	if proc != nil {
 		err := proc.Stop(1 * time.Second)
 		if err != nil {
-			irm.Logger.Warn("InputRelayManager: Error deleting ffmpeg process for %s: %v", inputURL, err)
+			irm.Logger.Warn("Error deleting ffmpeg process", "inputURL", inputURL, "err", err)
 		}
 	}
 
 	// Clean up RTSP stream
 	if irm.rtspServer != nil && inputName != "" {
 		relayPath := "relay/" + inputName
-		irm.Logger.Debug("InputRelayManager: Cleaning up RTSP stream for deleted input relay: %s", relayPath)
+		irm.Logger.Debug("Cleaning up RTSP stream for deleted input relay", "relayPath", relayPath)
 		irm.rtspServer.RemoveStream(relayPath)
 	}
-	irm.Logger.Info("InputRelayManager: Input relay %s deleted successfully", inputURL)
+	irm.Logger.Info("Input relay deleted successfully", "inputURL", inputURL)
 	return nil
 }

@@ -20,22 +20,6 @@ func newTestRelayManager() *RelayManager {
 	return rl
 }
 
-func newTestRelayManagerWithRTSP(t *testing.T) (*RelayManager, *RTSPServerManager) {
-	t.Helper()
-	log := logger.NewLoggerWithConfig("debug", "")
-	dir := t.TempDir()
-	// Start RTSP server on dynamic port
-	rtspServer := NewRTSPServerManager(log, "127.0.0.1", 0)
-	if err := rtspServer.Start(); err != nil {
-		t.Fatalf("failed to start RTSP server: %v", err)
-	}
-	rl := NewRelayManager(log, dir, "error")
-	rl.SetRTSPServer(rtspServer)
-	// Set input/output timeouts to 5 seconds
-	rl.SetTimeouts(5*time.Second, 5*time.Second)
-	return rl, rtspServer
-}
-
 func newTestRelayManagerWithTimeout(timeout time.Duration) *RelayManager {
 	// Use correct timeouts: timeout as time.Duration
 	rl := NewRelayManager(logger.NewLoggerWithConfig("debug", ""), os.TempDir(), "error")

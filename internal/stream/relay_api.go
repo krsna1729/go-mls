@@ -21,7 +21,7 @@ func ApiStartRelay(relayMgr *RelayManager) http.HandlerFunc {
 
 		// Use secure JSON decoding with size limits
 		if err := httputil.DecodeJSON(r, &req); err != nil {
-			relayMgr.Logger.Error("apiStartRelay: failed to decode request: %v", err)
+			relayMgr.Logger.Error("apiStartRelay: failed to decode request", "err", err)
 			httputil.WriteError(w, http.StatusBadRequest, "Invalid request")
 			return
 		}
@@ -32,8 +32,7 @@ func ApiStartRelay(relayMgr *RelayManager) http.HandlerFunc {
 			httputil.WriteError(w, http.StatusBadRequest, "Input and output names are required")
 			return
 		}
-
-		relayMgr.Logger.Debug("apiStartRelay: starting relay for input=%s, output=%s, input_name=%s, output_name=%s, preset=%s", req.InputURL, req.OutputURL, req.InputName, req.OutputName, req.PlatformPreset)
+		relayMgr.Logger.Debug("apiStartRelay: starting relay", "inputURL", req.InputURL, "outputURL", req.OutputURL, "inputName", req.InputName, "outputName", req.OutputName, "preset", req.PlatformPreset)
 
 		// Check if preset/options are provided in request, otherwise try to get from stored config
 		platformPreset := req.PlatformPreset
@@ -53,11 +52,11 @@ func ApiStartRelay(relayMgr *RelayManager) http.HandlerFunc {
 			if err == nil {
 				platformPreset = storedPreset
 				opts = storedOpts
-				relayMgr.Logger.Debug("apiStartRelay: using stored config - preset=%s, options=%+v", platformPreset, opts)
+				relayMgr.Logger.Debug("apiStartRelay: using stored config", "preset", platformPreset, "options", opts)
 			}
 		}
 		if err := relayMgr.StartRelayWithOptions(req.InputURL, req.OutputURL, req.InputName, req.OutputName, opts, platformPreset); err != nil {
-			relayMgr.Logger.Error("apiStartRelay: failed to start relay: %v", err)
+			relayMgr.Logger.Error("apiStartRelay: failed to start relay", "err", err)
 			httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -78,7 +77,7 @@ func ApiStopRelay(relayMgr *RelayManager) http.HandlerFunc {
 
 		// Use secure JSON decoding with size limits
 		if err := httputil.DecodeJSON(r, &req); err != nil {
-			relayMgr.Logger.Error("apiStopRelay: failed to decode request: %v", err)
+			relayMgr.Logger.Error("apiStopRelay: failed to decode request", "err", err)
 			httputil.WriteError(w, http.StatusBadRequest, "Invalid request")
 			return
 		}
@@ -87,9 +86,9 @@ func ApiStopRelay(relayMgr *RelayManager) http.HandlerFunc {
 			httputil.WriteError(w, http.StatusBadRequest, "Input and output names are required")
 			return
 		}
-		relayMgr.Logger.Debug("apiStopRelay: stopping relay for input=%s, output=%s, input_name=%s, output_name=%s", req.InputURL, req.OutputURL, req.InputName, req.OutputName)
+		relayMgr.Logger.Debug("apiStopRelay: stopping relay", "inputURL", req.InputURL, "outputURL", req.OutputURL, "inputName", req.InputName, "outputName", req.OutputName)
 		if err := relayMgr.StopRelay(req.InputURL, req.OutputURL, req.InputName, req.OutputName); err != nil {
-			relayMgr.Logger.Error("apiStopRelay: failed to stop relay: %v", err)
+			relayMgr.Logger.Error("apiStopRelay: failed to stop relay", "err", err)
 			httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -110,7 +109,7 @@ func ApiExportRelays(relayMgr *RelayManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		relayMgr.Logger.Debug("apiExportRelays called")
 		if err := relayMgr.ExportConfig("relay_config.json"); err != nil {
-			relayMgr.Logger.Error("apiExportRelays: failed to export config: %v", err)
+			relayMgr.Logger.Error("apiExportRelays: failed to export config", "err", err)
 			httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -127,21 +126,21 @@ func ApiImportRelays(relayMgr *RelayManager) http.HandlerFunc {
 		relayMgr.Logger.Debug("apiImportRelays called")
 		file, _, err := r.FormFile("file")
 		if err != nil {
-			relayMgr.Logger.Error("apiImportRelays: no file uploaded: %v", err)
+			relayMgr.Logger.Error("apiImportRelays: no file uploaded", "err", err)
 			httputil.WriteError(w, http.StatusBadRequest, "No file uploaded")
 			return
 		}
 		defer file.Close()
 		f, err := os.Create("relay_config.json")
 		if err != nil {
-			relayMgr.Logger.Error("apiImportRelays: failed to save file: %v", err)
+			relayMgr.Logger.Error("apiImportRelays: failed to save file", "err", err)
 			httputil.WriteError(w, http.StatusInternalServerError, "Failed to save file")
 			return
 		}
 		defer f.Close()
 		io.Copy(f, file)
 		if err := relayMgr.ImportConfig("relay_config.json"); err != nil {
-			relayMgr.Logger.Error("apiImportRelays: failed to import config: %v", err)
+			relayMgr.Logger.Error("apiImportRelays: failed to import config", "err", err)
 			httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -191,7 +190,7 @@ func ApiDeleteInput(relayMgr *RelayManager) http.HandlerFunc {
 
 		// Use secure JSON decoding with size limits
 		if err := httputil.DecodeJSON(r, &req); err != nil {
-			relayMgr.Logger.Error("apiDeleteInput: failed to decode request: %v", err)
+			relayMgr.Logger.Error("apiDeleteInput: failed to decode request", "err", err)
 			httputil.WriteError(w, http.StatusBadRequest, "Invalid request")
 			return
 		}
@@ -200,9 +199,9 @@ func ApiDeleteInput(relayMgr *RelayManager) http.HandlerFunc {
 			httputil.WriteError(w, http.StatusBadRequest, "Input name is required")
 			return
 		}
-		relayMgr.Logger.Debug("apiDeleteInput: deleting input for input=%s, input_name=%s", req.InputURL, req.InputName)
+		relayMgr.Logger.Debug("apiDeleteInput: deleting input", "inputURL", req.InputURL, "inputName", req.InputName)
 		if err := relayMgr.DeleteInput(req.InputURL, req.InputName); err != nil {
-			relayMgr.Logger.Error("apiDeleteInput: failed to delete input: %v", err)
+			relayMgr.Logger.Error("apiDeleteInput: failed to delete input", "err", err)
 			httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -223,7 +222,7 @@ func ApiDeleteOutput(relayMgr *RelayManager) http.HandlerFunc {
 
 		// Use secure JSON decoding with size limits
 		if err := httputil.DecodeJSON(r, &req); err != nil {
-			relayMgr.Logger.Error("apiDeleteOutput: failed to decode request: %v", err)
+			relayMgr.Logger.Error("apiDeleteOutput: failed to decode request", "err", err)
 			httputil.WriteError(w, http.StatusBadRequest, "Invalid request")
 			return
 		}
@@ -232,9 +231,9 @@ func ApiDeleteOutput(relayMgr *RelayManager) http.HandlerFunc {
 			httputil.WriteError(w, http.StatusBadRequest, "Input and output names are required")
 			return
 		}
-		relayMgr.Logger.Debug("apiDeleteOutput: deleting output for input=%s, output=%s, input_name=%s, output_name=%s", req.InputURL, req.OutputURL, req.InputName, req.OutputName)
+		relayMgr.Logger.Debug("apiDeleteOutput: deleting output", "inputURL", req.InputURL, "outputURL", req.OutputURL, "inputName", req.InputName, "outputName", req.OutputName)
 		if err := relayMgr.DeleteOutput(req.InputURL, req.OutputURL, req.InputName, req.OutputName); err != nil {
-			relayMgr.Logger.Error("apiDeleteOutput: failed to delete output: %v", err)
+			relayMgr.Logger.Error("apiDeleteOutput: failed to delete output", "err", err)
 			httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 			return
 		}

@@ -77,7 +77,7 @@ func NewRTSPServerManager(l *logger.Logger, host string, port int) *RTSPServerMa
 
 // Start starts the RTSP server
 func (rm *RTSPServerManager) Start() error {
-	rm.logger.Info("Starting RTSP server on %s:%d", rm.config.Interface, rm.config.Port)
+	rm.logger.Info("Starting RTSP server", "interface", rm.config.Interface, "port", rm.config.Port)
 
 	// Custom Listen function to capture the real port
 	customListen := func(network, address string) (net.Listener, error) {
@@ -89,7 +89,7 @@ func (rm *RTSPServerManager) Start() error {
 		if rm.config.Port == 0 {
 			if tcpAddr, ok := ln.Addr().(*net.TCPAddr); ok {
 				rm.config.Port = tcpAddr.Port
-				rm.logger.Info("RTSP server bound to dynamic port: %d", rm.config.Port)
+				rm.logger.Info("RTSP server bound to dynamic port", "port", rm.config.Port)
 			}
 		}
 		return ln, nil
@@ -110,7 +110,7 @@ func (rm *RTSPServerManager) Start() error {
 	go func() {
 		err := rm.server.Start()
 		if err != nil {
-			rm.logger.Error("RTSP server error: %v", err)
+			rm.logger.Error("RTSP server error", "err", err)
 			serverReady <- false
 			return
 		}
@@ -143,7 +143,7 @@ func (rm *RTSPServerManager) Stop() {
 // OnDescribe is called when a client asks for stream information
 func (rm *RTSPServerManager) OnDescribe(ctx *gortsplib.ServerHandlerOnDescribeCtx) (*base.Response, *gortsplib.ServerStream, error) {
 	pathName := strings.TrimPrefix(ctx.Path, "/")
-	rm.logger.Debug("RTSP OnDescribe: %s", pathName)
+	rm.logger.Debug("RTSP OnDescribe", "pathName", pathName)
 
 	rm.streamsMutex.Lock()
 	streamInfo, ok := rm.streams[pathName]
@@ -151,7 +151,7 @@ func (rm *RTSPServerManager) OnDescribe(ctx *gortsplib.ServerHandlerOnDescribeCt
 
 	// no one is publishing yet
 	if !ok || streamInfo.Stream == nil {
-		rm.logger.Debug("RTSP stream not found or not published yet: %s", pathName)
+		rm.logger.Debug("RTSP stream not found or not published yet", "pathName", pathName)
 		return &base.Response{
 			StatusCode: base.StatusNotFound,
 		}, nil, nil
@@ -166,7 +166,7 @@ func (rm *RTSPServerManager) OnDescribe(ctx *gortsplib.ServerHandlerOnDescribeCt
 // OnAnnounce is called when a client wants to publish a stream
 func (rm *RTSPServerManager) OnAnnounce(ctx *gortsplib.ServerHandlerOnAnnounceCtx) (*base.Response, error) {
 	pathName := strings.TrimPrefix(ctx.Path, "/")
-	rm.logger.Debug("RTSP OnAnnounce: %s", pathName)
+	rm.logger.Debug("RTSP OnAnnounce", "pathName", pathName)
 
 	rm.streamsMutex.Lock()
 	defer rm.streamsMutex.Unlock()
@@ -183,7 +183,7 @@ func (rm *RTSPServerManager) OnAnnounce(ctx *gortsplib.ServerHandlerOnAnnounceCt
 	}
 	err := stream.Initialize()
 	if err != nil {
-		rm.logger.Error("Failed to initialize RTSP stream: %v", err)
+		rm.logger.Error("Failed to initialize RTSP stream", "err", err)
 		return &base.Response{
 			StatusCode: base.StatusInternalServerError,
 		}, err
@@ -196,7 +196,7 @@ func (rm *RTSPServerManager) OnAnnounce(ctx *gortsplib.ServerHandlerOnAnnounceCt
 		Stream:    stream,
 	}
 
-	rm.logger.Info("Created RTSP stream: %s", ctx.Path)
+	rm.logger.Info("Created RTSP stream", "path", ctx.Path)
 
 	return &base.Response{
 		StatusCode: base.StatusOK,
@@ -206,7 +206,7 @@ func (rm *RTSPServerManager) OnAnnounce(ctx *gortsplib.ServerHandlerOnAnnounceCt
 // OnSetup is called when a client sets up a stream transport
 func (rm *RTSPServerManager) OnSetup(ctx *gortsplib.ServerHandlerOnSetupCtx) (*base.Response, *gortsplib.ServerStream, error) {
 	pathName := strings.TrimPrefix(ctx.Path, "/")
-	rm.logger.Debug("RTSP OnSetup: %s", pathName)
+	rm.logger.Debug("RTSP OnSetup", "pathName", pathName)
 
 	// SETUP is used by both readers and publishers. In case of publishers, just return StatusOK.
 	if ctx.Session.State() == gortsplib.ServerSessionStatePreRecord {
@@ -234,7 +234,7 @@ func (rm *RTSPServerManager) OnSetup(ctx *gortsplib.ServerHandlerOnSetupCtx) (*b
 // OnPlay is called when a client starts playing a stream
 func (rm *RTSPServerManager) OnPlay(ctx *gortsplib.ServerHandlerOnPlayCtx) (*base.Response, error) {
 	pathName := strings.TrimPrefix(ctx.Path, "/")
-	rm.logger.Debug("RTSP client started playing: %s", pathName)
+	rm.logger.Debug("RTSP client started playing", "pathName", pathName)
 
 	rm.streamsMutex.Lock()
 	if streamInfo, ok := rm.streams[pathName]; ok {
@@ -250,7 +250,7 @@ func (rm *RTSPServerManager) OnPlay(ctx *gortsplib.ServerHandlerOnPlayCtx) (*bas
 // OnRecord is called when a client starts recording (publishing) a stream
 func (rm *RTSPServerManager) OnRecord(ctx *gortsplib.ServerHandlerOnRecordCtx) (*base.Response, error) {
 	pathName := strings.TrimPrefix(ctx.Path, "/")
-	rm.logger.Debug("RTSP client started recording: %s", pathName)
+	rm.logger.Debug("RTSP client started recording", "pathName", pathName)
 
 	rm.streamsMutex.Lock()
 	streamInfo, ok := rm.streams[pathName]
@@ -269,7 +269,7 @@ func (rm *RTSPServerManager) OnRecord(ctx *gortsplib.ServerHandlerOnRecordCtx) (
 	if readyChan, exists := rm.streamReady[pathName]; exists {
 		select {
 		case readyChan <- true:
-			rm.logger.Debug("Signaled stream ready: %s", pathName)
+			rm.logger.Debug("Signaled stream ready", "pathName", pathName)
 		default:
 			// Channel already has a value or is closed
 		}
@@ -323,7 +323,7 @@ func (rm *RTSPServerManager) CreateEmptyStream(name string) (string, error) {
 	// Create a channel to signal when the stream is ready for reading
 	rm.streamReady[name] = make(chan bool, 1)
 
-	rm.logger.Info("Created RTSP stream path: %s", name)
+	rm.logger.Info("Created RTSP stream path", "name", name)
 
 	return rm.GetRTSPURL(name), nil
 }
@@ -343,11 +343,11 @@ func (rm *RTSPServerManager) WaitForStreamReady(name string, timeout time.Durati
 		// For existing streams, check if they're actually recording by waiting briefly for signal
 		select {
 		case <-readyChan:
-			rm.logger.Debug("Stream %s is ready for reading", name)
+			rm.logger.Debug("Stream is ready for reading", "name", name)
 			return nil
 		case <-time.After(500 * time.Millisecond):
 			// If no signal after 500ms but stream exists, assume it's ready (for reused streams)
-			rm.logger.Debug("Stream %s appears to be already ready", name)
+			rm.logger.Debug("Stream appears to be already ready", "name", name)
 			return nil
 		}
 	}
@@ -355,7 +355,7 @@ func (rm *RTSPServerManager) WaitForStreamReady(name string, timeout time.Durati
 	// Wait for the stream to start recording (OnRecord signals this channel)
 	select {
 	case <-readyChan:
-		rm.logger.Debug("Stream %s is ready for reading", name)
+		rm.logger.Debug("Stream is ready for reading", "name", name)
 		return nil
 	case <-time.After(timeout):
 		return fmt.Errorf("timeout waiting for stream %s to become ready", name)
@@ -381,7 +381,7 @@ func (rm *RTSPServerManager) RemoveStream(name string) {
 			streamInfo.Stream.Close()
 		}
 		delete(rm.streams, name)
-		rm.logger.Info("Removed RTSP stream: %s", name)
+		rm.logger.Info("Removed RTSP stream", "name", name)
 	}
 
 	// Close and remove the ready channel

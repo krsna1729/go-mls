@@ -1,65 +1,30 @@
 package logger
 
 import (
-	"bytes"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"os"
 	"runtime"
-	"strings"
 	"sync"
-	"testing"
 	"time"
 )
 
-type LogLevel int
-
-const (
-	DEBUG LogLevel = iota
-	INFO
-	WARN
-	ERROR
-	FATAL
-)
-
 type Logger struct {
-	level  LogLevel
-	logger *log.Logger
-	// For rate-limited logging: sync.Map[key] = last log time
-	warnRateLimit  sync.Map // map[string]time.Time
-	errorRateLimit sync.Map // map[string]time.Time
-	warnInterval   time.Duration
-	errorInterval  time.Duration
+	slog         *slog.Logger
+	level        slog.Level
+	warnMu       sync.Map // for rate-limited logging (optional)
+	errMu        sync.Map
+	warnInterval time.Duration
+	errInterval  time.Duration
 }
 
+// NewLogger returns a default logger (stderr, Info level, text format)
 func NewLogger() *Logger {
-	lvl := INFO
-	if os.Getenv("GO_MLS_DEBUG") == "1" {
-		lvl = DEBUG
-	}
-	return &Logger{
-		level:         lvl,
-		logger:        log.New(os.Stderr, "", log.LstdFlags|log.Lshortfile),
-		warnInterval:  1 * time.Second,
-		errorInterval: 1 * time.Second,
-	}
+	return NewLoggerWithConfig("info", "")
 }
 
-func NewLoggerWithWriter(w io.Writer) *Logger {
-	lvl := INFO
-	if os.Getenv("GO_MLS_DEBUG") == "1" {
-		lvl = DEBUG
-	}
-	return &Logger{
-		level:         lvl,
-		logger:        log.New(w, "", log.LstdFlags|log.Lshortfile),
-		warnInterval:  1 * time.Second,
-		errorInterval: 1 * time.Second,
-	}
-}
-
-// NewLoggerWithConfig creates a logger with the given level and file
+// NewLoggerWithConfig returns a logger with the given level and file (text format)
 func NewLoggerWithConfig(levelStr, file string) *Logger {
 	lvl := parseLogLevel(levelStr)
 	var w io.Writer = os.Stderr
@@ -69,175 +34,101 @@ func NewLoggerWithConfig(levelStr, file string) *Logger {
 			w = f
 		}
 	}
+	h := slog.NewTextHandler(w, &slog.HandlerOptions{Level: lvl})
 	return &Logger{
-		level:         lvl,
-		logger:        log.New(w, "", log.LstdFlags|log.Lshortfile),
-		warnInterval:  1 * time.Second,
-		errorInterval: 1 * time.Second,
+		slog:         slog.New(h),
+		level:        lvl,
+		warnInterval: 1 * time.Second,
+		errInterval:  1 * time.Second,
 	}
 }
 
-// NewLoggerWithRateLimit creates a logger with rate-limited warning/error logging
-func NewLoggerWithRateLimit(w io.Writer, warnInterval, errorInterval time.Duration) *Logger {
-	lvl := INFO
-	if os.Getenv("GO_MLS_DEBUG") == "1" {
-		lvl = DEBUG
-	}
-	return &Logger{
-		level:         lvl,
-		logger:        log.New(w, "", log.LstdFlags|log.Lshortfile),
-		warnInterval:  warnInterval,
-		errorInterval: errorInterval,
-	}
-}
-
-func parseLogLevel(levelStr string) LogLevel {
-	switch strings.ToLower(levelStr) {
+func parseLogLevel(levelStr string) slog.Level {
+	switch levelStr {
 	case "debug":
-		return DEBUG
+		return slog.LevelDebug
 	case "info":
-		return INFO
+		return slog.LevelInfo
 	case "warn":
-		return WARN
+		return slog.LevelWarn
 	case "error":
-		return ERROR
-	case "fatal":
-		return FATAL
+		return slog.LevelError
 	default:
-		return INFO
+		return slog.LevelInfo
 	}
 }
 
-func (l *Logger) logWithCaller(level string, msg string, args ...interface{}) {
-	// No locking here: only printing, not mutating shared state
-	// runtime.Caller(2) skips logWithCaller and the public log method
-	_, file, line, ok := runtime.Caller(2)
-	fileline := ""
-	if ok {
-		short := file
-		if idx := strings.LastIndex(file, "/"); idx != -1 {
-			short = file[idx+1:]
-		}
-		fileline = fmt.Sprintf("%s:%d: ", short, line)
+// With adds fields to the logger (e.g., component, function)
+func (l *Logger) With(args ...any) *Logger {
+	return &Logger{
+		slog:         l.slog.With(args...),
+		level:        l.level,
+		warnInterval: l.warnInterval,
+		errInterval:  l.errInterval,
 	}
-	l.logger.Printf("[%s] %s"+msg, append([]interface{}{level, fileline}, args...)...)
+}
+
+func (l *Logger) Debug(msg string, args ...any) {
+	l.slog.Debug(msg, args...)
+}
+func (l *Logger) Info(msg string, args ...any) {
+	l.slog.Info(msg, args...)
+}
+func (l *Logger) Warn(msg string, args ...any) {
+	l.slog.Warn(msg, args...)
+}
+func (l *Logger) Error(msg string, args ...any) {
+	l.slog.Error(msg, args...)
+}
+func (l *Logger) Fatal(msg string, args ...any) {
+	l.slog.Error(msg, args...)
+	os.Exit(1)
 }
 
 // WarnRateLimited logs a warning at most once per interval for each unique callsite+message
-func (l *Logger) WarnRateLimited(msg string, args ...interface{}) {
-	if l.level > WARN {
+func (l *Logger) WarnRateLimited(msg string, args ...any) {
+	if l.level > slog.LevelWarn {
 		return
 	}
 	key := l.rateLimitKey(msg)
 	now := time.Now()
 	shouldLog := false
-	lastAny, ok := l.warnRateLimit.Load(key)
+	lastAny, ok := l.warnMu.Load(key)
 	if !ok || now.Sub(lastAny.(time.Time)) > l.warnInterval {
-		l.warnRateLimit.Store(key, now)
+		l.warnMu.Store(key, now)
 		shouldLog = true
 	}
 	if shouldLog {
-		l.logWithCaller("WARN", msg, args...)
+		l.slog.Warn(msg, args...)
 	}
 }
 
 // ErrorRateLimited logs an error at most once per interval for each unique callsite+message
-func (l *Logger) ErrorRateLimited(msg string, args ...interface{}) {
-	if l.level > ERROR {
+func (l *Logger) ErrorRateLimited(msg string, args ...any) {
+	if l.level > slog.LevelError {
 		return
 	}
 	key := l.rateLimitKey(msg)
 	now := time.Now()
 	shouldLog := false
-	lastAny, ok := l.errorRateLimit.Load(key)
-	if !ok || now.Sub(lastAny.(time.Time)) > l.errorInterval {
-		l.errorRateLimit.Store(key, now)
+	lastAny, ok := l.errMu.Load(key)
+	if !ok || now.Sub(lastAny.(time.Time)) > l.errInterval {
+		l.errMu.Store(key, now)
 		shouldLog = true
 	}
 	if shouldLog {
-		l.logWithCaller("ERROR", msg, args...)
+		l.slog.Error(msg, args...)
 	}
 }
 
 // rateLimitKey generates a key based on callsite and message
 func (l *Logger) rateLimitKey(msg string) string {
 	// runtime.Caller(2) skips rate-limited method and public log method
-	_, file, line, ok := runtime.Caller(3)
-	if !ok {
-		return msg
+	// Use runtime.Caller to get file:line
+	// Note: import "runtime"
+	_, file, line, ok := runtime.Caller(2)
+	if ok {
+		return fmt.Sprintf("%s:%d:%s", file, line, msg)
 	}
-	short := file
-	if idx := strings.LastIndex(file, "/"); idx != -1 {
-		short = file[idx+1:]
-	}
-	return fmt.Sprintf("%s:%d:%s", short, line, msg)
-}
-
-func (l *Logger) Debug(msg string, args ...interface{}) {
-	if l.level <= DEBUG {
-		l.logWithCaller("DEBUG", msg, args...)
-	}
-}
-func (l *Logger) Info(msg string, args ...interface{}) {
-	if l.level <= INFO {
-		l.logWithCaller("INFO", msg, args...)
-	}
-}
-func (l *Logger) Warn(msg string, args ...interface{}) {
-	if l.level <= WARN {
-		l.logWithCaller("WARN", msg, args...)
-	}
-}
-func (l *Logger) Error(msg string, args ...interface{}) {
-	if l.level <= ERROR {
-		l.logWithCaller("ERROR", msg, args...)
-	}
-}
-func (l *Logger) Fatal(msg string, args ...interface{}) {
-	if l.level <= FATAL {
-		l.logWithCaller("FATAL", msg, args...)
-		os.Exit(1)
-	}
-}
-
-func TestLogger_WarnRateLimited(t *testing.T) {
-	buf := &bytes.Buffer{}
-	logger := NewLoggerWithRateLimit(buf, 100*time.Millisecond, 100*time.Millisecond)
-	logger.level = DEBUG // allow all logs
-
-	for i := 0; i < 5; i++ {
-		logger.WarnRateLimited("rate-limited warning: %d", 42)
-	}
-	first := buf.String()
-	if strings.Count(first, "rate-limited warning") != 1 {
-		t.Errorf("expected 1 warning in first burst, got %d", strings.Count(first, "rate-limited warning"))
-	}
-
-	time.Sleep(120 * time.Millisecond)
-	logger.WarnRateLimited("rate-limited warning: %d", 42)
-	second := buf.String()
-	if strings.Count(second, "rate-limited warning") != 2 {
-		t.Errorf("expected 2 warnings after interval, got %d", strings.Count(second, "rate-limited warning"))
-	}
-}
-
-func TestLogger_ErrorRateLimited(t *testing.T) {
-	buf := &bytes.Buffer{}
-	logger := NewLoggerWithRateLimit(buf, 100*time.Millisecond, 100*time.Millisecond)
-	logger.level = DEBUG // allow all logs
-
-	for i := 0; i < 5; i++ {
-		logger.ErrorRateLimited("rate-limited error: %d", 99)
-	}
-	first := buf.String()
-	if strings.Count(first, "rate-limited error") != 1 {
-		t.Errorf("expected 1 error in first burst, got %d", strings.Count(first, "rate-limited error"))
-	}
-
-	time.Sleep(120 * time.Millisecond)
-	logger.ErrorRateLimited("rate-limited error: %d", 99)
-	second := buf.String()
-	if strings.Count(second, "rate-limited error") != 2 {
-		t.Errorf("expected 2 errors after interval, got %d", strings.Count(second, "rate-limited error"))
-	}
+	return msg // fallback if runtime not available
 }
