@@ -482,29 +482,14 @@ func (m *HLSManager) RemoveViewer(inputName, viewerID string) error {
 // Shutdown gracefully stops the cleanup loop and cleans up all sessions and ffmpeg processes.
 func (m *HLSManager) Shutdown() {
 	m.cancel()
-	var sessions []*HLSSession
 	m.mu.Lock()
-	for _, sess := range m.sessions {
-		sessions = append(sessions, sess)
+	names := make([]string, 0, len(m.sessions))
+	for name := range m.sessions {
+		names = append(names, name)
 	}
-	m.sessions = make(map[string]*HLSSession)
 	m.mu.Unlock()
-
-	for _, sess := range sessions {
-		if sess.IsConsumer && m.relayManager != nil {
-			m.relayManager.StopInputRelayForConsumer(sess.InputName)
-		}
-		if sess.Proc != nil {
-			err := sess.Proc.Stop(m.getFFmpegStopTimeout())
-			if err != nil {
-				m.logger.Warn("Error stopping ffmpeg process for HLS session", "inputName", sess.InputName, "err", err)
-			}
-			if err := sess.Proc.Wait(); err != nil {
-				m.logger.Warn("Error waiting for ffmpeg process for HLS session", "inputName", sess.InputName, "err", err)
-			}
-		}
-		os.RemoveAll(sess.Dir)
-		m.logger.Info("Cleaned up HLS session", "inputName", sess.InputName)
+	for _, name := range names {
+		m.DeleteSession(name)
 	}
 }
 
@@ -686,6 +671,28 @@ func (m *HLSManager) serveHLSWriteHeaders(w http.ResponseWriter, file string) {
 	}
 }
 
+// DeleteSession immediately stops and removes the HLS session for the given inputName, and deletes dir immediately.
+func (m *HLSManager) DeleteSession(inputName string) {
+	m.mu.Lock()
+	sess, exists := m.sessions[inputName]
+	if !exists {
+		m.mu.Unlock()
+		m.logger.Warn("HLSManager: DeleteSession called for non-existent inputName", "inputName", inputName)
+		return
+	}
+	if sess.IsConsumer && m.relayManager != nil {
+		m.relayManager.StopInputRelayForConsumer(sess.InputName)
+	}
+	if sess.Proc != nil {
+		sess.Proc.Stop(m.getFFmpegStopTimeout())
+	}
+	// Remove session from map immediately so new viewers can't join
+	delete(m.sessions, inputName)
+	m.mu.Unlock()
+	os.RemoveAll(sess.Dir)
+	m.logger.Info("Deleted HLS session and directory immediately", "inputName", inputName)
+}
+
 // Enhanced cleanup with viewer heartbeat checking
 func (m *HLSManager) cleanupLoop(ctx context.Context) {
 	ticker := time.NewTicker(m.cleanupInterval)
@@ -698,6 +705,7 @@ func (m *HLSManager) cleanupLoop(ctx context.Context) {
 		case <-ticker.C:
 			now := time.Now()
 			m.mu.Lock()
+			var sessionsToDelete []string
 			for name, sess := range m.sessions {
 				// --- Remove stale viewers ---
 				// Any viewer with no heartbeat for more than the configured timeout is removed.
@@ -738,17 +746,13 @@ func (m *HLSManager) cleanupLoop(ctx context.Context) {
 					shouldCleanup = now.Sub(lastAccess) > (m.sessionTimeout * 3)
 				}
 				if shouldCleanup {
-					// --- Cleanup logic: stop relay, stop ffmpeg, remove files, delete session ---
-					if sess.IsConsumer && m.relayManager != nil {
-						m.relayManager.StopInputRelayForConsumer(sess.InputName)
-					}
-					sess.Proc.Stop(m.getFFmpegStopTimeout())
-					os.RemoveAll(sess.Dir)
-					delete(m.sessions, name)
-					m.logger.Info("Cleaned up HLS session", "inputName", name)
+					sessionsToDelete = append(sessionsToDelete, name)
 				}
 			}
 			m.mu.Unlock()
+			for _, name := range sessionsToDelete {
+				m.DeleteSession(name)
+			}
 		}
 	}
 }
@@ -779,47 +783,6 @@ func (m *HLSManager) WriteEndlist(inputName string) {
 	if err := os.WriteFile(playlistPath, []byte(final), 0644); err == nil {
 		m.logger.Info("Wrote #EXT-X-ENDLIST to playlist", "inputName", inputName)
 	}
-}
-
-// WriteEndlistToAll writes #EXT-X-ENDLIST for all active HLS sessions.
-func (m *HLSManager) WriteEndlistToAll() {
-	m.mu.Lock()
-	names := make([]string, 0, len(m.sessions))
-	for name := range m.sessions {
-		names = append(names, name)
-	}
-	m.mu.Unlock()
-	for _, name := range names {
-		m.WriteEndlist(name)
-	}
-}
-
-// DeleteSession immediately stops and removes the HLS session for the given inputName, but waits before deleting dir.
-func (m *HLSManager) DeleteSession(inputName string) {
-	m.mu.Lock()
-	sess, exists := m.sessions[inputName]
-	if !exists {
-		m.mu.Unlock()
-		m.logger.Warn("HLSManager: DeleteSession called for non-existent inputName", "inputName", inputName)
-		return
-	}
-	if sess.Proc != nil {
-		sess.Proc.Stop(m.getFFmpegStopTimeout())
-	}
-	m.mu.Unlock()
-	m.WriteEndlist(inputName)
-	// Remove session from map immediately so new viewers can't join
-	m.mu.Lock()
-	delete(m.sessions, inputName)
-	m.mu.Unlock()
-	m.logger.Info("Marked HLS session as deleted, will remove dir after delay", "inputName", inputName)
-	// Wait for clients to fetch endlist, then delete dir in background
-	const endlistWait = 20 * time.Second // tune as needed
-	go func(dir string, name string) {
-		time.Sleep(endlistWait)
-		os.RemoveAll(dir)
-		m.logger.Info("Deleted HLS session directory after endlist wait", "inputName", name)
-	}(sess.Dir, inputName)
 }
 
 // Helper methods to get config-driven durations/intervals (with sane defaults)

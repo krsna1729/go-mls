@@ -157,10 +157,10 @@ func main() {
 	<-sigChan
 	logger.Info("Received interrupt signal, initiating graceful shutdown...")
 
-	// Write endlist to all HLS sessions
-	logger.Info("Signalling stream end to all HLS sessions...")
-	hlsMgr.WriteEndlistToAll()
-	// Give clients a moment to fetch the final playlist
+	// Shutdown HLS manager and clean up all HLS sessions/ffmpeg processes
+	logger.Info("Shutting down HLS manager...")
+	hlsMgr.Shutdown()
+	// Give clients a moment to fetch the final dummy playlist
 	time.Sleep(15 * time.Second)
 
 	// Create a context with timeout for graceful shutdown
@@ -173,10 +173,6 @@ func main() {
 	if err := server.Shutdown(ctx); err != nil {
 		logger.Error("Server shutdown error", "err", err)
 	}
-
-	// Shutdown HLS manager and clean up all HLS sessions/ffmpeg processes
-	logger.Info("Shutting down HLS manager...")
-	hlsMgr.Shutdown()
 
 	// Stop all recordings and shut down recording manager
 	logger.Info("Shutting down recording manager...")

@@ -438,38 +438,6 @@ func TestHLSManager_Shutdown(t *testing.T) {
 	}
 }
 
-func TestHLSManager_WriteEndlistToAll(t *testing.T) {
-	logr := newTestLogger()
-	mgr := NewHLSManager(minimalHLSManagerConfig(), logr)
-	dir := t.TempDir()
-	playlistPath := filepath.Join(dir, "index.m3u8")
-	// Write a playlist without ENDLIST
-	os.WriteFile(playlistPath, []byte("#EXTM3U\n#EXT-X-VERSION:3\n"), 0644)
-	sess := &HLSSession{
-		InputName: "foo",
-		Dir:       dir,
-		ViewerIDs: make(map[string]time.Time),
-		Proc:      &shutdownMockProc{}, // Ensure Proc is non-nil for cleanup safety
-	}
-	mgr.sessions["foo"] = sess
-
-	mgr.WriteEndlistToAll()
-	data, err := os.ReadFile(playlistPath)
-	if err != nil {
-		t.Fatalf("failed to read playlist: %v", err)
-	}
-	if !strings.Contains(string(data), "#EXT-X-ENDLIST") {
-		t.Error("expected #EXT-X-ENDLIST to be written to playlist")
-	}
-
-	// Test idempotency: call again, should not duplicate ENDLIST
-	mgr.WriteEndlistToAll()
-	data2, _ := os.ReadFile(playlistPath)
-	if strings.Count(string(data2), "#EXT-X-ENDLIST") != 1 {
-		t.Error("expected only one #EXT-X-ENDLIST after repeated calls")
-	}
-}
-
 func TestCheckFailedCooldownDeletesExpired(t *testing.T) {
 	mgr := &HLSManager{
 		failedInputs:   map[string]time.Time{"foo": time.Now().Add(-2 * time.Second)},
