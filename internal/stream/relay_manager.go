@@ -62,7 +62,7 @@ func NewRelayManager(l *logger.Logger, recDir string, ffmpegLogLevel string) *Re
 
 	// Set up failure callback for output relays to clean up input relay refcount
 	orm.SetFailureCallback(func(inputURL, outputURL string) {
-		l.Debug("Output relay failure callback: cleaning up input relay refcount for inputURL=%s", inputURL)
+		l.Info("Output relay failure callback: cleaning up input relay refcount for", "inputURL", inputURL, "outputURL", outputURL)
 		irm.StopInputRelay(inputURL) // RTSP cleanup is handled internally
 	})
 

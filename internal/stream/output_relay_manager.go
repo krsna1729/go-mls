@@ -43,6 +43,7 @@ type OutputRelay struct {
 	Status       OutputRelayStatus // protected by mu
 	LastError    string            // protected by mu
 	shuttingDown bool              // protected by mu
+	cleanedUp    bool              // protected by mu, ensures cleanup is only done once
 
 	// --- Concurrency primitives ---
 	mu sync.Mutex // protects all mutable fields above
@@ -150,6 +151,42 @@ func (orm *OutputRelayManager) StartOutputRelay(config OutputRelayConfig) error 
 	return nil
 }
 
+// cleanupOutputRelay stops the ffmpeg process, updates relay state, and ensures failure callback is only called once.
+// Returns true if failure callback should be called (i.e., not graceful shutdown, not already cleaned up, not already stopped).
+func (orm *OutputRelayManager) cleanupOutputRelay(relay *OutputRelay, reason string) (shouldCallFailure bool, inputURL, outputURL string) {
+	relay.mu.Lock()
+	if relay.cleanedUp {
+		relay.mu.Unlock()
+		return false, relay.InputURL, relay.OutputURL
+	}
+	proc := relay.Proc
+	shuttingDown := relay.shuttingDown
+	inputURL = relay.InputURL
+	outputURL = relay.OutputURL
+	// Mark as cleaned up to prevent double-callbacks
+	relay.cleanedUp = true
+	relay.Proc = nil
+	relay.Status = OutputStopped
+	relay.mu.Unlock()
+
+	// Stop the process outside the lock
+	if proc != nil {
+		err := proc.Stop(2 * time.Second)
+		if err != nil {
+			orm.Logger.Warn("Error stopping ffmpeg process during cleanup", "outputURL", outputURL, "err", err, "reason", reason)
+		}
+	}
+	// Only call failure callback if this is NOT a graceful shutdown
+	if !shuttingDown && orm.FailureCallback != nil {
+		orm.Logger.Warn("Calling failure callback for failed output (cleanup)", "inputURL", inputURL, "outputURL", outputURL, "reason", reason)
+		return true, inputURL, outputURL
+	}
+	if shuttingDown {
+		orm.Logger.Info("Graceful shutdown, not calling failure callback (cleanup)", "outputURL", outputURL, "reason", reason)
+	}
+	return false, inputURL, outputURL
+}
+
 // StopOutputRelay stops an output ffmpeg process
 func (orm *OutputRelayManager) StopOutputRelay(outputURL string) {
 	orm.Logger.Info("Stopping output relay", "outputURL", outputURL)
@@ -162,27 +199,12 @@ func (orm *OutputRelayManager) StopOutputRelay(outputURL string) {
 	}
 	relay.mu.Lock()
 	relay.shuttingDown = true
-	proc := relay.Proc
-	relay.Proc = nil
-	relay.Status = OutputStopped
-	inputURL := relay.InputURL
-	shuttingDown := relay.shuttingDown
 	relay.mu.Unlock()
 	orm.mu.Unlock()
 
-	// Stop the process outside of any locks
-	if proc != nil {
-		err := proc.Stop(2 * time.Second)
-		if err != nil {
-			orm.Logger.Warn("Error stopping ffmpeg process", "outputURL", outputURL, "err", err)
-		}
-	}
-	// Only call failure callback if this is NOT a graceful shutdown
-	if !shuttingDown && orm.FailureCallback != nil {
-		orm.Logger.Debug("Calling failure callback for failed output", "inputURL", inputURL, "outputURL", outputURL)
+	shouldCallFailure, inputURL, outputURL := orm.cleanupOutputRelay(relay, "stop")
+	if shouldCallFailure {
 		orm.FailureCallback(inputURL, outputURL)
-	} else if shuttingDown {
-		orm.Logger.Debug("Graceful shutdown, not calling failure callback", "outputURL", outputURL)
 	}
 }
 
@@ -200,45 +222,30 @@ func (orm *OutputRelayManager) RunOutputRelay(relay *OutputRelay) {
 	err := proc.Wait()
 
 	relay.mu.Lock()
-	status := relay.Status
 	shuttingDown := relay.shuttingDown
-	inputURL := relay.InputURL
 	outputURL := relay.OutputURL
-	if err != nil {
-		if shuttingDown {
-			relay.Status = OutputStopped
-			relay.LastError = ""
-		} else {
-			relay.Status = OutputError
-			relay.LastError = err.Error()
-		}
-	}
-	if err == nil {
-		relay.Status = OutputStopped
-	}
-	relay.Proc = nil
+	alreadyCleaned := relay.cleanedUp
 	relay.mu.Unlock()
 
-	if status == OutputStopped {
-		if err != nil {
+	if err != nil {
+		if !alreadyCleaned {
+			shouldCallFailure, inputURL, outputURL := orm.cleanupOutputRelay(relay, "run-error")
+			if shouldCallFailure {
+				orm.FailureCallback(inputURL, outputURL)
+			}
+		}
+		if shuttingDown {
 			orm.Logger.Info("Output relay stopped (signal)", "outputURL", outputURL, "signal", err)
 		} else {
-			orm.Logger.Info("Output relay stopped cleanly", "outputURL", outputURL)
+			orm.Logger.Error("Output relay process exited with error", "outputURL", outputURL, "err", err)
 		}
 		return
 	}
-	if err != nil {
-		orm.Logger.Error("Output relay process exited with error", "outputURL", outputURL, "err", err)
-		if !shuttingDown && orm.FailureCallback != nil {
-			orm.Logger.Debug("Calling failure callback", "inputURL", inputURL, "outputURL", outputURL)
-			orm.FailureCallback(inputURL, outputURL)
-			return
-		} else {
-			orm.Logger.Debug("Output relay exited with error during graceful shutdown, skipping failure callback", "outputURL", outputURL)
-		}
-	} else {
-		orm.Logger.Info("Output relay process completed successfully", "outputURL", outputURL)
+	// No error: process exited cleanly
+	if !alreadyCleaned {
+		orm.cleanupOutputRelay(relay, "run-clean")
 	}
+	orm.Logger.Info("Output relay stopped cleanly", "outputURL", outputURL)
 }
 
 // DeleteOutput completely removes an output relay
@@ -253,25 +260,13 @@ func (orm *OutputRelayManager) DeleteOutput(outputURL string) error {
 	}
 	relay.mu.Lock()
 	relay.shuttingDown = true
-	proc := relay.Proc
-	relay.Proc = nil
-	relay.Status = OutputStopped
-	inputURL := relay.InputURL
 	relay.mu.Unlock()
 	// Remove from map before stopping process
 	delete(orm.Relays, outputURL)
 	orm.mu.Unlock()
 
-	// Stop the process outside of any locks
-	if proc != nil {
-		err := proc.Stop(1 * time.Second)
-		if err != nil {
-			orm.Logger.Warn("Error deleting ffmpeg process", "outputURL", outputURL, "err", err)
-		}
-	}
-
-	// Always call failure callback for deleted outputs to decrement input relay refcount
-	if orm.FailureCallback != nil {
+	shouldCallFailure, inputURL, outputURL := orm.cleanupOutputRelay(relay, "delete")
+	if shouldCallFailure {
 		orm.Logger.Debug("Calling failure callback for deleted output", "inputURL", inputURL, "outputURL", outputURL)
 		orm.FailureCallback(inputURL, outputURL)
 	}
