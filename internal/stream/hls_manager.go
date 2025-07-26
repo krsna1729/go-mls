@@ -685,6 +685,7 @@ func (m *HLSManager) DeleteSession(inputName string) {
 	}
 	if sess.Proc != nil {
 		sess.Proc.Stop(m.getFFmpegStopTimeout())
+		sess.Proc.Wait() // Ensure process is fully cleaned up
 	}
 	// Remove session from map immediately so new viewers can't join
 	delete(m.sessions, inputName)
