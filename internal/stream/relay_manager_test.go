@@ -94,15 +94,34 @@ func TestDeleteOutput_NoPanic(t *testing.T) {
 
 func TestExportImportConfig_RoundTrip(t *testing.T) {
 	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Use a unique temp directory for this test to avoid file conflicts and ensure isolation
+	tempDir := t.TempDir()
+	file := filepath.Join(tempDir, "test_relay_export.json")
+
 	rl := newTestRelayManager()
-	file := "test_relay_export.json"
-	defer os.Remove(file)
-	if err := rl.ExportConfig(file); err != nil {
-		t.Fatalf("export failed: %v", err)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if err := rl.ExportConfig(file); err != nil {
+			t.Errorf("export failed: %v", err)
+			return
+		}
+		if err := rl.ImportConfig(file); err != nil {
+			t.Errorf("import failed: %v", err)
+		}
+	}()
+
+	select {
+	case <-ctx.Done():
+		t.Fatal("TestExportImportConfig_RoundTrip timed out")
+	case <-done:
 	}
-	if err := rl.ImportConfig(file); err != nil {
-		t.Fatalf("import failed: %v", err)
-	}
+	// The tempDir and file are automatically cleaned up by t.TempDir
+	// This approach ensures the test is robust, isolated, and not flaky due to file system conflicts.
 }
 
 func TestExportConfig_AndImportConfig_RoundTripWithRelays(t *testing.T) {
