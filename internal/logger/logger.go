@@ -1,11 +1,11 @@
 package logger
 
 import (
-	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"runtime"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -128,7 +128,7 @@ func (l *Logger) rateLimitKey(msg string) string {
 	// Note: import "runtime"
 	_, file, line, ok := runtime.Caller(2)
 	if ok {
-		return fmt.Sprintf("%s:%d:%s", file, line, msg)
+		return file + ":" + strconv.Itoa(line) + ":" + msg
 	}
 	return msg // fallback if runtime not available
 }

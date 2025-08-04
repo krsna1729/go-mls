@@ -1,7 +1,6 @@
 package stream
 
 import (
-	"fmt"
 	"go-mls/internal/httputil"
 	"net/http"
 	"strings"
@@ -59,7 +58,7 @@ func ApiStartHLSViewer(hlsMgr *HLSManager, relayMgr *RelayManager) http.HandlerF
 		relayMgr.Logger.Info("HLS viewer started", "inputName", req.InputName, "viewerID", viewerID)
 		httputil.WriteJSON(w, http.StatusOK, map[string]string{
 			"viewer_id":    viewerID,
-			"playlist_url": fmt.Sprintf("/api/relay/watch-input/hls/%s/index.m3u8", req.InputName),
+			"playlist_url": "/api/relay/watch-input/hls/" + req.InputName + "/index.m3u8",
 		})
 	}
 }

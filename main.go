@@ -4,7 +4,6 @@ import (
 	"context"
 	"embed"
 	"flag"
-	"fmt"
 	"io/fs"
 	"net/http"
 	"os"
@@ -36,7 +35,7 @@ func main() {
 	// Load configuration
 	cfg, err := config.LoadConfig(configFile, tempLogger)
 	if err != nil {
-		fmt.Printf("Failed to load configuration: %v\n", err)
+		tempLogger.Error("Failed to load configuration", "err", err)
 		os.Exit(1)
 	}
 
@@ -317,23 +316,9 @@ func printResourceUsage(logger *logger.Logger, initialGoroutines int) {
 		logger.Info("No goroutine leaks detected")
 	}
 
-	logger.Info("Memory usage", "allocated", formatBytes(memStats.Alloc), "total_alloc", formatBytes(memStats.TotalAlloc), "system", formatBytes(memStats.Sys), "gc_cycles", memStats.NumGC, "heap_objects", memStats.HeapObjects)
+	logger.Info("Memory usage", "allocated_bytes", memStats.Alloc, "total_alloc_bytes", memStats.TotalAlloc, "system_bytes", memStats.Sys, "gc_cycles", memStats.NumGC, "heap_objects", memStats.HeapObjects)
 
 	logger.Info("System info", "cpu_cores", runtime.NumCPU(), "go_version", runtime.Version(), "os", runtime.GOOS, "arch", runtime.GOARCH)
 
 	logger.Info("==============================")
-}
-
-// formatBytes converts bytes to human readable format
-func formatBytes(bytes uint64) string {
-	const unit = 1024
-	if bytes < unit {
-		return fmt.Sprintf("%d B", bytes)
-	}
-	div, exp := uint64(unit), 0
-	for n := bytes / unit; n >= unit; n /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
 }

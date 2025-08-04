@@ -534,7 +534,7 @@ func (rm *RelayManager) StatusV2() StatusV2Response {
 		if in.Proc != nil {
 			speed, _ := in.Proc.GetSpeed()
 			inputStatus.Speed = speed
-			rm.Logger.Debug("StatusV2: Input relay %s speed: %.2fx", in.InputURL, speed)
+			rm.Logger.Debug("StatusV2: Input relay speed", "inputURL", in.InputURL, "speed", speed)
 		}
 		// Gather outputs for this input
 		outputs := []OutputRelayStatusV2{}
@@ -565,7 +565,7 @@ func (rm *RelayManager) StatusV2() StatusV2Response {
 				if out.Proc != nil {
 					if bitrate, ok := out.Proc.GetBitrate(); ok {
 						outputStatus.Bitrate = bitrate
-						rm.Logger.Debug("StatusV2: Output relay %s bitrate: %.2f kbps", out.OutputURL, bitrate)
+						rm.Logger.Debug("StatusV2: Output relay bitrate", "outputURL", out.OutputURL, "bitrate", bitrate)
 					}
 				}
 				outputs = append(outputs, outputStatus)
@@ -811,7 +811,7 @@ func (rm *RelayManager) StartInputRelayForConsumer(inputName string) (string, er
 func (rm *RelayManager) StopInputRelayForConsumer(inputName string) {
 	inputURL, exists := rm.GetInputURLByName(inputName)
 	if !exists {
-		rm.Logger.Warn("Cannot stop input relay for %s: input configuration not found", inputName)
+		rm.Logger.Warn("Cannot stop input relay for missing input configuration", "inputName", inputName)
 		return
 	}
 

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -68,7 +69,7 @@ func (v *MapViewerManager) RemoveViewer(viewerID string) error {
 }
 
 func generateViewerID() string {
-	return fmt.Sprintf("viewer-%d", time.Now().UnixNano())
+	return "viewer-" + strconv.FormatInt(time.Now().UnixNano(), 10)
 }
 
 type HLSSession struct {
@@ -479,7 +480,7 @@ func (m *HLSManager) RemoveViewer(inputName, viewerID string) error {
 	return sess.ViewerManager.RemoveViewer(viewerID)
 }
 
-// Shutdown gracefully stops the cleanup loop and cleans up all sessions and ffmpeg processes.
+// Shutdown gracefully stops the cleanup loop
 func (m *HLSManager) Shutdown() {
 	m.cancel()
 	m.mu.Lock()
