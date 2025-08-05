@@ -63,7 +63,21 @@ func NewRelayManager(l *logger.Logger, recDir string, ffmpegLogLevel string) *Re
 	// Set up failure callback for output relays to clean up input relay refcount
 	orm.SetFailureCallback(func(inputURL, outputURL string) {
 		l.Info("Output relay failure callback: cleaning up input relay refcount for", "inputURL", inputURL, "outputURL", outputURL)
-		irm.StopInputRelay(inputURL) // RTSP cleanup is handled internally
+		irm.mu.Lock()
+		inputRelay, ok := irm.Relays[inputURL]
+		irm.mu.Unlock()
+		if ok {
+			inputRelay.mu.Lock()
+			if inputRelay.RefCount > 0 {
+				inputRelay.RefCount--
+				l.Info("Input relay refcount decremented (failure callback)", "inputURL", inputURL, "outputURL", outputURL, "refCount", inputRelay.RefCount, "action", "failureCallback")
+			} else {
+				l.Warn("Input relay refcount already zero (failure callback)", "inputURL", inputURL, "outputURL", outputURL, "action", "failureCallback")
+			}
+			inputRelay.mu.Unlock()
+		} else {
+			l.Warn("Input relay not found (failure callback)", "inputURL", inputURL, "outputURL", outputURL, "action", "failureCallback")
+		}
 	})
 
 	return rm
@@ -212,7 +226,7 @@ func (rm *RelayManager) StartRelayWithOptions(inputURL, outputURL, inputName, ou
 	err = rm.OutputRelays.StartOutputRelay(config)
 	if err != nil {
 		rm.Logger.Error("Failed to start output relay", "err", err)
-		rm.StopInputRelayForConsumer(inputName)
+		rm.StopInputRelayForConsumer(inputURL, outputURL)
 		return err
 	}
 
@@ -283,12 +297,35 @@ func (rm *RelayManager) DeleteInput(inputURL, inputName string) error {
 func (rm *RelayManager) DeleteOutput(inputURL, outputURL, inputName, outputName string) error {
 	rm.Logger.Debug("DeleteOutput called", "inputURL", inputURL, "outputURL", outputURL, "inputName", inputName, "outputName", outputName)
 
-	// Delete the output relay (this will also clean up input relay refcount via callback)
+	// Ensure the output relay is stopped before deletion to decrement refcount
+	rm.OutputRelays.mu.Lock()
+	outputRelay, exists := rm.OutputRelays.Relays[outputURL]
+	rm.OutputRelays.mu.Unlock()
+	if exists {
+		outputRelay.mu.Lock()
+		isRunning := outputRelay.Status == OutputRunning || outputRelay.Status == OutputStarting
+		outputRelay.mu.Unlock()
+		if isRunning {
+			rm.Logger.Info("DeleteOutput: output relay is running, stopping first", "outputURL", outputURL)
+			rm.OutputRelays.StopOutputRelay(outputURL)
+		}
+	}
+
+	// Delete the output relay (this will also clean up input relay refcount via callback if not already done)
 	err := rm.OutputRelays.DeleteOutput(outputURL)
 	if err != nil {
 		rm.Logger.Error("Failed to delete output relay", "outputURL", outputURL, "err", err)
 		return err
 	}
+	rm.Logger.Info("Output relay deleted", "inputURL", inputURL, "outputURL", outputURL, "action", "DeleteOutput")
+	// Log input relay refcount after output deletion
+	rm.InputRelays.mu.Lock()
+	if inputRelay, ok := rm.InputRelays.Relays[inputURL]; ok {
+		inputRelay.mu.Lock()
+		rm.Logger.Info("Input relay refcount after output deletion", "inputURL", inputURL, "outputURL", outputURL, "refCount", inputRelay.RefCount, "action", "DeleteOutput")
+		inputRelay.mu.Unlock()
+	}
+	rm.InputRelays.mu.Unlock()
 
 	rm.Logger.Info("Deleted output relay", "inputName", inputName, "inputURL", inputURL, "outputName", outputName, "outputURL", outputURL)
 	return nil
@@ -515,11 +552,13 @@ func (rm *RelayManager) StatusV2() StatusV2Response {
 		in.mu.Lock()
 		cpu, mem := 0.0, uint64(0)
 		// Safely access process info to avoid data race
-		if in.Proc != nil && in.Proc.Cmd != nil && in.Proc.Cmd.Process != nil {
-			pid := in.Proc.PID
-			if usage, err := process.GetProcUsage(pid); err == nil {
-				cpu = usage.CPU
-				mem = usage.Mem
+		if in.Proc != nil {
+			pid := in.Proc.GetPID()
+			if pid > 0 {
+				if usage, err := process.GetProcUsage(pid); err == nil {
+					cpu = usage.CPU
+					mem = usage.Mem
+				}
 			}
 		}
 		inputStatus := InputRelayStatusV2{
@@ -808,14 +847,23 @@ func (rm *RelayManager) StartInputRelayForConsumer(inputName string) (string, er
 
 // StopInputRelayForConsumer decrements the consumer count for an input relay
 // This is used by HLS sessions, recordings, etc. when they stop consuming
-func (rm *RelayManager) StopInputRelayForConsumer(inputName string) {
-	inputURL, exists := rm.GetInputURLByName(inputName)
-	if !exists {
-		rm.Logger.Warn("Cannot stop input relay for missing input configuration", "inputName", inputName)
+func (rm *RelayManager) StopInputRelayForConsumer(inputURL, outputURL string) {
+	rm.InputRelays.mu.Lock()
+	inputRelay, ok := rm.InputRelays.Relays[inputURL]
+	rm.InputRelays.mu.Unlock()
+	if !ok {
+		rm.Logger.Warn("StopInputRelayForConsumer: input relay not found", "inputURL", inputURL, "outputURL", outputURL)
 		return
 	}
-
-	rm.InputRelays.StopInputRelay(inputURL)
+	inputRelay.mu.Lock()
+	defer inputRelay.mu.Unlock()
+	if inputRelay.RefCount > 0 {
+		inputRelay.RefCount--
+		rm.Logger.Info("Input relay refcount decremented", "inputURL", inputURL, "outputURL", outputURL, "refCount", inputRelay.RefCount, "action", "StopInputRelayForConsumer")
+	} else {
+		rm.Logger.Warn("Input relay refcount already zero", "inputURL", inputURL, "outputURL", outputURL, "action", "StopInputRelayForConsumer")
+	}
+	// Optionally, add logic here if you want to stop the relay when refcount reaches 0
 }
 
 var _ RelayManagerAPI = (*RelayManager)(nil)

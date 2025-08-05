@@ -38,7 +38,7 @@ type InputRelay struct {
 	Timeout  time.Duration // set at Start, then read-only
 
 	// --- Mutable, protected by mu ---
-	Proc      *FFmpegProcess   // may be replaced on restart, protected by mu
+	Proc      FFmpegProcess    // may be replaced on restart, protected by mu
 	Status    InputRelayStatus // read/written by multiple goroutines, protected by mu
 	LastError string           // protected by mu
 	RefCount  int              // protected by mu
@@ -131,7 +131,7 @@ func (irm *InputRelayManager) StartInputRelay(inputName, inputURL, localURL stri
 		return "", err
 	}
 	relay.Proc = proc
-	err = proc.Start()
+	err = proc.Start(ctx)
 	if err != nil {
 		relay.Status = InputError
 		relay.LastError = err.Error()
@@ -143,7 +143,7 @@ func (irm *InputRelayManager) StartInputRelay(inputName, inputURL, localURL stri
 	}
 	relay.Status = InputRunning
 	relay.LastError = "" // Clear any previous error on successful start
-	irm.Logger.Info("Started ffmpeg process", "PID", proc.PID, "inputURL", inputURL, "localURL", localURL, "refcount", currentRefCount)
+	irm.Logger.Info("Started ffmpeg process", "PID", proc.GetPID(), "inputURL", inputURL, "localURL", localURL, "refcount", currentRefCount)
 	// Start process wait/monitor goroutine
 	go irm.RunInputRelay(relay)
 	local := relay.LocalURL
@@ -165,7 +165,7 @@ func (irm *InputRelayManager) StopInputRelay(inputURL string) bool {
 	}
 	relay.mu.Lock()
 	shouldStop := false
-	var proc *FFmpegProcess
+	var proc FFmpegProcess
 	if relay.RefCount > 0 {
 		relay.RefCount--
 		currentRefCount := relay.RefCount
@@ -187,7 +187,7 @@ func (irm *InputRelayManager) StopInputRelay(inputURL string) bool {
 	irm.mu.Unlock()
 
 	if shouldStop && proc != nil {
-		err := proc.Stop(2 * time.Second)
+		err := proc.Stop(context.Background(), 2*time.Second)
 		if err != nil {
 			irm.Logger.Warn("Error stopping ffmpeg process", "inputURL", inputURL, "err", err)
 		}
@@ -226,7 +226,7 @@ func (irm *InputRelayManager) ForceStopInputRelay(inputURL string) bool {
 	irm.mu.Unlock()
 
 	if proc != nil {
-		err := proc.Stop(1 * time.Second)
+		err := proc.Stop(context.Background(), 1*time.Second)
 		if err != nil {
 			irm.Logger.Warn("Error force stopping ffmpeg process", "inputURL", inputURL, "err", err)
 		}
@@ -243,7 +243,7 @@ func (irm *InputRelayManager) ForceStopInputRelay(inputURL string) bool {
 // RunInputRelay runs and monitors the input relay process
 func (irm *InputRelayManager) RunInputRelay(relay *InputRelay) {
 	irm.Logger.Info("Running input relay", "inputURL", relay.InputURL, "localURL", relay.LocalURL)
-	var proc *FFmpegProcess
+	var proc FFmpegProcess
 	relay.mu.Lock()
 	proc = relay.Proc
 	relay.mu.Unlock()
@@ -282,10 +282,10 @@ func (irm *InputRelayManager) RunInputRelay(relay *InputRelay) {
 		return
 	}
 	if err != nil {
-		irm.Logger.Error("Input relay process exited with error", "inputURL", inputURL, "PID", proc.PID, "err", err)
+		irm.Logger.Error("Input relay process exited with error", "inputURL", inputURL, "PID", proc.GetPID(), "err", err)
 		irm.Logger.Error("[ffmpeg output] for %s:\n%s", inputURL, output)
 	} else {
-		irm.Logger.Info("Input relay process completed successfully", "inputURL", inputURL, "PID", proc.PID)
+		irm.Logger.Info("Input relay process completed successfully", "inputURL", inputURL, "PID", proc.GetPID())
 	}
 }
 
@@ -339,7 +339,7 @@ func (irm *InputRelayManager) DeleteInput(inputURL string) error {
 
 	// Stop the process outside of any locks
 	if proc != nil {
-		err := proc.Stop(1 * time.Second)
+		err := proc.Stop(context.Background(), 1*time.Second)
 		if err != nil {
 			irm.Logger.Warn("Error deleting ffmpeg process", "inputURL", inputURL, "err", err)
 		}

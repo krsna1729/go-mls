@@ -35,8 +35,8 @@ type RecordingManager struct {
 	// --- Mutable fields protected by mu ---
 	mu         sync.RWMutex
 	recordings map[string]*Recording
-	processes  map[string]*FFmpegProcess // Now uses FFmpegProcess abstraction
-	dones      map[string]chan struct{}  // done channel for each recording
+	processes  map[string]FFmpegProcess // Now uses FFmpegProcess abstraction
+	dones      map[string]chan struct{} // done channel for each recording
 
 	// --- Immutable/config fields (set at construction) ---
 	Logger   *logger.Logger // Logger
@@ -57,7 +57,7 @@ func NewRecordingManager(l *logger.Logger, dir string, relayMgr *RelayManager) *
 	ctx, cancel := context.WithCancel(context.Background())
 	rm := &RecordingManager{
 		recordings: make(map[string]*Recording),
-		processes:  make(map[string]*FFmpegProcess),
+		processes:  make(map[string]FFmpegProcess),
 		dones:      make(map[string]chan struct{}),
 		Logger:     l,
 		dir:        dir,
@@ -100,7 +100,7 @@ func (rm *RecordingManager) startRecordingPlaceholder(name, sourceURL string) (s
 }
 
 // startRecordingProcess starts the relay and ffmpeg process, handling errors and cleanup.
-func (rm *RecordingManager) startRecordingProcess(name, uniqueKey string) (string, *FFmpegProcess, context.CancelFunc, error) {
+func (rm *RecordingManager) startRecordingProcess(name, uniqueKey string) (string, FFmpegProcess, context.CancelFunc, error) {
 	rm.Logger.Debug("startRecordingProcess called", "name", name, "uniqueKey", uniqueKey)
 	localRelayURL, err := rm.RelayMgr.StartInputRelayForConsumer(name)
 	if err != nil {
@@ -118,16 +118,16 @@ func (rm *RecordingManager) startRecordingProcess(name, uniqueKey string) (strin
 	if err != nil {
 		procCancel() // prevent context leak
 		rm.Logger.Error("Failed to create ffmpeg process", "err", err)
-		rm.RelayMgr.StopInputRelayForConsumer(name)
+		rm.RelayMgr.StopInputRelayForConsumer(name, "")
 		rm.mu.Lock()
 		delete(rm.recordings, uniqueKey)
 		rm.mu.Unlock()
 		return "", nil, nil, err
 	}
-	if err := proc.Start(); err != nil {
+	if err := proc.Start(procCtx); err != nil {
 		procCancel() // prevent context leak
 		rm.Logger.Error("Failed to start ffmpeg", "err", err)
-		rm.RelayMgr.StopInputRelayForConsumer(name)
+		rm.RelayMgr.StopInputRelayForConsumer(name, "")
 		rm.mu.Lock()
 		delete(rm.recordings, uniqueKey)
 		rm.mu.Unlock()
@@ -138,9 +138,9 @@ func (rm *RecordingManager) startRecordingProcess(name, uniqueKey string) (strin
 }
 
 // handleRecordingLifecycle runs the recording lifecycle goroutine.
-func (rm *RecordingManager) handleRecordingLifecycle(name, uniqueKey string, proc *FFmpegProcess, procCancel context.CancelFunc, done chan struct{}) {
+func (rm *RecordingManager) handleRecordingLifecycle(name, uniqueKey string, proc FFmpegProcess, procCancel context.CancelFunc, done chan struct{}) {
 	defer procCancel() // Ensure process context is canceled when lifecycle ends
-	defer rm.RelayMgr.StopInputRelayForConsumer(name)
+	defer rm.RelayMgr.StopInputRelayForConsumer(name, "")
 	cmdDone := make(chan error, 1)
 	go func() { cmdDone <- proc.Wait() }()
 	select {
@@ -171,10 +171,10 @@ func (rm *RecordingManager) handleRecordingLifecycle(name, uniqueKey string, pro
 		}
 	case <-done:
 		rm.Logger.Debug("StartRecording: recording goroutine done channel closed", "uniqueKey", uniqueKey)
-		if proc.Cmd.Process != nil {
-			pid := proc.Cmd.Process.Pid
+		if proc.GetPID() != 0 {
+			pid := proc.GetPID()
 			rm.Logger.Info("RecordingManager: Gracefully terminating ffmpeg process", "pid", pid, "name", name)
-			err := proc.Stop(2 * time.Second)
+			err := proc.Stop(context.Background(), 2*time.Second)
 			if err != nil {
 				rm.Logger.Warn("Failed to stop ffmpeg process", "pid", pid, "err", err)
 			}
@@ -211,11 +211,14 @@ func (rm *RecordingManager) StartRecording(ctx context.Context, name, sourceURL 
 	if err != nil {
 		return err
 	}
+	// Protect all updates to shared state with the mutex
+	rm.mu.Lock()
 	placeholderRec.FilePath = filePath
 	placeholderRec.Filename = filepath.Base(filePath)
 	rm.processes[uniqueKey] = proc
 	done := make(chan struct{})
 	rm.dones[uniqueKey] = done
+	rm.mu.Unlock()
 	go rm.handleRecordingLifecycle(name, uniqueKey, proc, procCancel, done)
 	sseBroker.NotifyAll("update")
 	return nil

@@ -39,7 +39,7 @@ type OutputRelay struct {
 	FFmpegArgs     []string          // set at Start, then read-only
 
 	// --- Mutable, protected by mu ---
-	Proc         ffmpegProcess     // may be replaced on restart, protected by mu
+	Proc         FFmpegProcess     // may be replaced on restart, protected by mu
 	Status       OutputRelayStatus // protected by mu
 	LastError    string            // protected by mu
 	shuttingDown bool              // protected by mu
@@ -72,7 +72,7 @@ type OutputRelayManager struct {
 	mu                 sync.Mutex                         // protects Relays
 	Logger             *logger.Logger                     // immutable
 	FailureCallback    func(inputURL, outputURL string)   // immutable after set
-	_testFFmpegFactory func(args ...string) ffmpegProcess // test-only, nil in prod
+	_testFFmpegFactory func(args ...string) FFmpegProcess // test-only, nil in prod
 }
 
 func NewOutputRelayManager(l *logger.Logger) *OutputRelayManager {
@@ -105,7 +105,7 @@ func (orm *OutputRelayManager) StartOutputRelay(config OutputRelayConfig) error 
 		return fmt.Errorf("output relay already running for %s", config.OutputURL)
 	}
 	ctx := context.Background() // Use background context for now; can be enhanced for cancellation
-	var proc ffmpegProcess
+	var proc FFmpegProcess
 	var err error
 	if orm._testFFmpegFactory != nil {
 		proc = orm._testFFmpegFactory(config.FFmpegArgs...)
@@ -133,7 +133,7 @@ func (orm *OutputRelayManager) StartOutputRelay(config OutputRelayConfig) error 
 	orm.Relays[config.OutputURL] = relay
 	orm.mu.Unlock()
 	// Start ffmpeg process
-	err = proc.Start()
+	err = proc.Start(ctx)
 	if err != nil {
 		orm.mu.Lock()
 		relay.mu.Lock()
@@ -171,7 +171,7 @@ func (orm *OutputRelayManager) cleanupOutputRelay(relay *OutputRelay, reason str
 
 	// Stop the process outside the lock
 	if proc != nil {
-		err := proc.Stop(2 * time.Second)
+		err := proc.Stop(context.Background(), 2*time.Second)
 		if err != nil {
 			orm.Logger.Warn("Error stopping ffmpeg process during cleanup", "outputURL", outputURL, "err", err, "reason", reason)
 		}
@@ -211,7 +211,7 @@ func (orm *OutputRelayManager) StopOutputRelay(outputURL string) {
 // RunOutputRelay runs and monitors the output relay process
 func (orm *OutputRelayManager) RunOutputRelay(relay *OutputRelay) {
 	orm.Logger.Info("Running output relay", "localURL", relay.LocalURL, "outputURL", relay.OutputURL)
-	var proc ffmpegProcess
+	var proc FFmpegProcess
 	relay.mu.Lock()
 	proc = relay.Proc
 	relay.mu.Unlock()

@@ -26,7 +26,7 @@ import (
 //go:generate mockgen -destination=mock_relay_manager.go -package=stream . RelayManagerAPI
 type RelayManagerAPI interface {
 	StartInputRelayForConsumer(inputName string) (string, error)
-	StopInputRelayForConsumer(inputName string)
+	StopInputRelayForConsumer(inputURL string, outputURL string)
 }
 
 // ViewerManager defines the interface for managing viewers in HLS sessions.
@@ -85,21 +85,10 @@ type HLSSession struct {
 	Ready      bool                 // Session readiness flag
 	Mu         sync.RWMutex         // Protects all mutable fields above
 
-	// --- Process management (concurrent-safe via ffmpegProcess interface) ---
-	Proc ffmpegProcess // FFmpeg process abstraction (handles concurrency and output capture)
+	// --- Process management (concurrent-safe via FFmpegProcess interface) ---
+	Proc FFmpegProcess // FFmpeg process abstraction (handles concurrency and output capture)
 
 	ViewerManager ViewerManager // Per-session viewer management
-}
-
-type ffmpegProcess interface {
-	Start() error
-	Stop(timeout time.Duration) error
-	Wait() error
-	GetLastOutputLines(n int) []string
-
-	// Add process info accessors for concurrency-safe relay status reporting
-	GetPID() int
-	GetBitrate() (float64, bool)
 }
 
 type HLSManager struct {
@@ -124,7 +113,7 @@ type HLSManager struct {
 	logger *logger.Logger // Direct logger dependency
 
 	// For testability: allow injection of ffmpeg process creation
-	newFFmpegProcess func(ctx context.Context, args ...string) (ffmpegProcess, error)
+	newFFmpegProcess func(ctx context.Context, args ...string) (FFmpegProcess, error)
 }
 
 // HLSManagerConfig holds all configuration for HLSManager using time.Duration fields only
@@ -156,12 +145,8 @@ func NewHLSManager(cfg HLSManagerConfig, logger *logger.Logger) *HLSManager {
 		cancel:          cancel,
 		config:          cfg, // Store config
 		logger:          logger,
-		newFFmpegProcess: func(ctx context.Context, args ...string) (ffmpegProcess, error) {
-			proc, err := NewFFmpegProcess(ctx, args...)
-			if err != nil {
-				return nil, err
-			}
-			return proc, nil
+		newFFmpegProcess: func(ctx context.Context, args ...string) (FFmpegProcess, error) {
+			return NewFFmpegProcess(ctx, args...)
 		},
 	}
 	go m.cleanupLoop(ctx)
@@ -287,7 +272,7 @@ func (m *HLSManager) startInputRelayIfNeeded(inputName, localURL string) (string
 // stopInputRelayIfNeeded stops the input relay if a relay manager is present.
 func (m *HLSManager) stopInputRelayIfNeeded(inputName string) {
 	if m.relayManager != nil {
-		m.relayManager.StopInputRelayForConsumer(inputName)
+		m.relayManager.StopInputRelayForConsumer(inputName, "")
 	}
 }
 
@@ -303,7 +288,7 @@ func (m *HLSManager) createHLSTempDir(inputName string) (string, error) {
 }
 
 // createAndStartFFmpegProcess creates and starts the ffmpeg process for HLS.
-func (m *HLSManager) createAndStartFFmpegProcess(localURL, dir string) (ffmpegProcess, error) {
+func (m *HLSManager) createAndStartFFmpegProcess(localURL, dir string) (FFmpegProcess, error) {
 	playlist := filepath.Join(dir, "index.m3u8")
 	segmentPattern := filepath.Join(dir, "segment_%03d.ts")
 	ffmpegArgs := []string{
@@ -333,11 +318,10 @@ func (m *HLSManager) createAndStartFFmpegProcess(localURL, dir string) (ffmpegPr
 		}
 	}()
 	procIface, err := m.newFFmpegProcess(procCtx, ffmpegArgs...)
-	// procIface, err := m.newFFmpegProcess(procCtx, "-i", localURL, "-c:v", "libx264", "-f", "hls", "-hls_time", "2", "-hls_list_size", "6", "-hls_flags", "delete_segments+append_list", "-hls_segment_filename", segmentPattern, "-y", playlist)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create ffmpeg process: %w", err)
 	}
-	if err := procIface.Start(); err != nil {
+	if err := procIface.Start(procCtx); err != nil {
 		return nil, fmt.Errorf("failed to start ffmpeg: %w", err)
 	}
 	procCancel = nil // Ownership transferred to process
@@ -416,7 +400,11 @@ func (m *HLSManager) setSessionReadiness(sess *HLSSession, inputName string, rea
 	}
 	m.logger.Error("HLS session failed to become ready", "inputName", inputName)
 	if sess.Proc != nil {
-		lines := sess.Proc.GetLastOutputLines(40)
+		output := sess.Proc.GetOutput()
+		lines := strings.Split(strings.TrimSpace(output), "\n")
+		if len(lines) > 40 {
+			lines = lines[len(lines)-40:]
+		}
 		for _, line := range lines {
 			if line != "" {
 				m.logger.Error("ffmpeg output", "line", line)
@@ -682,10 +670,10 @@ func (m *HLSManager) DeleteSession(inputName string) {
 		return
 	}
 	if sess.IsConsumer && m.relayManager != nil {
-		m.relayManager.StopInputRelayForConsumer(sess.InputName)
+		m.relayManager.StopInputRelayForConsumer(sess.InputName, "")
 	}
 	if sess.Proc != nil {
-		sess.Proc.Stop(m.getFFmpegStopTimeout())
+		sess.Proc.Stop(m.ctx, m.getFFmpegStopTimeout())
 		sess.Proc.Wait() // Ensure process is fully cleaned up
 	}
 	// Remove session from map immediately so new viewers can't join
