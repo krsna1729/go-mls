@@ -308,6 +308,8 @@ func (rm *RelayManager) DeleteOutput(inputURL, outputURL, inputName, outputName 
 		if isRunning {
 			rm.Logger.Info("DeleteOutput: output relay is running, stopping first", "outputURL", outputURL)
 			rm.OutputRelays.StopOutputRelay(outputURL)
+			// Also decrement input relay refcount since we are stopping a running output
+			rm.InputRelays.StopInputRelay(inputURL)
 		}
 	}
 
