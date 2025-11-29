@@ -329,23 +329,26 @@ func (m *mockRelayManager) StartInputRelayForConsumer(inputName string) (string,
 	}
 	return "mockurl", nil
 }
-func (m *mockRelayManager) StopInputRelayForConsumer(inputName string) {}
+func (m *mockRelayManager) StopInputRelayForConsumer(inputName, outputURL string) {}
 
 // Satisfy the interface expected by HLSManager
 var _ interface {
 	StartInputRelayForConsumer(string) (string, error)
-	StopInputRelayForConsumer(string)
+	StopInputRelayForConsumer(string, string)
 } = &mockRelayManager{}
 
 type testFFmpegProcess struct{ startErr error }
 
-func (m *testFFmpegProcess) Start() error                      { return m.startErr }
-func (m *testFFmpegProcess) Stop(timeout time.Duration) error  { return nil }
-func (m *testFFmpegProcess) Wait() error                       { return nil }
-func (m *testFFmpegProcess) GetLastOutputLines(n int) []string { return nil }
-func (p *testFFmpegProcess) GetBitrate() (float64, bool)       { return 0, false } // GetBitrate returns the last parsed bitrate (kbps) and true if available
+func (m *testFFmpegProcess) Start(ctx context.Context) error                       { return m.startErr }
+func (m *testFFmpegProcess) Stop(ctx context.Context, timeout time.Duration) error { return nil }
+func (m *testFFmpegProcess) Wait() error                                           { return nil }
+func (m *testFFmpegProcess) GetLastOutputLines(n int) []string                     { return nil }
+func (p *testFFmpegProcess) GetBitrate() (float64, bool)                           { return 0, false } // GetBitrate returns the last parsed bitrate (kbps) and true if available
 // GetPID returns 0 for testFFmpegProcess
-func (p *testFFmpegProcess) GetPID() int { return 0 }
+func (p *testFFmpegProcess) GetPID() int                    { return 0 }
+func (p *testFFmpegProcess) GetOutput() string              { return "" }
+func (p *testFFmpegProcess) GetSpeed() (float64, time.Time) { return 0, time.Time{} }
+func (p *testFFmpegProcess) OutputChannel() <-chan string   { return nil }
 
 func TestHLSManager_GetOrStartSession_InputRelayFail(t *testing.T) {
 	h := NewHLSManager(minimalHLSManagerConfig(), newTestLogger())
@@ -369,7 +372,7 @@ func TestHLSManager_GetOrStartSession_TempDirFail(t *testing.T) {
 func TestHLSManager_GetOrStartSession_FFmpegFail(t *testing.T) {
 	h := NewHLSManager(minimalHLSManagerConfig(), newTestLogger())
 	// Patch HLSManager to use a test double for FFmpegProcess creation
-	h.newFFmpegProcess = func(ctx context.Context, args ...string) (ffmpegProcess, error) {
+	h.newFFmpegProcess = func(ctx context.Context, args ...string) (FFmpegProcess, error) {
 		return nil, errors.New("ffmpeg create fail")
 	}
 	_, err := h.GetOrStartSession("input", "rtsp://localhost/relay/input")
@@ -377,7 +380,7 @@ func TestHLSManager_GetOrStartSession_FFmpegFail(t *testing.T) {
 		t.Errorf("expected ffmpeg create fail error, got %v", err)
 	}
 	// Now test ffmpeg Start() fail
-	h.newFFmpegProcess = func(ctx context.Context, args ...string) (ffmpegProcess, error) {
+	h.newFFmpegProcess = func(ctx context.Context, args ...string) (FFmpegProcess, error) {
 		return &testFFmpegProcess{startErr: errors.New("ffmpeg start fail")}, nil
 	}
 	_, err = h.GetOrStartSession("input2", "rtsp://localhost/relay/input2")
@@ -390,7 +393,7 @@ func TestHLSManager_GetOrStartSession_FFmpegFail(t *testing.T) {
 type shutdownMockRelay struct{ stopped []string }
 
 func (m *shutdownMockRelay) StartInputRelayForConsumer(string) (string, error) { return "", nil }
-func (m *shutdownMockRelay) StopInputRelayForConsumer(inputName string) {
+func (m *shutdownMockRelay) StopInputRelayForConsumer(inputName, outputURL string) {
 	m.stopped = append(m.stopped, inputName)
 }
 
@@ -399,13 +402,19 @@ type shutdownMockProc struct {
 	waited  bool
 }
 
-func (p *shutdownMockProc) Start() error                      { return nil }
-func (p *shutdownMockProc) Stop(timeout time.Duration) error  { p.stopped = true; return nil }
+func (p *shutdownMockProc) Start(ctx context.Context) error { return nil }
+func (p *shutdownMockProc) Stop(ctx context.Context, timeout time.Duration) error {
+	p.stopped = true
+	return nil
+}
 func (p *shutdownMockProc) Wait() error                       { p.waited = true; return nil }
 func (p *shutdownMockProc) GetLastOutputLines(n int) []string { return nil }
 func (p *shutdownMockProc) GetBitrate() (float64, bool)       { return 0, false } // GetBitrate returns the last parsed bitrate (kbps) and true if available
 // GetPID returns 0 for shutdownMockProc
-func (p *shutdownMockProc) GetPID() int { return 0 }
+func (p *shutdownMockProc) GetPID() int                    { return 0 }
+func (p *shutdownMockProc) GetOutput() string              { return "" }
+func (p *shutdownMockProc) GetSpeed() (float64, time.Time) { return 0, time.Time{} }
+func (p *shutdownMockProc) OutputChannel() <-chan string   { return nil }
 
 func TestHLSManager_Shutdown(t *testing.T) {
 	logr := newTestLogger()
@@ -756,7 +765,7 @@ func TestHLSManager_GetOrStartSession_ErrorBranches(t *testing.T) {
 	}
 	// FFmpegProcess error
 	mgr4 := NewHLSManager(minimalHLSManagerConfig(), newTestLogger())
-	mgr4.newFFmpegProcess = func(ctx context.Context, args ...string) (ffmpegProcess, error) {
+	mgr4.newFFmpegProcess = func(ctx context.Context, args ...string) (FFmpegProcess, error) {
 		return nil, errors.New("ffmpeg create fail")
 	}
 	_, err = mgr4.GetOrStartSession("failffmpeg", "rtsp://localhost/relay/failffmpeg")
@@ -764,7 +773,7 @@ func TestHLSManager_GetOrStartSession_ErrorBranches(t *testing.T) {
 		t.Errorf("expected ffmpeg create fail error, got %v", err)
 	}
 	// FFmpeg Start error
-	mgr4.newFFmpegProcess = func(ctx context.Context, args ...string) (ffmpegProcess, error) {
+	mgr4.newFFmpegProcess = func(ctx context.Context, args ...string) (FFmpegProcess, error) {
 		return &testFFmpegProcess{startErr: errors.New("ffmpeg start fail")}, nil
 	}
 	_, err = mgr4.GetOrStartSession("failffmpeg2", "rtsp://localhost/relay/failffmpeg2")

@@ -4,12 +4,25 @@ import (
 	"context"
 	"go-mls/internal/logger"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+type mockFFmpegProcess struct {
+	PID int
+}
+
+func (m *mockFFmpegProcess) Start(ctx context.Context) error                       { return nil }
+func (m *mockFFmpegProcess) Stop(ctx context.Context, timeout time.Duration) error { return nil }
+func (m *mockFFmpegProcess) Wait() error                                           { return nil }
+func (m *mockFFmpegProcess) GetLastOutputLines(n int) []string                     { return nil }
+func (m *mockFFmpegProcess) GetBitrate() (float64, bool)                           { return 0, false }
+func (m *mockFFmpegProcess) GetPID() int                                           { return m.PID }
+func (m *mockFFmpegProcess) GetOutput() string                                     { return "" }
+func (m *mockFFmpegProcess) GetSpeed() (float64, time.Time)                        { return 0, time.Time{} }
+func (m *mockFFmpegProcess) OutputChannel() <-chan string                          { return nil }
 
 func newTestRelayManager() *RelayManager {
 	// Use correct timeouts: 5 seconds as time.Duration
@@ -756,7 +769,7 @@ func TestStopInputRelayForConsumer_Basic(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	// Stop input relay for consumer
-	rl.StopInputRelayForConsumer(inputName)
+	rl.StopInputRelayForConsumer(inputName, "")
 	// Wait for status to become InputStopped
 	deadline = time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
@@ -822,7 +835,7 @@ func TestStatusV2_WithProcessInfo(t *testing.T) {
 		LocalURL:  "local",
 		Status:    InputRunning,
 		LastError: "test error",
-		Proc: &FFmpegProcess{
+		Proc: &mockFFmpegProcess{
 			PID: 12345,
 		},
 	}
@@ -836,7 +849,7 @@ func TestStatusV2_WithProcessInfo(t *testing.T) {
 		LocalURL:   "local",
 		Status:     OutputRunning,
 		LastError:  "output error",
-		Proc: &FFmpegProcess{
+		Proc: &mockFFmpegProcess{
 			PID: 12346,
 		},
 	}
@@ -914,15 +927,13 @@ func TestStatusV2_WithInvalidProcess(t *testing.T) {
 
 	// Simulate input relay with process that has invalid PID
 	inURL := "rtsp://localhost:8554/test"
-	mockCmd := &exec.Cmd{}
 	rl.InputRelays.Relays[inURL] = &InputRelay{
 		InputURL:  inURL,
 		InputName: "in",
 		LocalURL:  "local",
 		Status:    InputRunning,
-		Proc: &FFmpegProcess{
+		Proc: &mockFFmpegProcess{
 			PID: -1, // Invalid PID
-			Cmd: mockCmd,
 		},
 	}
 
@@ -934,7 +945,7 @@ func TestStatusV2_WithInvalidProcess(t *testing.T) {
 		InputURL:   inURL,
 		LocalURL:   "local",
 		Status:     OutputRunning,
-		Proc: &FFmpegProcess{
+		Proc: &mockFFmpegProcess{
 			PID: 0, // Zero PID should be handled
 		},
 	}
@@ -952,7 +963,7 @@ func TestStopInputRelayForConsumer_InputNotFound(t *testing.T) {
 	rl := newTestRelayManager()
 
 	// Try to stop a non-existent input relay
-	rl.StopInputRelayForConsumer("nonexistent")
+	rl.StopInputRelayForConsumer("nonexistent", "")
 
 	// Should not panic or error - this tests the warning path
 	// The test passes if no panic occurs
@@ -976,7 +987,7 @@ func TestStopInputRelayForConsumer_Success(t *testing.T) {
 	}
 
 	// Stop input relay for consumer
-	rl.StopInputRelayForConsumer(inputName)
+	rl.StopInputRelayForConsumer(inputName, "")
 
 	// Should call through to StopInputRelay
 	// This tests the success path where input config exists

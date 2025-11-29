@@ -849,23 +849,38 @@ func (rm *RelayManager) StartInputRelayForConsumer(inputName string) (string, er
 
 // StopInputRelayForConsumer decrements the consumer count for an input relay
 // This is used by HLS sessions, recordings, etc. when they stop consuming
-func (rm *RelayManager) StopInputRelayForConsumer(inputURL, outputURL string) {
+func (rm *RelayManager) StopInputRelayForConsumer(inputURLOrName, outputURL string) {
+	rm.Logger.Info("StopInputRelayForConsumer called", "input", inputURLOrName, "outputURL", outputURL)
+
+	// Try to resolve as inputURL first (direct lookup)
+	targetURL := inputURLOrName
 	rm.InputRelays.mu.Lock()
-	inputRelay, ok := rm.InputRelays.Relays[inputURL]
+	_, exists := rm.InputRelays.Relays[targetURL]
 	rm.InputRelays.mu.Unlock()
-	if !ok {
-		rm.Logger.Warn("StopInputRelayForConsumer: input relay not found", "inputURL", inputURL, "outputURL", outputURL)
-		return
+
+	if !exists {
+		// Try to resolve as inputName
+		if url, found := rm.GetInputURLByName(inputURLOrName); found {
+			targetURL = url
+			rm.Logger.Debug("Resolved input name to URL", "name", inputURLOrName, "url", targetURL)
+		} else {
+			// If still not found, it might be that the relay is already gone or never existed
+			// But we should try to look it up in config just in case it's a name
+			rm.configMu.RLock()
+			if cfg, ok := rm.inputConfigs[inputURLOrName]; ok {
+				targetURL = cfg.InputURL
+				rm.Logger.Debug("Resolved input name from config", "name", inputURLOrName, "url", targetURL)
+			}
+			rm.configMu.RUnlock()
+		}
 	}
-	inputRelay.mu.Lock()
-	defer inputRelay.mu.Unlock()
-	if inputRelay.RefCount > 0 {
-		inputRelay.RefCount--
-		rm.Logger.Info("Input relay refcount decremented", "inputURL", inputURL, "outputURL", outputURL, "refCount", inputRelay.RefCount, "action", "StopInputRelayForConsumer")
+
+	stopped := rm.InputRelays.StopInputRelay(targetURL)
+	if stopped {
+		rm.Logger.Info("Input relay stopped by consumer", "inputURL", targetURL, "outputURL", outputURL)
 	} else {
-		rm.Logger.Warn("Input relay refcount already zero", "inputURL", inputURL, "outputURL", outputURL, "action", "StopInputRelayForConsumer")
+		rm.Logger.Debug("Input relay refcount decremented but not stopped", "inputURL", targetURL, "outputURL", outputURL)
 	}
-	// Optionally, add logic here if you want to stop the relay when refcount reaches 0
 }
 
 var _ RelayManagerAPI = (*RelayManager)(nil)
