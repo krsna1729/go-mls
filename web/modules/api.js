@@ -29,8 +29,8 @@ const API = (() => {
 
         // HLS APIs
         startHLSViewer: (inputName) => call('/api/relay/hls/start-viewer', 'POST', { input_name: inputName }),
-        stopHLSViewer: (viewerId) => call('/api/relay/hls/stop-viewer', 'POST', { viewer_id: viewerId }),
-        heartbeat: (viewerId) => call('/api/relay/hls/heartbeat', 'POST', { viewer_id: viewerId }),
+        stopHLSViewer: (inputName, viewerId) => call('/api/relay/hls/stop-viewer', 'POST', { input_name: inputName, viewer_id: viewerId }),
+        heartbeat: (inputName, viewerId) => call('/api/relay/hls/heartbeat', 'POST', { input_name: inputName, viewer_id: viewerId }),
 
         // Recording APIs
         getRecordings: () => call('/api/recording/list'),

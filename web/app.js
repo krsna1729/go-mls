@@ -774,7 +774,7 @@ document.addEventListener('DOMContentLoaded', function () {
         heartbeatErrorCount = 0;
         // Send heartbeat every 15 seconds
         heartbeatInterval = setInterval(() => {
-            API.heartbeat(viewerId)
+            API.heartbeat(inputName, viewerId)
                 .then(resp => {
                     if (resp.status === 410) {
                         // Session expired or input deleted, stop polling immediately
@@ -806,7 +806,7 @@ document.addEventListener('DOMContentLoaded', function () {
             console.log('HLS heartbeat stopped (stopHLSViewer)');
         }
         if (viewerId && inputName) {
-            API.stopHLSViewer(viewerId)
+            API.stopHLSViewer(inputName, viewerId)
                 .catch(err => {
                     console.error('Error stopping HLS viewer:', err);
                 });
