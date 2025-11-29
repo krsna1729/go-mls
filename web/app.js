@@ -152,57 +152,9 @@ document.addEventListener('DOMContentLoaded', function () {
         <input type="text" id="searchBox" placeholder="Search sources or destinations by name or URL" style="width:60%;margin-bottom:1em;">
     `;
 
-    let lastSearch = '';
-    function highlightMatch(text, query) {
-        if (!query) return text;
-        const re = new RegExp(`(${query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'ig');
-        return text.replace(re, '<mark>$1</mark>');
-    }
 
-    function filterData(data, query) {
-        if (!query) return data;
-        const q = query.toLowerCase();
-        // Adapted for new API: data.relays is [{input, outputs}]
-        const filtered = { ...data, relays: [] };
-        if (!data.relays) return filtered;
-        for (const relay of data.relays) {
-            const input = relay.input || {};
-            const inputMatch = (input.input_name && input.input_name.toLowerCase().includes(q)) ||
-                (input.input_url && input.input_url.toLowerCase().includes(q));
-            let outputs = relay.outputs || [];
-            let matchingOutputs = outputs.filter(out =>
-                (out.output_name && out.output_name.toLowerCase().includes(q)) ||
-                (out.output_url && out.output_url.toLowerCase().includes(q))
-            );
-            if (inputMatch || matchingOutputs.length > 0) {
-                filtered.relays.push({
-                    ...relay,
-                    outputs: inputMatch ? outputs : matchingOutputs
-                });
-            }
-        }
-        return filtered;
-    }
-
-    function formatBytes(bytes) {
-        if (bytes < 1024) return bytes + ' B';
-        if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-        if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
-        return (bytes / (1024 * 1024 * 1024)).toFixed(1) + ' GB';
-    }
-
-    function formatBitrate(kbps) {
-        if (kbps >= 1000) return (kbps / 1000).toFixed(2) + ' Mbps';
-        if (kbps > 0) return Math.round(kbps) + ' kbps';
-        return '0 kbps';
-    }
-
-    function getStatusBadge(status) {
-        if (status === 'Running') return '<span class="badge badge-running">Running</span>';
-        if (status === 'Stopped') return '<span class="badge badge-stopped">Stopped</span>';
-        if (status === 'Error') return '<span class="badge badge-error">Error</span>';
-        return '<span class="badge badge-unknown">Unknown</span>';
-    }
+    // Use utility functions from Utils module
+    // formatBytes, formatBitrate, getStatusBadge, filterData are now in modules/utils.js
 
     // Track open details rows by relayIdx-endpointIdx
     const openDetails = new Set();
@@ -219,7 +171,7 @@ document.addEventListener('DOMContentLoaded', function () {
             <td style="word-break:break-all; padding:8px 12px;" data-label="Output">
                 <span class="centered-cell" title="${ep.output_url}"><span>${ep.output_name || ep.output_url}</span><button class='eyeBtn' data-url="${ep.output_url}" title="Show Output URL"><span class="material-icons">visibility</span></button></span>
             </td>
-            <td style="padding:8px 12px;" data-label="Status">${getStatusBadge(status)}</td>
+            <td style="padding:8px 12px;" data-label="Status">${Utils.getStatusBadge(status)}</td>
             <td style="padding:8px 12px;" data-label="Bitrate (kbps)">${isRunning && typeof ep.bitrate === 'number' ? ep.bitrate : '-'}</td>
             <td style="padding:8px 12px;" data-label="CPU">${isRunning && typeof ep.cpu === 'number' ? ep.cpu.toFixed(1) : '-'}</td>
             <td style="padding:8px 12px;" data-label="Mem">${isRunning && typeof ep.mem === 'number' ? (ep.mem / (1024 * 1024)).toFixed(1) : '-'}</td>
@@ -268,13 +220,13 @@ document.addEventListener('DOMContentLoaded', function () {
                 alert('URL: ' + btn.getAttribute('data-url'));
             };
         });
-        
+
         // Add delete input button handlers
         document.querySelectorAll('.deleteInputBtn').forEach(btn => {
             btn.onclick = function () {
                 const input = btn.getAttribute('data-input');
                 const inputName = btn.getAttribute('data-input-name') || '';
-                
+
                 if (confirm(`Are you sure you want to delete input "${inputName}" and all its outputs? This action cannot be undone.`)) {
                     fetch('/api/relay/delete-input', {
                         method: 'POST',
@@ -298,7 +250,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 }
             };
         });
-        
+
         // Add delete output button handlers
         document.querySelectorAll('.deleteOutputBtn').forEach(btn => {
             btn.onclick = function () {
@@ -306,7 +258,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 const output = btn.getAttribute('data-output');
                 const inputName = btn.getAttribute('data-input-name') || '';
                 const outputName = btn.getAttribute('data-output-name') || '';
-                
+
                 if (confirm(`Are you sure you want to delete output "${outputName}"? This action cannot be undone.`)) {
                     fetch('/api/relay/delete-output', {
                         method: 'POST',
@@ -417,11 +369,11 @@ document.addEventListener('DOMContentLoaded', function () {
     document.getElementById('exportBtn').onclick = function () {
         window.location = '/api/relay/export';
     };
-    
+
     document.getElementById('importBtn').onclick = function () {
         document.getElementById('importFile').click();
     };
-    
+
     document.getElementById('importFile').onchange = function (e) {
         const file = e.target.files[0];
         if (!file) return;
@@ -430,8 +382,8 @@ document.addEventListener('DOMContentLoaded', function () {
         fetch('/api/relay/import', {
             method: 'POST',
             body: formData
-        }).then(() => { 
-            fetchStatus(); 
+        }).then(() => {
+            fetchStatus();
             alert('Import completed successfully!');
         }).catch(err => {
             console.error('Import failed:', err);
@@ -450,13 +402,13 @@ document.addEventListener('DOMContentLoaded', function () {
         window.latestRelayStatus = data;
         window.dispatchEvent(new Event('relayStatusUpdated'));
         const searchVal = document.getElementById('searchBox').value.trim();
-        const filtered = filterData(data, searchVal);
+        const filtered = Utils.filterData(data, searchVal);
         let relayGroups = 0, totalEndpoints = 0, totalCpu = 0, totalMem = 0, totalBitrate = 0, health = 'Good';
         let appCpu = '0.0%';
         let appMem = '0';
         if (filtered && filtered.server) {
             appCpu = typeof filtered.server.cpu === 'number' ? filtered.server.cpu.toFixed(1) + '%' : '0.0%';
-            appMem = typeof filtered.server.mem === 'number' ? formatBytes(filtered.server.mem) : '0';
+            appMem = typeof filtered.server.mem === 'number' ? Utils.formatBytes(filtered.server.mem) : '0';
         }
         if (filtered && filtered.relays) {
             relayGroups = filtered.relays.length;
@@ -482,7 +434,7 @@ document.addEventListener('DOMContentLoaded', function () {
             ? '<span class="badge badge-healthy">Good</span>'
             : '<span class="badge badge-warning">Warning</span>';
         let totalCpuStr = (relayGroups + totalEndpoints) ? totalCpu.toFixed(1) + '%' : '0';
-        let totalMemStr = (relayGroups + totalEndpoints) ? formatBytes(totalMem) : '0';
+        let totalMemStr = (relayGroups + totalEndpoints) ? Utils.formatBytes(totalMem) : '0';
         let serverHtml = `
   <div class="stats-card">
     <div class="stats-grid stats-grid-custom">
@@ -516,7 +468,7 @@ document.addEventListener('DOMContentLoaded', function () {
       </div>
       <div class="stat-block">
         <div class="stat-label">Total Bitrate</div>
-        <div class="stat-value">${formatBitrate(totalBitrate)}</div>
+        <div class="stat-value">${Utils.formatBitrate(totalBitrate)}</div>
       </div>
     </div>
   </div>`;
@@ -562,13 +514,13 @@ document.addEventListener('DOMContentLoaded', function () {
                 const inputStatus = relay.input.status || 'Stopped';
                 const inputError = relay.input.last_error || '';
                 const inputBg = relayIdx % 2 === 0 ? '#f7fafd' : '#f0f4fa';
-                
+
                 if (!relay.outputs || relay.outputs.length === 0) {
                     // No outputs - single row with consistent structure
                     // For input rows (no outputs)
                     html += `<tr data-input-group="group-${relayIdx}">
                         <td class="input-group-row" data-input-group="group-${relayIdx}" title="${input}" style="word-break:break-all; color:#1976d2; font-weight:bold; padding:6px 8px; background:${inputBg}; text-align:center;">${inputName}</td>
-                        <td style="padding:6px 8px; background:${inputBg}; text-align:center;">${getStatusBadge(inputStatus)}</td>
+                        <td style="padding:6px 8px; background:${inputBg}; text-align:center;">${Utils.getStatusBadge(inputStatus)}</td>
                         <td style="padding:6px 8px; background:${inputBg}; text-align:center;">${inputStatus === 'Running' && typeof relay.input.cpu === 'number' ? relay.input.cpu.toFixed(1) : '-'}</td>
                         <td style="padding:6px 8px; background:${inputBg}; text-align:center;">${inputStatus === 'Running' && typeof relay.input.mem === 'number' ? Math.round(relay.input.mem / (1024 * 1024)) : '-'}</td>
                         <td style="padding:6px 8px; background:${inputBg}; text-align:center;">${inputStatus === 'Running' && typeof relay.input.speed === 'number' ? relay.input.speed.toFixed(2) + 'x' : '-'}</td>
@@ -593,7 +545,7 @@ document.addEventListener('DOMContentLoaded', function () {
                         // For input rows with outputs, update the first output row to include the input actions column with rowspan
                         if (isFirstOutput) {
                             html += `<td class="input-group-row" data-input-group="group-${relayIdx}" rowspan="${relay.outputs.length}" title="${input}" style="word-break:break-all; color:#1976d2; font-weight:bold; vertical-align:middle; padding:6px 8px; background:${inputBg}; border:none; text-align:center;">${inputName}</td>`;
-                            html += `<td rowspan="${relay.outputs.length}" style="padding:6px 8px; background:${inputBg}; vertical-align:middle; text-align:center;">${getStatusBadge(inputStatus)}</td>`;
+                            html += `<td rowspan="${relay.outputs.length}" style="padding:6px 8px; background:${inputBg}; vertical-align:middle; text-align:center;">${Utils.getStatusBadge(inputStatus)}</td>`;
                             html += `<td rowspan="${relay.outputs.length}" style="padding:6px 8px; background:${inputBg}; vertical-align:middle; text-align:center;">${inputStatus === 'Running' && typeof relay.input.cpu === 'number' ? relay.input.cpu.toFixed(1) : '-'}</td>`;
                             html += `<td rowspan="${relay.outputs.length}" style="padding:6px 8px; background:${inputBg}; vertical-align:middle; text-align:center;">${inputStatus === 'Running' && typeof relay.input.mem === 'number' ? Math.round(relay.input.mem / (1024 * 1024)) : '-'}</td>`;
                             html += `<td rowspan="${relay.outputs.length}" style="padding:6px 8px; background:${inputBg}; vertical-align:middle; text-align:center;">${inputStatus === 'Running' && typeof relay.input.speed === 'number' ? relay.input.speed.toFixed(2) + 'x' : '-'}</td>`;
@@ -608,16 +560,16 @@ document.addEventListener('DOMContentLoaded', function () {
                                     <div title="${out.output_url}" style="font-weight:bold; color:#1976d2;">${out.output_name || out.output_url}</div>
                                 </div>
                             </td>
-                            <td class="output-cell">${getStatusBadge(outputStatus)}</td>
+                            <td class="output-cell">${Utils.getStatusBadge(outputStatus)}</td>
                             <td class="output-cell">${outputStatus === 'Running' && typeof out.cpu === 'number' ? out.cpu.toFixed(1) : '-'}</td>
                             <td class="output-cell">${outputStatus === 'Running' && typeof out.mem === 'number' ? Math.round(out.mem / (1024 * 1024)) : '-'}</td>
                             <td class="output-cell">${outputStatus === 'Running' && typeof out.bitrate === 'number' ? Math.round(out.bitrate) : '-'}</td>
                             <td class="output-cell">
                                 <div style="display:flex; flex-direction:row; align-items:center; justify-content:center; gap:8px; flex-wrap:nowrap;">
                                     ${outputStatus === 'Running'
-                                    ? `<button class="stopRelayBtn relay-action-btn" data-input="${input}" data-output="${out.output_url}" data-input-name="${inputName}" data-output-name="${out.output_name || ''}" title="Stop Output"><span class="material-icons" style="font-size:16px;">stop</span></button>`
-                                    : `<button class="startRelayBtn relay-action-btn" data-input="${input}" data-output="${out.output_url}" data-input-name="${inputName}" data-output-name="${out.output_name || ''}" title="Start Output"><span class="material-icons" style="font-size:16px;">play_arrow</span></button>`
-                                    }
+                                ? `<button class="stopRelayBtn relay-action-btn" data-input="${input}" data-output="${out.output_url}" data-input-name="${inputName}" data-output-name="${out.output_name || ''}" title="Stop Output"><span class="material-icons" style="font-size:16px;">stop</span></button>`
+                                : `<button class="startRelayBtn relay-action-btn" data-input="${input}" data-output="${out.output_url}" data-input-name="${inputName}" data-output-name="${out.output_name || ''}" title="Start Output"><span class="material-icons" style="font-size:16px;">play_arrow</span></button>`
+                            }
                                     <button class="deleteOutputBtn" data-input="${input}" data-output="${out.output_url}" data-input-name="${inputName}" data-output-name="${out.output_name || ''}" title="Delete Output"><span class="material-icons" style="font-size:16px;">delete</span></button>
                                 </div>
                             </td>`;
@@ -751,95 +703,95 @@ document.addEventListener('DOMContentLoaded', function () {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ input_name: inputName })
             })
-            .then(response => response.json())
-            .then(data => {
-                if (data.viewer_id && data.playlist_url) {
-                    const modal = document.getElementById('videoPlayerModal');
-                    const video = document.getElementById('inputVideoPlayer');
-                    // Store viewer info for cleanup
-                    video.dataset.viewerId = data.viewer_id;
-                    video.dataset.inputName = inputName;
-                    console.log('HLS viewer started:', inputName, data.viewer_id);
-                    // --- Consecutive network error counter ---
-                    let hlsNetworkErrorCount = 0;
-                    // HLS.js logic with improved error handling
-                    if (window.Hls && Hls.isSupported()) {
-                        if (window.hlsInstance) {
-                            window.hlsInstance.destroy();
-                        }
-                        const hls = new Hls({
-                            debug: false,
-                            enableWorker: true,
-                            lowLatencyMode: true,
-                            backBufferLength: 90,
-                            manifestLoadingTimeOut: 10000,
-                            manifestLoadingMaxRetry: 5,
-                            levelLoadingTimeOut: 10000,
-                            fragLoadingTimeOut: 20000
-                        });
-                        // Add error handling
-                        hls.on(Hls.Events.ERROR, function(event, data) {
-                            console.error('HLS error:', data.type, data.details, data);
-                            if (data.fatal && data.type === Hls.ErrorTypes.NETWORK_ERROR) {
-                                hlsNetworkErrorCount++;
-                                console.warn('HLS fatal network error count:', hlsNetworkErrorCount);
-                                if (hlsNetworkErrorCount >= 5) {
-                                    closeHLSModal();
-                                    alert('Stream disconnected due to repeated network errors.');
-                                    return;
-                                }
+                .then(response => response.json())
+                .then(data => {
+                    if (data.viewer_id && data.playlist_url) {
+                        const modal = document.getElementById('videoPlayerModal');
+                        const video = document.getElementById('inputVideoPlayer');
+                        // Store viewer info for cleanup
+                        video.dataset.viewerId = data.viewer_id;
+                        video.dataset.inputName = inputName;
+                        console.log('HLS viewer started:', inputName, data.viewer_id);
+                        // --- Consecutive network error counter ---
+                        let hlsNetworkErrorCount = 0;
+                        // HLS.js logic with improved error handling
+                        if (window.Hls && Hls.isSupported()) {
+                            if (window.hlsInstance) {
+                                window.hlsInstance.destroy();
                             }
-                            // Reset on any successful fragment/playlist load
-                            if (data.type === Hls.ErrorTypes.NETWORK_ERROR && hlsNetworkErrorCount > 0 && !data.fatal) {
+                            const hls = new Hls({
+                                debug: false,
+                                enableWorker: true,
+                                lowLatencyMode: true,
+                                backBufferLength: 90,
+                                manifestLoadingTimeOut: 10000,
+                                manifestLoadingMaxRetry: 5,
+                                levelLoadingTimeOut: 10000,
+                                fragLoadingTimeOut: 20000
+                            });
+                            // Add error handling
+                            hls.on(Hls.Events.ERROR, function (event, data) {
+                                console.error('HLS error:', data.type, data.details, data);
+                                if (data.fatal && data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+                                    hlsNetworkErrorCount++;
+                                    console.warn('HLS fatal network error count:', hlsNetworkErrorCount);
+                                    if (hlsNetworkErrorCount >= 5) {
+                                        closeHLSModal();
+                                        alert('Stream disconnected due to repeated network errors.');
+                                        return;
+                                    }
+                                }
+                                // Reset on any successful fragment/playlist load
+                                if (data.type === Hls.ErrorTypes.NETWORK_ERROR && hlsNetworkErrorCount > 0 && !data.fatal) {
+                                    hlsNetworkErrorCount = 0;
+                                }
+                                if (data.fatal) {
+                                    switch (data.type) {
+                                        case Hls.ErrorTypes.NETWORK_ERROR:
+                                            hls.startLoad();
+                                            break;
+                                        case Hls.ErrorTypes.MEDIA_ERROR:
+                                            hls.recoverMediaError();
+                                            break;
+                                        default:
+                                            break;
+                                    }
+                                }
+                            });
+                            // Reset error counter on successful fragment/playlist load
+                            hls.on(Hls.Events.FRAG_LOADED, function () { hlsNetworkErrorCount = 0; });
+                            hls.on(Hls.Events.LEVEL_LOADED, function (event, data) {
                                 hlsNetworkErrorCount = 0;
-                            }
-                            if (data.fatal) {
-                                switch(data.type) {
-                                    case Hls.ErrorTypes.NETWORK_ERROR:
-                                        hls.startLoad();
-                                        break;
-                                    case Hls.ErrorTypes.MEDIA_ERROR:
-                                        hls.recoverMediaError();
-                                        break;
-                                    default:
-                                        break;
+                                if (data.details && data.details.live === false) {
+                                    setTimeout(() => {
+                                        closeHLSModal();
+                                        alert('Stream has ended.');
+                                    }, 500);
                                 }
-                            }
-                        });
-                        // Reset error counter on successful fragment/playlist load
-                        hls.on(Hls.Events.FRAG_LOADED, function() { hlsNetworkErrorCount = 0; });
-                        hls.on(Hls.Events.LEVEL_LOADED, function(event, data) {
-                            hlsNetworkErrorCount = 0;
-                            if (data.details && data.details.live === false) {
+                            });
+                            hls.on(Hls.Events.FRAG_EOF, function () {
                                 setTimeout(() => {
                                     closeHLSModal();
                                     alert('Stream has ended.');
                                 }, 500);
-                            }
-                        });
-                        hls.on(Hls.Events.FRAG_EOF, function() {
-                            setTimeout(() => {
-                                closeHLSModal();
-                                alert('Stream has ended.');
-                            }, 500);
-                        });
-                        hls.loadSource(data.playlist_url);
-                        hls.attachMedia(video);
-                        window.hlsInstance = hls;
-                    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-                        // Native HLS support (Safari)
-                        video.src = data.playlist_url;
-                    } else {
-                        console.warn('HLS not supported by this browser, trying fallback');
-                        video.src = data.playlist_url; // fallback, unlikely to work
-                    }
-                        
+                            });
+                            hls.loadSource(data.playlist_url);
+                            hls.attachMedia(video);
+                            window.hlsInstance = hls;
+                        } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                            // Native HLS support (Safari)
+                            video.src = data.playlist_url;
+                        } else {
+                            console.warn('HLS not supported by this browser, trying fallback');
+                            video.src = data.playlist_url; // fallback, unlikely to work
+                        }
+
                         modal.style.display = 'flex';
                         video.focus();
                         // Start heartbeat
                         startHLSHeartbeat(inputName, data.viewer_id);
                         // --- Auto-close on video end (native event) ---
-                        video.onended = function() {
+                        video.onended = function () {
                             closeHLSModal();
                             alert('Stream has ended.');
                         };
@@ -871,31 +823,31 @@ document.addEventListener('DOMContentLoaded', function () {
             fetch('/api/relay/hls/heartbeat', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ 
-                    input_name: inputName, 
-                    viewer_id: viewerId 
+                body: JSON.stringify({
+                    input_name: inputName,
+                    viewer_id: viewerId
                 })
             })
-            .then(resp => {
-                if (resp.status === 410) {
-                    // Session expired or input deleted, stop polling immediately
-                    clearInterval(heartbeatInterval);
-                    heartbeatInterval = null;
-                    closeHLSModal();
-                    alert('Stream ended or deleted.');
-                    return;
-                }
-                if (!resp.ok) throw new Error('Heartbeat not ok');
-                heartbeatErrorCount = 0; // Reset on success
-            })
-            .catch(err => {
-                heartbeatErrorCount++;
-                console.error('HLS heartbeat failed:', err, 'count:', heartbeatErrorCount);
-                if (heartbeatErrorCount >= 5) {
-                    closeHLSModal();
-                    alert('Stream disconnected due to repeated heartbeat errors.');
-                }
-            });
+                .then(resp => {
+                    if (resp.status === 410) {
+                        // Session expired or input deleted, stop polling immediately
+                        clearInterval(heartbeatInterval);
+                        heartbeatInterval = null;
+                        closeHLSModal();
+                        alert('Stream ended or deleted.');
+                        return;
+                    }
+                    if (!resp.ok) throw new Error('Heartbeat not ok');
+                    heartbeatErrorCount = 0; // Reset on success
+                })
+                .catch(err => {
+                    heartbeatErrorCount++;
+                    console.error('HLS heartbeat failed:', err, 'count:', heartbeatErrorCount);
+                    if (heartbeatErrorCount >= 5) {
+                        closeHLSModal();
+                        alert('Stream disconnected due to repeated heartbeat errors.');
+                    }
+                });
         }, 15000);
         console.log('HLS heartbeat started');
     }
@@ -910,9 +862,9 @@ document.addEventListener('DOMContentLoaded', function () {
             fetch('/api/relay/hls/stop-viewer', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ 
-                    input_name: inputName, 
-                    viewer_id: viewerId 
+                body: JSON.stringify({
+                    input_name: inputName,
+                    viewer_id: viewerId
                 })
             }).catch(err => {
                 console.error('Error stopping HLS viewer:', err);
@@ -931,7 +883,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 const viewerId = video.dataset.viewerId;
                 const inputName = video.dataset.inputName;
                 stopHLSViewer(inputName, viewerId);
-                
+
                 video.pause();
                 video.src = '';
                 if (window.hlsInstance) {
@@ -939,7 +891,7 @@ document.addEventListener('DOMContentLoaded', function () {
                     window.hlsInstance = null;
                 }
                 modal.style.display = 'none';
-                
+
                 // Clean up datasets
                 delete video.dataset.viewerId;
                 delete video.dataset.inputName;
@@ -947,7 +899,7 @@ document.addEventListener('DOMContentLoaded', function () {
             }
         };
     }
-    
+
     // Close modal on outside click (updated)
     const modal = document.getElementById('videoPlayerModal');
     if (modal) {
@@ -957,7 +909,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 const viewerId = video.dataset.viewerId;
                 const inputName = video.dataset.inputName;
                 stopHLSViewer(inputName, viewerId);
-                
+
                 video.pause();
                 video.src = '';
                 if (window.hlsInstance) {
@@ -965,26 +917,26 @@ document.addEventListener('DOMContentLoaded', function () {
                     window.hlsInstance = null;
                 }
                 modal.style.display = 'none';
-                
+
                 // Clean up datasets
                 delete video.dataset.viewerId;
                 delete video.dataset.inputName;
             }
         };
     }
-    
+
     // Handle page unload to clean up HLS viewer
-    window.addEventListener('beforeunload', function() {
+    window.addEventListener('beforeunload', function () {
         const video = document.getElementById('inputVideoPlayer');
         if (video) {
             const viewerId = video.dataset.viewerId;
             const inputName = video.dataset.inputName;
             if (viewerId && inputName) {
                 // Use sendBeacon for reliable cleanup on page unload
-                navigator.sendBeacon('/api/relay/hls/stop-viewer', 
-                    JSON.stringify({ 
-                        input_name: inputName, 
-                        viewer_id: viewerId 
+                navigator.sendBeacon('/api/relay/hls/stop-viewer',
+                    JSON.stringify({
+                        input_name: inputName,
+                        viewer_id: viewerId
                     })
                 );
             }

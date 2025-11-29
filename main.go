@@ -14,9 +14,10 @@ import (
 	"syscall"
 	"time"
 
+	"go-mls/internal/api"
+	"go-mls/internal/app"
 	"go-mls/internal/config"
 	"go-mls/internal/logger"
-	"go-mls/internal/stream"
 )
 
 //go:embed web/*
@@ -45,98 +46,59 @@ func main() {
 	}
 
 	// Use config for logger
-	logger := logger.NewLoggerWithConfig(cfg.Logging.Level, cfg.Logging.File)
-	logger.Info("Starting Go-MLS Relay Manager")
+	log := logger.NewLoggerWithConfig(cfg.Logging.Level, cfg.Logging.File)
+	log.Info("Starting Go-MLS Relay Manager")
 
-	// Get initial goroutine count
+	// Get initial goroutine count for leak detection
 	initialGoroutines := runtime.NumGoroutine()
 
+	// Resolve and create recordings directory
 	absDir, err := filepath.Abs(cfg.Recording.Directory)
 	if err != nil {
-		logger.Fatal("Failed to resolve recordings directory", "err", err)
+		log.Fatal("Failed to resolve recordings directory", "err", err)
 	}
 	if err := os.MkdirAll(absDir, 0755); err != nil {
-		logger.Fatal("Failed to create recordings directory", "err", err)
+		log.Fatal("Failed to create recordings directory", "err", err)
 	}
-	logger.Info("Using recordings directory", "dir", absDir)
+	log.Info("Using recordings directory", "dir", absDir)
 
-	// Initialize RTSP server with configuration
-	rtspServer := stream.NewRTSPServerManager(logger, cfg.Relay.RTSPServer.Host, cfg.Relay.RTSPServer.Port)
-	if err := rtspServer.Start(); err != nil {
-		logger.Fatal("Failed to start RTSP server", "err", err)
+	// Update config with absolute path
+	cfg.Recording.Directory = absDir
+
+	// Initialize application context
+	appCtx, err := app.NewContext(cfg, log)
+	if err != nil {
+		log.Fatal("Failed to initialize application context", "err", err)
 	}
 
-	relayMgr := stream.NewRelayManager(logger, absDir, cfg.FFmpeg.LogLevel)
-	relayMgr.SetRTSPServer(rtspServer)
-	// Set relay configuration timeouts
-	relayMgr.SetTimeouts(time.Duration(cfg.Relay.InputTimeout), time.Duration(cfg.Relay.OutputTimeout))
+	// Start all components
+	if err := appCtx.Start(); err != nil {
+		log.Fatal("Failed to start application", "err", err)
+	}
 
-	recordingMgr := stream.NewRecordingManager(logger, absDir, relayMgr)
-
-	// Convert config.HLSConfig durations to time.Duration for HLSManager
-	hlsMgr := stream.NewHLSManager(stream.HLSManagerConfig{
-		CleanupInterval:        time.Duration(cfg.HLS.CleanupInterval),
-		SessionTimeout:         time.Duration(cfg.HLS.SessionTimeout),
-		FailedCooldown:         time.Duration(cfg.HLS.FailedCooldown),
-		PlaylistReadyTimeout:   time.Duration(cfg.HLS.PlaylistReadyTimeout),
-		PlaylistPollInterval:   time.Duration(cfg.HLS.PlaylistPollInterval),
-		PlaylistPollAttempts:   cfg.HLS.PlaylistPollAttempts,
-		ViewerHeartbeatTimeout: time.Duration(cfg.HLS.ViewerHeartbeatTimeout),
-		FFmpegStopTimeout:      time.Duration(cfg.HLS.FFmpegStopTimeout),
-		PlaylistBaseDir:        cfg.HLS.PlaylistBaseDir,
-	}, logger)
-
-	// Wire up references for proper integration
-	relayMgr.SetHLSManager(hlsMgr)
-	relayMgr.SetRecordingManager(recordingMgr)
-	hlsMgr.SetRelayManager(relayMgr)
+	// Create API router
+	router := api.NewRouter(appCtx)
 
 	// Use embedded static assets
 	staticFS, err := fs.Sub(webAssets, "web")
 	if err != nil {
-		logger.Error("Failed to create sub FS for web assets", "err", err)
+		log.Error("Failed to create sub FS for web assets", "err", err)
 		os.Exit(1)
 	}
-	fs := http.FileServer(http.FS(staticFS))
-	http.Handle("/", fs)
+	fileServer := http.FileServer(http.FS(staticFS))
+	http.Handle("/", fileServer)
 
-	// API Routes - using organized handlers from stream package
-	http.HandleFunc("/api/relay/start", stream.ApiStartRelay(relayMgr))
-	http.HandleFunc("/api/relay/stop", stream.ApiStopRelay(relayMgr))
-	http.HandleFunc("/api/relay/delete-input", stream.ApiDeleteInput(relayMgr))
-	http.HandleFunc("/api/relay/delete-output", stream.ApiDeleteOutput(relayMgr))
-	http.HandleFunc("/api/relay/status", stream.ApiRelayStatus(relayMgr))
-	http.HandleFunc("/api/relay/export", stream.ApiExportRelays(relayMgr))
-	http.HandleFunc("/api/relay/import", stream.ApiImportRelays(relayMgr))
-	http.HandleFunc("/api/relay/presets", stream.ApiRelayPresets())
-	http.HandleFunc("/api/rtsp/status", stream.ApiRTSPStatus(rtspServer))
+	// Register API routes
+	router.RegisterRoutes(http.DefaultServeMux)
 
-	http.HandleFunc("/api/recording/start", stream.ApiStartRecording(recordingMgr))
-	http.HandleFunc("/api/recording/stop", stream.ApiStopRecording(recordingMgr))
-	http.HandleFunc("/api/recording/list", stream.ApiListRecordings(recordingMgr))
-	http.HandleFunc("/api/recording/delete", stream.ApiDeleteRecording(recordingMgr))
-	http.HandleFunc("/api/recording/download", stream.ApiDownloadRecording(recordingMgr))
-	http.HandleFunc("/api/recording/sse", stream.ApiRecordingsSSE())
-
-	http.HandleFunc("/api/input/delete", stream.ApiDeleteInput(relayMgr))
-	http.HandleFunc("/api/output/delete", stream.ApiDeleteOutput(relayMgr))
-	http.HandleFunc("/api/relay/watch-input/hls/", stream.ApiWatchInputHLS(hlsMgr, relayMgr))
-	http.HandleFunc("/api/relay/hls/start-viewer", stream.ApiStartHLSViewer(hlsMgr, relayMgr))
-	http.HandleFunc("/api/relay/hls/stop-viewer", stream.ApiStopHLSViewer(hlsMgr, relayMgr))
-	http.HandleFunc("/api/relay/hls/heartbeat", stream.ApiHLSViewerHeartbeat(hlsMgr))
-
-	// Create HTTP server with proper shutdown support and timeout configuration
+	// Create HTTP server with proper configuration
 	server := &http.Server{
-		Addr: cfg.HTTP.Host + ":" + cfg.HTTP.Port,
-
-		// Connection timeouts from configuration
+		Addr:              cfg.HTTP.Host + ":" + cfg.HTTP.Port,
 		ReadTimeout:       time.Duration(cfg.HTTP.ReadTimeout),
-		WriteTimeout:      time.Duration(cfg.HTTP.WriteTimeout), // Important for SSE connections
+		WriteTimeout:      time.Duration(cfg.HTTP.WriteTimeout),
 		IdleTimeout:       time.Duration(cfg.HTTP.IdleTimeout),
-		ReadHeaderTimeout: 5 * time.Second, // Keep fixed for security
-
-		// Maximum header size (default 1MB is usually fine)
-		MaxHeaderBytes: 1 << 20, // 1 MB
+		ReadHeaderTimeout: 5 * time.Second,
+		MaxHeaderBytes:    1 << 20, // 1 MB
 	}
 
 	// Channel to listen for interrupt signal
@@ -145,54 +107,34 @@ func main() {
 
 	// Start server in a goroutine
 	go func() {
-		logger.Info("Go-MLS relay manager running", "host", cfg.HTTP.Host, "port", cfg.HTTP.Port)
-		logger.Debug("main: server starting", "host", cfg.HTTP.Host, "port", cfg.HTTP.Port)
+		log.Info("Go-MLS relay manager running", "host", cfg.HTTP.Host, "port", cfg.HTTP.Port)
+		log.Debug("main: server starting", "host", cfg.HTTP.Host, "port", cfg.HTTP.Port)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Error("Server error", "err", err)
+			log.Error("Server error", "err", err)
 		}
 	}()
 
 	// Wait for interrupt signal
 	<-sigChan
-	logger.Info("Received interrupt signal, initiating graceful shutdown...")
-
-	// Shutdown HLS manager and clean up all HLS sessions/ffmpeg processes
-	logger.Info("Shutting down HLS manager...")
-	hlsMgr.Shutdown()
-	// Give clients a moment to fetch the final dummy playlist
-	time.Sleep(15 * time.Second)
+	log.Info("Received interrupt signal, initiating graceful shutdown...")
 
 	// Create a context with timeout for graceful shutdown
-	// Increased timeout to allow SSE connections and long-running requests to close properly
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	// Shutdown HTTP server
-	logger.Info("Shutting down HTTP server...")
-	if err := server.Shutdown(ctx); err != nil {
-		logger.Error("Server shutdown error", "err", err)
+	log.Info("Shutting down HTTP server...")
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		log.Error("Server shutdown error", "err", err)
 	}
 
-	// Stop all recordings and shut down recording manager
-	logger.Info("Shutting down recording manager...")
-	recordingMgr.Shutdown()
-
-	// Stop all active relays
-	logger.Info("Stopping all active relays...")
-	relayMgr.StopAllRelays()
-
-	// Stop RTSP server
-	logger.Info("Stopping RTSP server...")
-	rtspServer.Stop()
-
-	// Give more time for cleanup of goroutines
-	logger.Info("Waiting for goroutines to clean up...")
-	time.Sleep(3 * time.Second)
+	// Shutdown application context (HLS, recordings, relays, RTSP)
+	appCtx.Shutdown()
 
 	// Print resource usage statistics
-	printResourceUsage(logger, initialGoroutines)
+	printResourceUsage(log, initialGoroutines)
 
-	logger.Info("Application shutdown complete")
+	log.Info("Application shutdown complete")
 }
 
 // dumpGoroutineProfiles provides detailed goroutine analysis for leak detection
