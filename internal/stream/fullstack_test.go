@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,10 +19,37 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestFullStack_MultiConsumerLifecycle is a comprehensive integration test that exercises
-// the full HTTP API stack with multiple consumers: 5 outputs, 1 recording, and 3 HLS viewers.
-// Expected refcount progression: 7 → 2 → 1 → 0 (HLS is 1 consumer regardless of viewer count)
-func TestFullStack_MultiConsumerLifecycle(t *testing.T) {
+// fullStackTestEnv holds the components for a full-stack integration test
+type fullStackTestEnv struct {
+	tempDir      string
+	relayMgr     *RelayManager
+	recordingMgr *RecordingManager
+	hlsMgr       *HLSManager
+	ts           *httptest.Server
+}
+
+// doRequest performs an HTTP request against the test server
+func (e *fullStackTestEnv) doRequest(method, path string, body interface{}) (*http.Response, error) {
+	var reqBody io.Reader
+	if body != nil {
+		jsonData, err := json.Marshal(body)
+		if err != nil {
+			return nil, err
+		}
+		reqBody = bytes.NewReader(jsonData)
+	}
+	req, err := http.NewRequest(method, e.ts.URL+path, reqBody)
+	if err != nil {
+		return nil, err
+	}
+	if reqBody != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	return http.DefaultClient.Do(req)
+}
+
+// setupFullStackTestEnv initializes the test environment and components
+func setupFullStackTestEnv(t *testing.T) *fullStackTestEnv {
 	// Skip if test file doesn't exist
 	testFile := filepath.Join("..", "..", "testdata", "testsrc.mp4")
 	if _, err := os.Stat(testFile); os.IsNotExist(err) {
@@ -43,13 +71,13 @@ func TestFullStack_MultiConsumerLifecycle(t *testing.T) {
 	rtspServer := NewRTSPServerManager(log, "127.0.0.1", 0) // Use port 0 for random port
 	err = rtspServer.Start()
 	require.NoError(t, err, "Failed to start RTSP server")
-	defer rtspServer.Stop()
+	t.Cleanup(func() { rtspServer.Stop() })
 
 	relayMgr := NewRelayManager(log, tempDir, "error")
 	relayMgr.SetRTSPServer(rtspServer)
 
 	recordingMgr := NewRecordingManager(log, tempDir, relayMgr)
-	defer recordingMgr.Shutdown()
+	t.Cleanup(func() { recordingMgr.Shutdown() })
 
 	hlsMgr := NewHLSManager(HLSManagerConfig{
 		CleanupInterval:        30 * time.Second,
@@ -63,7 +91,7 @@ func TestFullStack_MultiConsumerLifecycle(t *testing.T) {
 		PlaylistBaseDir:        "/tmp",
 	}, log)
 	hlsMgr.SetRelayManager(relayMgr)
-	defer hlsMgr.Shutdown()
+	t.Cleanup(func() { hlsMgr.Shutdown() })
 
 	relayMgr.HLSManager = hlsMgr
 	relayMgr.RecordingManager = recordingMgr
@@ -85,40 +113,54 @@ func TestFullStack_MultiConsumerLifecycle(t *testing.T) {
 
 	// Create test HTTP server
 	ts := httptest.NewServer(mux)
-	defer ts.Close()
+	t.Cleanup(func() { ts.Close() })
 
-	baseURL := ts.URL
-
-	// Helper function for HTTP requests
-	doRequest := func(method, path string, body interface{}) (*http.Response, error) {
-		var reqBody io.Reader
-		if body != nil {
-			jsonData, err := json.Marshal(body)
-			if err != nil {
-				return nil, err
-			}
-			reqBody = bytes.NewReader(jsonData)
-		}
-		req, err := http.NewRequest(method, baseURL+path, reqBody)
-		if err != nil {
-			return nil, err
-		}
-		if reqBody != nil {
-			req.Header.Set("Content-Type", "application/json")
-		}
-		return http.DefaultClient.Do(req)
+	return &fullStackTestEnv{
+		tempDir:      tempDir,
+		relayMgr:     relayMgr,
+		recordingMgr: recordingMgr,
+		hlsMgr:       hlsMgr,
+		ts:           ts,
 	}
+}
+
+// execute runs the given function n times, either sequentially or concurrently
+func execute(n int, concurrent bool, fn func(i int)) {
+	if concurrent {
+		var wg sync.WaitGroup
+		wg.Add(n)
+		for i := 0; i < n; i++ {
+			go func(idx int) {
+				defer wg.Done()
+				fn(idx)
+			}(i)
+		}
+		wg.Wait()
+	} else {
+		for i := 0; i < n; i++ {
+			fn(i)
+		}
+	}
+}
+
+// runFullStackLifecycle runs the full integration test lifecycle
+func runFullStackLifecycle(t *testing.T, concurrent bool) {
+	env := setupFullStackTestEnv(t)
+	relayMgr := env.relayMgr
+	hlsMgr := env.hlsMgr
+	tempDir := env.tempDir
+	doRequest := env.doRequest
 
 	// === Phase 1: Start Consumers ===
-	t.Log("=== Phase 1: Starting Consumers ===")
+	t.Logf("=== Phase 1: Starting Consumers (Concurrent: %v) ===", concurrent)
 	t.Log("Target: 5 outputs + 1 recording + 3 HLS viewers = RefCount 7")
 
 	inputURL := "file://testsrc.mp4"
 	inputName := "TestInput"
 
-	// Start 5 output relays (using file outputs with absolute paths)
+	// Start 5 output relays
 	t.Log("Step 1: Start 5 output relays")
-	for i := 0; i < 5; i++ {
+	execute(5, concurrent, func(i int) {
 		outputFile := filepath.Join(tempDir, fmt.Sprintf("output%d.flv", i))
 		resp, err := doRequest("POST", "/api/relay/start", map[string]interface{}{
 			"input_name":  inputName,
@@ -129,10 +171,7 @@ func TestFullStack_MultiConsumerLifecycle(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, http.StatusOK, resp.StatusCode, "Output %d should start successfully", i)
 		resp.Body.Close()
-	}
-
-	// Wait for RTSP stream to be ready
-	time.Sleep(2 * time.Second)
+	})
 
 	// Verify refcount = 5
 	relayMgr.InputRelays.mu.Lock()
@@ -157,7 +196,9 @@ func TestFullStack_MultiConsumerLifecycle(t *testing.T) {
 	// Start 3 HLS viewers (HLS session counts as 1 consumer)
 	t.Log("Step 3: Start 3 HLS viewers (HLS = 1 consumer)")
 	viewerIDs := make([]string, 3)
-	for i := 0; i < 3; i++ {
+	var viewerMu sync.Mutex // Protect viewerIDs slice during concurrent access
+
+	execute(3, concurrent, func(i int) {
 		resp, err := doRequest("POST", "/api/relay/hls/start-viewer", map[string]interface{}{
 			"input_name": inputName,
 		})
@@ -171,9 +212,13 @@ func TestFullStack_MultiConsumerLifecycle(t *testing.T) {
 
 		viewerID, ok := hlsResp["viewer_id"].(string)
 		require.True(t, ok && viewerID != "", "viewer_id should be present")
+
+		viewerMu.Lock()
 		viewerIDs[i] = viewerID
+		viewerMu.Unlock()
+
 		t.Logf("  HLS viewer %d started: %s", i+1, viewerID)
-	}
+	})
 
 	time.Sleep(1 * time.Second)
 	// Refcount should be 7 (5 outputs + 1 recording + 1 HLS session)
@@ -185,7 +230,9 @@ func TestFullStack_MultiConsumerLifecycle(t *testing.T) {
 
 	// Stop all 5 outputs
 	t.Log("Step 4: Stop all 5 output relays")
-	for i := 0; i < 5; i++ {
+	// Note: We stop sequentially even in concurrent test to avoid potential test environment issues
+	// with concurrent process signaling/cleanup, matching original test behavior.
+	execute(5, false, func(i int) {
 		outputFile := filepath.Join(tempDir, fmt.Sprintf("output%d.flv", i))
 		resp, err := doRequest("POST", "/api/relay/stop", map[string]interface{}{
 			"input_url":   inputURL,
@@ -196,8 +243,7 @@ func TestFullStack_MultiConsumerLifecycle(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, http.StatusOK, resp.StatusCode)
 		resp.Body.Close()
-		time.Sleep(100 * time.Millisecond)
-	}
+	})
 
 	time.Sleep(500 * time.Millisecond)
 	assert.Equal(t, 2, relay.RefCount, "RefCount should be 2 (recording + HLS)")
@@ -219,7 +265,7 @@ func TestFullStack_MultiConsumerLifecycle(t *testing.T) {
 
 	// Stop 2 HLS viewers (HLS session should remain because 1 viewer still active)
 	t.Log("Step 6: Stop 2 of 3 HLS viewers (session remains)")
-	for i := 0; i < 2; i++ {
+	execute(2, false, func(i int) {
 		resp, err := doRequest("POST", "/api/relay/hls/stop-viewer", map[string]interface{}{
 			"input_name": inputName,
 			"viewer_id":  viewerIDs[i],
@@ -227,7 +273,7 @@ func TestFullStack_MultiConsumerLifecycle(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, http.StatusOK, resp.StatusCode)
 		resp.Body.Close()
-	}
+	})
 
 	time.Sleep(500 * time.Millisecond)
 	assert.Equal(t, 1, relay.RefCount, "RefCount still 1 (HLS has 1 viewer left)")
@@ -256,127 +302,12 @@ func TestFullStack_MultiConsumerLifecycle(t *testing.T) {
 	t.Log("=== SUCCESS: RefCount 7→2→1→0, Input relay stopped correctly ===")
 }
 
-// TestFullStack_ConcurrentConsumers tests concurrent API requests for starting/stopping consumers
+// TestFullStack_MultiConsumerLifecycle tests sequential consumer lifecycle
+func TestFullStack_MultiConsumerLifecycle(t *testing.T) {
+	runFullStackLifecycle(t, false)
+}
+
+// TestFullStack_ConcurrentConsumers tests concurrent consumer lifecycle
 func TestFullStack_ConcurrentConsumers(t *testing.T) {
-	testFile := filepath.Join("..", "..", "testdata", "testsrc.mp4")
-	if _, err := os.Stat(testFile); os.IsNotExist(err) {
-		t.Skipf("Skipping integration test: %s not found", testFile)
-	}
-
-	tempDir := t.TempDir()
-	log := logger.NewLogger()
-
-	// Copy test file
-	destPath := filepath.Join(tempDir, "testsrc.mp4")
-	srcData, err := os.ReadFile(testFile)
-	require.NoError(t, err)
-	err = os.WriteFile(destPath, srcData, 0644)
-	require.NoError(t, err)
-
-	// Setup components
-	rtspServer := NewRTSPServerManager(log, "127.0.0.1", 0)
-	err = rtspServer.Start()
-	require.NoError(t, err)
-	defer rtspServer.Stop()
-
-	relayMgr := NewRelayManager(log, tempDir, "error")
-	relayMgr.SetRTSPServer(rtspServer)
-
-	// Setup HTTP server
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/relay/start", ApiStartRelay(relayMgr))
-	mux.HandleFunc("/api/relay/stop", ApiStopRelay(relayMgr))
-
-	ts := httptest.NewServer(mux)
-	defer ts.Close()
-
-	// Helper function
-	doRequest := func(method, path string, body interface{}) (*http.Response, error) {
-		jsonData, err := json.Marshal(body)
-		if err != nil {
-			return nil, err
-		}
-		req, err := http.NewRequest(method, ts.URL+path, bytes.NewReader(jsonData))
-		if err != nil {
-			return nil, err
-		}
-		req.Header.Set("Content-Type", "application/json")
-		return http.DefaultClient.Do(req)
-	}
-
-	t.Log("Starting 5 concurrent output relays")
-
-	// Start first output and wait for RTSP stream to be ready
-	outputFile0 := filepath.Join(tempDir, "output0.mp4")
-	resp, err := doRequest("POST", "/api/relay/start", map[string]interface{}{
-		"input_name":  "ConcTest",
-		"input_url":   "file://testsrc.mp4",
-		"output_name": "Output0",
-		"output_url":  "file://" + filepath.Base(outputFile0),
-	})
-	require.NoError(t, err)
-	require.Equal(t, http.StatusOK, resp.StatusCode)
-	resp.Body.Close()
-
-	// Wait for RTSP stream to be created
-	time.Sleep(2 * time.Second)
-
-	// Start remaining outputs
-	for i := 1; i < 5; i++ {
-		resp, err = doRequest("POST", "/api/relay/start", map[string]interface{}{
-			"input_name":  "ConcTest",
-			"input_url":   "file://testsrc.mp4",
-			"output_name": fmt.Sprintf("Output%d", i),
-			"output_url":  fmt.Sprintf("file://output%d.mp4", i),
-		})
-		require.NoError(t, err)
-		require.Equal(t, http.StatusOK, resp.StatusCode)
-		resp.Body.Close()
-	}
-
-	time.Sleep(2 * time.Second)
-
-	// Verify refcount
-	relayMgr.InputRelays.mu.Lock()
-	relay, exists := relayMgr.InputRelays.Relays["file://testsrc.mp4"]
-	relayMgr.InputRelays.mu.Unlock()
-	require.True(t, exists)
-	assert.Equal(t, 5, relay.RefCount, "RefCount should be 5")
-
-	// Stop 4 outputs
-	t.Log("Stopping 4 outputs")
-	for i := 0; i < 4; i++ {
-		resp, err := doRequest("POST", "/api/relay/stop", map[string]interface{}{
-			"input_url":   "file://testsrc.mp4",
-			"output_url":  fmt.Sprintf("file://output%d.mp4", i),
-			"input_name":  "ConcTest",
-			"output_name": fmt.Sprintf("Output%d", i),
-		})
-		require.NoError(t, err)
-		require.Equal(t, http.StatusOK, resp.StatusCode)
-		resp.Body.Close()
-		time.Sleep(100 * time.Millisecond) // Small delay between stops
-	}
-
-	time.Sleep(500 * time.Millisecond)
-	assert.Equal(t, 1, relay.RefCount, "RefCount should be 1")
-	assert.Equal(t, InputRunning, relay.Status, "Input should still be running")
-
-	// Stop final output
-	t.Log("Stopping final output")
-	resp, err = doRequest("POST", "/api/relay/stop", map[string]interface{}{
-		"input_url":   "file://testsrc.mp4",
-		"output_url":  "file://output4.mp4",
-		"input_name":  "ConcTest",
-		"output_name": "Output4",
-	})
-	require.NoError(t, err)
-	require.Equal(t, http.StatusOK, resp.StatusCode)
-	resp.Body.Close()
-
-	time.Sleep(1 * time.Second)
-	assert.Equal(t, 0, relay.RefCount, "RefCount should be 0")
-	assert.Equal(t, InputStopped, relay.Status, "Input should be stopped")
-
-	t.Log("=== Concurrent test complete ===")
+	runFullStackLifecycle(t, true)
 }
