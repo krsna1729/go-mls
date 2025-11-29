@@ -38,7 +38,7 @@ document.addEventListener('DOMContentLoaded', function () {
         });
         loadedPresets = presets;
     }
-    fetch('/api/relay/presets').then(r => r.json()).then(populatePresetDropdown);
+    API.getPresets().then(populatePresetDropdown);
 
     // --- Advanced Options UI ---
     const advancedOptionsContainer = document.getElementById('advancedOptionsContainer');
@@ -190,11 +190,8 @@ document.addEventListener('DOMContentLoaded', function () {
                 const output = btn.getAttribute('data-output');
                 const inputName = btn.getAttribute('data-input-name') || '';
                 const outputName = btn.getAttribute('data-output-name') || '';
-                fetch('/api/relay/stop', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ input_url: input, output_url: output, input_name: inputName, output_name: outputName })
-                }).then(() => { fetchStatus(); });
+                API.stopRelay({ input_url: input, output_url: output, input_name: inputName, output_name: outputName })
+                    .then(() => fetchStatus());
             };
         });
         document.querySelectorAll('.startRelayBtn').forEach(btn => {
@@ -203,16 +200,12 @@ document.addEventListener('DOMContentLoaded', function () {
                 const output = btn.getAttribute('data-output');
                 const inputName = btn.getAttribute('data-input-name') || '';
                 const outputName = btn.getAttribute('data-output-name') || '';
-                fetch('/api/relay/start', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        input_url: input,
-                        output_url: output,
-                        input_name: inputName,
-                        output_name: outputName
-                    })
-                }).then(() => { fetchStatus(); });
+                API.startRelay({
+                    input_url: input,
+                    output_url: output,
+                    input_name: inputName,
+                    output_name: outputName
+                }).then(() => fetchStatus());
             };
         });
         document.querySelectorAll('.eyeBtn').forEach(btn => {
@@ -228,25 +221,12 @@ document.addEventListener('DOMContentLoaded', function () {
                 const inputName = btn.getAttribute('data-input-name') || '';
 
                 if (confirm(`Are you sure you want to delete input "${inputName}" and all its outputs? This action cannot be undone.`)) {
-                    fetch('/api/relay/delete-input', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            input_url: input,
-                            input_name: inputName
-                        })
-                    }).then(response => {
-                        if (response.ok) {
-                            fetchStatus();
-                        } else {
-                            response.text().then(text => {
-                                alert('Failed to delete input: ' + text);
-                            });
-                        }
-                    }).catch(err => {
-                        console.error('Delete input error:', err);
-                        alert('Failed to delete input: ' + err.message);
-                    });
+                    API.deleteInput({ input_url: input, input_name: inputName })
+                        .then(() => fetchStatus())
+                        .catch(err => {
+                            console.error('Delete input error:', err);
+                            alert('Failed to delete input: ' + (err.message || err));
+                        });
                 }
             };
         });
@@ -260,27 +240,16 @@ document.addEventListener('DOMContentLoaded', function () {
                 const outputName = btn.getAttribute('data-output-name') || '';
 
                 if (confirm(`Are you sure you want to delete output "${outputName}"? This action cannot be undone.`)) {
-                    fetch('/api/relay/delete-output', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            input_url: input,
-                            output_url: output,
-                            input_name: inputName,
-                            output_name: outputName
-                        })
-                    }).then(response => {
-                        if (response.ok) {
-                            fetchStatus();
-                        } else {
-                            response.text().then(text => {
-                                alert('Failed to delete output: ' + text);
-                            });
-                        }
-                    }).catch(err => {
-                        console.error('Delete output error:', err);
-                        alert('Failed to delete output: ' + err.message);
-                    });
+                    API.deleteOutput({
+                        input_url: input,
+                        output_url: output,
+                        input_name: inputName,
+                        output_name: outputName
+                    }).then(() => fetchStatus())
+                        .catch(err => {
+                            console.error('Delete output error:', err);
+                            alert('Failed to delete output: ' + (err.message || err));
+                        });
                 }
             };
         });
@@ -308,8 +277,7 @@ document.addEventListener('DOMContentLoaded', function () {
                     openDetails.add(key);
                 }
                 // Force UI update to reflect the new state
-                fetch('/api/relay/status')
-                    .then(r => r.json())
+                API.getStatus()
                     .then(data => updateUI(data));
             };
         });
@@ -352,16 +320,12 @@ document.addEventListener('DOMContentLoaded', function () {
             const output = btn.getAttribute('data-output');
             const inputName = btn.getAttribute('data-input-name') || '';
             const outputName = btn.getAttribute('data-output-name') || '';
-            fetch('/api/relay/start', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    input_url: input,
-                    output_url: output,
-                    input_name: inputName,
-                    output_name: outputName
-                })
-            }).then(() => { fetchStatus(); });
+            API.startRelay({
+                input_url: input,
+                output_url: output,
+                input_name: inputName,
+                output_name: outputName
+            }).then(() => fetchStatus());
         };
     });
 
@@ -379,10 +343,7 @@ document.addEventListener('DOMContentLoaded', function () {
         if (!file) return;
         const formData = new FormData();
         formData.append('file', file);
-        fetch('/api/relay/import', {
-            method: 'POST',
-            body: formData
-        }).then(() => {
+        API.importConfig(file).then(() => {
             fetchStatus();
             alert('Import completed successfully!');
         }).catch(err => {
@@ -392,9 +353,7 @@ document.addEventListener('DOMContentLoaded', function () {
     };
 
     function fetchStatus() {
-        fetch('/api/relay/status')
-            .then(r => r.json())
-            .then(data => updateUI(data));
+        API.getStatus().then(data => updateUI(data));
     }
 
     function updateUI(data) {
@@ -698,12 +657,7 @@ document.addEventListener('DOMContentLoaded', function () {
             const inputName = btn.getAttribute('data-input-name');
             if (!inputName) return;
             // Start HLS viewer session
-            fetch('/api/relay/hls/start-viewer', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ input_name: inputName })
-            })
-                .then(response => response.json())
+            API.startHLSViewer(inputName)
                 .then(data => {
                     if (data.viewer_id && data.playlist_url) {
                         const modal = document.getElementById('videoPlayerModal');
@@ -820,14 +774,7 @@ document.addEventListener('DOMContentLoaded', function () {
         heartbeatErrorCount = 0;
         // Send heartbeat every 15 seconds
         heartbeatInterval = setInterval(() => {
-            fetch('/api/relay/hls/heartbeat', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    input_name: inputName,
-                    viewer_id: viewerId
-                })
-            })
+            API.heartbeat(viewerId)
                 .then(resp => {
                     if (resp.status === 410) {
                         // Session expired or input deleted, stop polling immediately
@@ -859,16 +806,10 @@ document.addEventListener('DOMContentLoaded', function () {
             console.log('HLS heartbeat stopped (stopHLSViewer)');
         }
         if (viewerId && inputName) {
-            fetch('/api/relay/hls/stop-viewer', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    input_name: inputName,
-                    viewer_id: viewerId
-                })
-            }).catch(err => {
-                console.error('Error stopping HLS viewer:', err);
-            });
+            API.stopHLSViewer(viewerId)
+                .catch(err => {
+                    console.error('Error stopping HLS viewer:', err);
+                });
         }
     }
 
