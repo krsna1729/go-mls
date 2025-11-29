@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -198,7 +200,17 @@ func (rm *RelayManager) StartRelayWithOptions(inputURL, outputURL, inputName, ou
 			args = append(args, opts.ExtraArgs...)
 		}
 	}
-	args = append(args, "-f", "flv", outputURL)
+
+	// Resolve outputURL for FFmpeg (strip file:// prefix and make it relative to recDir)
+	resolvedOutputURL := outputURL
+	if strings.HasPrefix(outputURL, "file://") {
+		// Strip file:// prefix and resolve relative to recDir
+		relativePath := strings.TrimPrefix(outputURL, "file://")
+		resolvedOutputURL = filepath.Join(rm.recDir, relativePath)
+		rm.Logger.Debug("Resolved file output URL", "original", outputURL, "resolved", resolvedOutputURL)
+	}
+
+	args = append(args, "-f", "flv", resolvedOutputURL)
 
 	// Convert FFmpegOptions to map for storage
 	var optsMap map[string]string
