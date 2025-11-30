@@ -273,3 +273,11 @@ func (orm *OutputRelayManager) DeleteOutput(outputURL string) error {
 	orm.Logger.Info("Output relay deleted successfully", "outputURL", outputURL)
 	return nil
 }
+
+// GetOutputRelay returns an output relay safely (read-only access for testing)
+func (orm *OutputRelayManager) GetOutputRelay(outputURL string) (*OutputRelay, bool) {
+	orm.mu.Lock()
+	defer orm.mu.Unlock()
+	relay, exists := orm.Relays[outputURL]
+	return relay, exists
+}
