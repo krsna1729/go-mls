@@ -191,7 +191,7 @@ func runFullStackLifecycle(t *testing.T, concurrent bool) {
 	resp.Body.Close()
 
 	time.Sleep(1 * time.Second)
-	status, refCount, _ = relayMgr.InputRelays.GetRelayStatus(inputURL)
+	_, refCount, _ = relayMgr.InputRelays.GetRelayStatus(inputURL)
 	assert.Equal(t, 6, refCount, "RefCount should be 6 after recording starts")
 
 	// Start 3 HLS viewers (HLS session counts as 1 consumer)
