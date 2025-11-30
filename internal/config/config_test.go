@@ -1,6 +1,8 @@
 package config
 
 import (
+	"encoding/json"
+	"go-mls/internal/logger"
 	"os"
 	"path/filepath"
 	"testing"
@@ -20,12 +22,11 @@ func TestDefaultConfig(t *testing.T) {
 	}
 
 	// Test Relay defaults
-	if config.Relay.InputTimeout != 30*time.Second {
-		t.Errorf("expected input timeout 30s, got %v", config.Relay.InputTimeout)
+	if time.Duration(config.Relay.InputTimeout) != 30*time.Second {
+		t.Errorf("expected default input timeout 30s, got %v", config.Relay.InputTimeout)
 	}
-
-	if config.Relay.OutputTimeout != 60*time.Second {
-		t.Errorf("expected output timeout 60s, got %v", config.Relay.OutputTimeout)
+	if time.Duration(config.Relay.OutputTimeout) != 60*time.Second {
+		t.Errorf("expected default output timeout 60s, got %v", config.Relay.OutputTimeout)
 	}
 
 	// Test Recording defaults
@@ -35,7 +36,7 @@ func TestDefaultConfig(t *testing.T) {
 }
 
 func TestLoadConfigNonExistent(t *testing.T) {
-	config, err := LoadConfig("nonexistent.json")
+	config, err := LoadConfig("nonexistent.json", logger.NewLogger())
 	if err != nil {
 		t.Errorf("expected no error loading nonexistent config, got %v", err)
 	}
@@ -53,7 +54,7 @@ func TestSaveAndLoadConfig(t *testing.T) {
 	// Create a custom config
 	config := DefaultConfig()
 	config.HTTP.Port = "9090"
-	config.Relay.InputTimeout = 45 * time.Second
+	config.Relay.InputTimeout = Duration(45 * time.Second)
 	config.Recording.Directory = "/custom/recordings"
 
 	// Save config
@@ -63,7 +64,7 @@ func TestSaveAndLoadConfig(t *testing.T) {
 	}
 
 	// Load config
-	loadedConfig, err := LoadConfig(configFile)
+	loadedConfig, err := LoadConfig(configFile, logger.NewLogger())
 	if err != nil {
 		t.Errorf("failed to load config: %v", err)
 	}
@@ -73,7 +74,7 @@ func TestSaveAndLoadConfig(t *testing.T) {
 		t.Errorf("expected port '9090', got '%s'", loadedConfig.HTTP.Port)
 	}
 
-	if loadedConfig.Relay.InputTimeout != 45*time.Second {
+	if time.Duration(loadedConfig.Relay.InputTimeout) != 45*time.Second {
 		t.Errorf("expected input timeout 45s, got %v", loadedConfig.Relay.InputTimeout)
 	}
 
@@ -115,8 +116,8 @@ func TestConfigValidation(t *testing.T) {
 		{
 			name: "Output timeout not greater than input",
 			modifyFunc: func(c *Config) {
-				c.Relay.InputTimeout = 60 * time.Second
-				c.Relay.OutputTimeout = 30 * time.Second
+				c.Relay.InputTimeout = Duration(60 * time.Second)
+				c.Relay.OutputTimeout = Duration(30 * time.Second)
 			},
 			shouldError: true,
 			errorMsg:    "output timeout must be greater than input timeout",
@@ -184,7 +185,7 @@ func TestLoadConfigInvalidJSON(t *testing.T) {
 		t.Fatalf("failed to write test file: %v", err)
 	}
 
-	_, err = LoadConfig(configFile)
+	_, err = LoadConfig(configFile, logger.NewLogger())
 	if err == nil {
 		t.Error("expected error loading invalid JSON, got nil")
 	}
@@ -211,8 +212,130 @@ func TestLoadConfigInvalidValues(t *testing.T) {
 		t.Fatalf("failed to write test file: %v", err)
 	}
 
-	_, err = LoadConfig(configFile)
+	_, err = LoadConfig(configFile, logger.NewLogger())
 	if err == nil {
 		t.Error("expected validation error, got nil")
+	}
+}
+
+func TestSaveConfig_MarshalError(t *testing.T) {
+	// Create a type that cannot be marshaled (func field)
+	type BadConfig struct {
+		F func()
+	}
+	bad := &BadConfig{F: func() {}}
+	_, err := json.Marshal(bad)
+	if err == nil {
+		t.Fatal("expected marshal error, got nil")
+	}
+}
+
+func TestSaveConfig_WriteError(t *testing.T) {
+	c := DefaultConfig()
+	// Try to write to a directory (should fail)
+	dir := t.TempDir()
+	err := c.SaveConfig(dir) // dir is a directory, not a file
+	if err == nil {
+		t.Error("expected error writing to directory, got nil")
+	}
+}
+
+func TestLoadConfig_ReadError(t *testing.T) {
+	// Try to load from a file that cannot be read (simulate permission error)
+	file := filepath.Join(t.TempDir(), "no_read.json")
+	os.WriteFile(file, []byte(`{}`), 0000) // no permissions
+	_, err := LoadConfig(file, logger.NewLogger())
+	if err == nil {
+		t.Error("expected error reading file, got nil")
+	}
+}
+
+func TestLoadConfig_ParseError(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "bad.json")
+	os.WriteFile(file, []byte(`notjson`), 0644)
+	_, err := LoadConfig(file, logger.NewLogger())
+	if err == nil {
+		t.Error("expected parse error, got nil")
+	}
+}
+
+func TestLoadConfig_ValidationError(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "badval.json")
+	os.WriteFile(file, []byte(`{"http": {"host": "0.0.0.0", "port": ""}}`), 0644)
+	_, err := LoadConfig(file, logger.NewLogger())
+	if err == nil {
+		t.Error("expected validation error, got nil")
+	}
+}
+
+func TestDuration_UnmarshalJSON_InvalidString(t *testing.T) {
+	var d Duration
+	err := d.UnmarshalJSON([]byte(`"12min"`))
+	if err == nil {
+		t.Error("expected error for invalid duration string, got nil")
+	}
+}
+
+func TestDuration_UnmarshalJSON_NonString(t *testing.T) {
+	var d Duration
+	err := d.UnmarshalJSON([]byte(`123`)) // not a string
+	if err == nil {
+		t.Error("expected error for non-string JSON, got nil")
+	}
+}
+
+func TestLoadConfig_BadDurations(t *testing.T) {
+	tempDir := t.TempDir()
+	file := filepath.Join(tempDir, "bad_duration.json")
+	badConfig := `{
+		"http": {
+			"host": "0.0.0.0",
+			"port": "8080",
+			"read_timeout": "12min",
+			"write_timeout": "30s",
+			"idle_timeout": "120s"
+		},
+		"relay": {
+			"input_timeout": "30s",
+			"output_timeout": "60s",
+			"rtsp_server": {"host": "127.0.0.1", "port": 8554}
+		},
+		"recording": {"directory": "recordings"},
+		"logging": {"level": "info"},
+		"hls": {},
+		"ffmpeg": {"path": "ffmpeg", "loglevel": "info"}
+	}`
+	os.WriteFile(file, []byte(badConfig), 0644)
+	_, err := LoadConfig(file, logger.NewLogger())
+	if err == nil {
+		t.Error("expected error for bad duration string, got nil")
+	}
+}
+
+func TestLoadConfig_BadTypes(t *testing.T) {
+	tempDir := t.TempDir()
+	file := filepath.Join(tempDir, "bad_types.json")
+	badConfig := `{
+		"http": {
+			"host": "0.0.0.0",
+			"port": 8080,
+			"read_timeout": "30s",
+			"write_timeout": "30s",
+			"idle_timeout": "120s"
+		},
+		"relay": {
+			"input_timeout": "30s",
+			"output_timeout": "60s",
+			"rtsp_server": {"host": "127.0.0.1", "port": 8554}
+		},
+		"recording": {"directory": "recordings"},
+		"logging": {"level": "info"},
+		"hls": {},
+		"ffmpeg": {"path": "ffmpeg", "loglevel": "info"}
+	}`
+	os.WriteFile(file, []byte(badConfig), 0644)
+	_, err := LoadConfig(file, logger.NewLogger())
+	if err == nil {
+		t.Error("expected error for bad port type, got nil")
 	}
 }

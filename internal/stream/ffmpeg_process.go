@@ -5,13 +5,18 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
+
+	"go-mls/internal/logger"
 )
+
+var log = logger.NewLogger()
 
 // FFmpegStatus represents the state of an ffmpeg process
 const (
@@ -21,45 +26,65 @@ const (
 	FFmpegError
 )
 
-// FFmpegProcess manages a single ffmpeg process and its lifecycle.
-//
-// Concurrency notes:
-// - Fields in the 'immutable' group are set once at construction and never changed.
-// - Fields in the 'set-once' group are set at Start() and then read-only.
-// - Fields in the 'mutable (protected by mu)' group may be read/written by multiple goroutines and must be accessed with mu held.
-// - waitOnce/waitCh are used to ensure only one goroutine calls Wait() on Cmd, and all others wait on the channel.
-// - Output capture: FFmpegProcess captures stdout/stderr for both progress parsing and error reporting
-type FFmpegProcess struct {
-	// --- Immutable after construction ---
-	Cmd      *exec.Cmd          // Underlying ffmpeg command (never reassigned)
-	Cancel   context.CancelFunc // Context cancel function (never reassigned)
-	Ctx      context.Context    // Context for cancellation (never reassigned)
-	waitCh   chan error         // Channel for Wait() result (never reassigned)
-	waitOnce sync.Once          // Ensures only one Wait() call on Cmd
+// ProcessHandle abstracts process signaling for testability
+//go:generate mockgen -destination=mock_processhandle.go -package=stream . ProcessHandle
 
-	// --- Set-once at Start(), then read-only ---
-	PID         int       // Set at Start(), then read-only
-	StartTime   time.Time // Set at Start(), then read-only
-	hasProgress bool      // Whether ffmpeg args include -progress for parsing
-
-	// --- Mutable, protected by mu ---
-	Status      int            // FFmpegStarting, FFmpegRunning, etc. (read/written by multiple goroutines)
-	Wg          sync.WaitGroup // For external goroutine tracking (if used)
-	Speed       float64        // Last parsed speed (e.g., 1.01x)
-	LastSpeed   time.Time      // Last time speed was updated
-	Bitrate     float64        // Last parsed bitrate (kbps)
-	LastBitrate time.Time      // Last time bitrate was updated
-	outputBuf   bytes.Buffer   // Captured stdout/stderr for error reporting
-	mu          sync.Mutex     // Protects Status and all mutable fields above
+type ProcessHandle interface {
+	Signal(sig syscall.Signal) error
+	Kill() error
 }
 
-// NewFFmpegProcess creates a new FFmpegProcess with context and process group
-func NewFFmpegProcess(ctx context.Context, args ...string) (*FFmpegProcess, error) {
-	c, cancel := context.WithCancel(ctx)
-	cmd := exec.CommandContext(c, "ffmpeg", args...)
+type osProcessHandle struct {
+	p *os.Process
+}
+
+func (h *osProcessHandle) Signal(sig syscall.Signal) error {
+	return h.p.Signal(sig)
+}
+func (h *osProcessHandle) Kill() error {
+	return h.p.Kill()
+}
+
+// FFmpegProcess defines the interface for managing an ffmpeg process.
+type FFmpegProcess interface {
+	Start(ctx context.Context) error
+	Stop(ctx context.Context, timeout time.Duration) error
+	Wait() error
+	GetOutput() string
+	GetSpeed() (float64, time.Time)
+	GetBitrate() (float64, bool)
+	GetPID() int
+	OutputChannel() <-chan string
+}
+
+// ffmpegProcess implements FFmpegProcess.
+type ffmpegProcess struct {
+	cmd         *exec.Cmd
+	cancel      context.CancelFunc
+	ctx         context.Context
+	waitCh      chan error
+	waitOnce    sync.Once
+	pid         int
+	startTime   time.Time
+	hasProgress bool
+
+	status      int
+	speed       float64
+	lastSpeed   time.Time
+	bitrate     float64
+	lastBitrate time.Time
+	outputBuf   bytes.Buffer
+	outputCh    chan string
+	mu          sync.Mutex
+	process     ProcessHandle
+}
+
+// NewFFmpegProcess creates a new ffmpegProcess instance.
+func NewFFmpegProcess(ctx context.Context, args ...string) (FFmpegProcess, error) {
+	cancelCtx, cancel := context.WithCancel(ctx)
+	cmd := exec.CommandContext(cancelCtx, "ffmpeg", args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
-	// Check if args contain -progress for progress parsing
 	hasProgress := false
 	for i, arg := range args {
 		if arg == "-progress" && i+1 < len(args) && strings.Contains(args[i+1], "pipe:") {
@@ -68,84 +93,87 @@ func NewFFmpegProcess(ctx context.Context, args ...string) (*FFmpegProcess, erro
 		}
 	}
 
-	proc := &FFmpegProcess{
-		Cmd:         cmd,
-		Status:      FFmpegStarting,
-		Cancel:      cancel,
-		Ctx:         c,
+	proc := &ffmpegProcess{
+		cmd:         cmd,
+		status:      FFmpegStarting,
+		cancel:      cancel,
+		ctx:         cancelCtx,
 		waitCh:      make(chan error, 1),
 		hasProgress: hasProgress,
+		outputCh:    make(chan string, 100), // Buffered for output streaming
 	}
 	return proc, nil
 }
 
-// Start launches the ffmpeg process and sets PID/StartTime
-func (p *FFmpegProcess) Start() error {
+// Start launches the ffmpeg process.
+func (p *ffmpegProcess) Start(ctx context.Context) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	// Only set up pipes if they haven't been set already
+	if p.status != FFmpegStarting {
+		return nil // Already started or stopped
+	}
+
 	var stdoutPipe, stderrPipe io.ReadCloser
 	var err error
 
-	if p.Cmd.Stdout == nil {
-		stdoutPipe, err = p.Cmd.StdoutPipe()
+	if p.cmd.Stdout == nil {
+		stdoutPipe, err = p.cmd.StdoutPipe()
 		if err != nil {
-			p.Status = FFmpegError
+			p.status = FFmpegError
+			log.Error("Failed to get ffmpeg stdout pipe", "error", err)
 			return err
 		}
 	}
 
-	if p.Cmd.Stderr == nil {
-		stderrPipe, err = p.Cmd.StderrPipe()
+	if p.cmd.Stderr == nil {
+		stderrPipe, err = p.cmd.StderrPipe()
 		if err != nil {
-			p.Status = FFmpegError
+			p.status = FFmpegError
+			log.Error("Failed to get ffmpeg stderr pipe", "error", err)
 			return err
 		}
 	}
 
-	if err := p.Cmd.Start(); err != nil {
-		p.Status = FFmpegError
+	if err := p.cmd.Start(); err != nil {
+		p.status = FFmpegError
+		log.Error("Failed to start ffmpeg process", "error", err)
 		return err
 	}
-	p.PID = p.Cmd.Process.Pid
-	p.Status = FFmpegRunning
-	p.StartTime = time.Now()
+	p.pid = p.cmd.Process.Pid
+	p.status = FFmpegRunning
+	p.startTime = time.Now()
+	p.process = &osProcessHandle{p: p.cmd.Process}
+	log.Info("Started ffmpeg process", "pid", p.pid, "args", p.cmd.Args)
 
-	// Start a goroutine to call Wait() exactly once
 	go func() {
 		p.waitOnce.Do(func() {
-			err := p.Cmd.Wait()
+			err := p.cmd.Wait()
 			p.waitCh <- err
 			close(p.waitCh)
+			log.Info("ffmpeg process exited", "pid", p.pid, "error", err)
 		})
 	}()
 
-	// Start goroutines to handle output only if we have pipes
 	if stdoutPipe != nil {
 		if p.hasProgress {
-			// For progress parsing commands, parse stdout for speed/bitrate
 			go p.parseProgress(stdoutPipe)
 		} else {
-			// For non-progress commands, capture stdout
 			go p.captureOutput(stdoutPipe)
 		}
 	}
-
 	if stderrPipe != nil {
-		// Always capture stderr for error reporting
 		go p.captureOutput(stderrPipe)
 	}
 
 	return nil
 }
 
-// parseProgress parses ffmpeg -progress output for speed and bitrate
-func (p *FFmpegProcess) parseProgress(r io.Reader) {
+// parseProgress parses ffmpeg -progress output for speed and bitrate.
+func (p *ffmpegProcess) parseProgress(r io.Reader) {
 	if r == nil {
-		return // No progress output available
+		return
 	}
-
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -156,8 +184,8 @@ func (p *FFmpegProcess) parseProgress(r io.Reader) {
 			if val != "N/A" && val != "" {
 				if speed, err := strconv.ParseFloat(val, 64); err == nil {
 					p.mu.Lock()
-					p.Speed = speed
-					p.LastSpeed = time.Now()
+					p.speed = speed
+					p.lastSpeed = time.Now()
 					p.mu.Unlock()
 				}
 			}
@@ -172,29 +200,28 @@ func (p *FFmpegProcess) parseProgress(r io.Reader) {
 			if val != "N/A" && val != "" {
 				if bitrate, err := strconv.ParseFloat(val, 64); err == nil {
 					p.mu.Lock()
-					p.Bitrate = bitrate
-					p.LastBitrate = time.Now()
+					p.bitrate = bitrate
+					p.lastBitrate = time.Now()
 					p.mu.Unlock()
 				}
 			}
 		}
 		select {
-		case <-p.Ctx.Done():
+		case <-p.ctx.Done():
 			return
 		default:
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		// Handle scanner error (e.g., log it)
+		log.Warn("ffmpeg progress scanner error", "error", err)
 	}
 }
 
-// captureOutput captures stdout/stderr output for error reporting
-func (p *FFmpegProcess) captureOutput(r io.Reader) {
+// captureOutput streams output lines to outputCh and captures for reporting.
+func (p *ffmpegProcess) captureOutput(r io.Reader) {
 	if r == nil {
-		return // No output available
+		return
 	}
-
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -203,83 +230,93 @@ func (p *FFmpegProcess) captureOutput(r io.Reader) {
 			p.outputBuf.WriteString(line)
 			p.outputBuf.WriteString("\n")
 			p.mu.Unlock()
+			select {
+			case p.outputCh <- line:
+			default:
+			}
 		}
 		select {
-		case <-p.Ctx.Done():
+		case <-p.ctx.Done():
 			return
 		default:
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		// Handle scanner error (e.g., log it)
+		log.Warn("ffmpeg output scanner error", "error", err)
 	}
 }
 
-// GetSpeed returns the last parsed speed and time (concurrent-safe)
-// Use this from relay managers to get up-to-date ffmpeg speed.
-func (p *FFmpegProcess) GetSpeed() (float64, time.Time) {
+// OutputChannel returns a read-only channel for real-time output lines.
+func (p *ffmpegProcess) OutputChannel() <-chan string {
+	return p.outputCh
+}
+
+// GetSpeed returns the last parsed speed and time.
+func (p *ffmpegProcess) GetSpeed() (float64, time.Time) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.Speed, p.LastSpeed
+	return p.speed, p.lastSpeed
 }
 
-// GetBitrate returns the last parsed bitrate and time (concurrent-safe)
-// Use this from relay managers to get up-to-date ffmpeg bitrate.
-func (p *FFmpegProcess) GetBitrate() (float64, time.Time) {
+// GetPID returns the process PID.
+func (p *ffmpegProcess) GetPID() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.Bitrate, p.LastBitrate
+	return p.pid
 }
 
-// SetStats allows tests or wrappers to inject stats (optional, for extensibility)
-func (p *FFmpegProcess) SetStats(speed, bitrate float64) {
+// GetBitrate returns the last parsed bitrate (kbps) and true if available.
+func (p *ffmpegProcess) GetBitrate() (float64, bool) {
 	p.mu.Lock()
-	p.Speed = speed
-	p.Bitrate = bitrate
-	p.LastSpeed = time.Now()
-	p.LastBitrate = time.Now()
-	p.mu.Unlock()
+	defer p.mu.Unlock()
+	if p.bitrate > 0 {
+		return p.bitrate, true
+	}
+	return 0, false
 }
 
-// Wait waits for the ffmpeg process to exit (safe for concurrent calls)
-func (p *FFmpegProcess) Wait() error {
+// Wait waits for the ffmpeg process to exit.
+func (p *ffmpegProcess) Wait() error {
 	return <-p.waitCh
 }
 
-// Stop attempts graceful shutdown, then force kills if needed
-func (p *FFmpegProcess) Stop(timeout time.Duration) error {
+// Stop attempts graceful shutdown, then force kills if needed.
+func (p *ffmpegProcess) Stop(ctx context.Context, timeout time.Duration) error {
 	p.mu.Lock()
-	if p.Status != FFmpegRunning || p.Cmd == nil || p.Cmd.Process == nil {
+	if p.status != FFmpegRunning || p.process == nil {
 		p.mu.Unlock()
 		return nil
 	}
 	p.mu.Unlock()
-	// Use SIGTERM for graceful shutdown (ffmpeg handles SIGTERM cleanly)
-	err := p.Cmd.Process.Signal(syscall.SIGTERM)
+	log.Info("Stopping ffmpeg process", "pid", p.pid)
+	err := p.process.Signal(syscall.SIGTERM)
 	if err != nil {
-		// Fallback to SIGKILL if SIGTERM fails
-		_ = p.Cmd.Process.Kill()
+		log.Warn("SIGTERM failed, sending SIGKILL", "pid", p.pid, "error", err)
+		_ = p.process.Kill()
 	}
-	// Wait for process to exit or timeout
 	select {
 	case <-time.After(timeout):
-		_ = p.Cmd.Process.Kill()
+		log.Warn("ffmpeg process did not exit in time, killing", "pid", p.pid)
+		_ = p.process.Kill()
 		return nil
 	case <-p.waitCh:
+		log.Info("ffmpeg process stopped", "pid", p.pid)
 		return nil
+	case <-ctx.Done():
+		log.Warn("Stop context cancelled", "pid", p.pid)
+		return ctx.Err()
 	}
 }
 
-// GetOutput returns the captured output (concurrent-safe)
-// Use this to get ffmpeg output for error reporting.
-func (p *FFmpegProcess) GetOutput() string {
+// GetOutput returns the captured output.
+func (p *ffmpegProcess) GetOutput() string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.outputBuf.String()
 }
 
 // GetLastOutputLines returns the last N lines of captured output (concurrent-safe)
-func (p *FFmpegProcess) GetLastOutputLines(n int) []string {
+func (p *ffmpegProcess) GetLastOutputLines(n int) []string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 

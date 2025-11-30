@@ -1,9 +1,9 @@
 package stream
 
 import (
-	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -51,19 +51,21 @@ func TestInputRelayManager_resolveInputURL(t *testing.T) {
 
 func TestInputRelayManager_StartInputRelay_fileURL(t *testing.T) {
 	t.Parallel()
-	tmpDir := t.TempDir()
+	dir, _ := copyTestSrcToTempDir(t)
+	chdirTo(t, dir)
 	log := logger.NewLogger()
-	irm := NewInputRelayManager(log, tmpDir)
+	irm := NewInputRelayManager(log, dir)
 
-	relative := "testsrc.mp4"
-	filePath := filepath.Join(tmpDir, relative)
-	if err := os.WriteFile(filePath, []byte("dummy"), 0644); err != nil {
-		t.Fatalf("failed to create test file: %v", err)
+	rtspServer := NewRTSPServerManager(log, "127.0.0.1", 0)
+	if err := rtspServer.Start(); err != nil {
+		t.Fatalf("failed to start RTSP server: %v", err)
 	}
+	defer rtspServer.Stop()
+	irm.SetRTSPServer(rtspServer)
 
 	inputName := "test"
-	inputURL := "file://" + relative
-	localURL := "rtsp://localhost:8554/relay/test"
+	inputURL := "file://testsrc.mp4"
+	localURL := rtspServer.GetRTSPURL("relay/test")
 	timeout := 1 * time.Second
 
 	// Start relay (should resolve file:// and not error)
@@ -78,35 +80,16 @@ func TestInputRelayManager_StartInputRelay_fileURL(t *testing.T) {
 
 func TestInputRelayManager_RefCounting(t *testing.T) {
 	t.Parallel()
-
-	// Step 1: Create a temp directory for this test
-	tempDir := t.TempDir()
-
-	// Step 2: Copy testdata/testsrc.mp4 into the temp directory
-	src := filepath.Join("..", "..", "testdata", "testsrc.mp4")
-	dst := filepath.Join(tempDir, "testsrc.mp4")
-	srcFile, err := os.Open(src)
-	if err != nil {
-		t.Fatalf("failed to open source file: %v", err)
-	}
-	defer srcFile.Close()
-	dstFile, err := os.Create(dst)
-	if err != nil {
-		t.Fatalf("failed to create destination file: %v", err)
-	}
-	defer dstFile.Close()
-	if _, err := io.Copy(dstFile, srcFile); err != nil {
-		t.Fatalf("failed to copy file: %v", err)
-	}
-
-	// Step 3: Construct a file:// URL for the copied file
+	// Use helpers for file-based input
+	dir, _ := copyTestSrcToTempDir(t)
+	chdirTo(t, dir)
 	inputURL := "file://testsrc.mp4"
 
 	log := logger.NewLogger()
-	irm := NewInputRelayManager(log, tempDir)
+	irm := NewInputRelayManager(log, dir)
 
 	// Start a test RTSP server (required for ffmpeg relay output)
-	rtspServer := NewRTSPServerManager(log)
+	rtspServer := NewRTSPServerManager(log, "127.0.0.1", 0)
 	if err := rtspServer.Start(); err != nil {
 		t.Fatalf("failed to start RTSP server: %v", err)
 	}
@@ -114,7 +97,7 @@ func TestInputRelayManager_RefCounting(t *testing.T) {
 	irm.SetRTSPServer(rtspServer)
 
 	inputName := "test"
-	localURL := "rtsp://localhost:8554/relay/test"
+	localURL := rtspServer.GetRTSPURL("relay/test")
 	timeout := 1 * time.Second
 
 	// Start relay twice - should reuse existing relay
@@ -242,4 +225,179 @@ func TestInputRelayManager_StopNonExistentRelay(t *testing.T) {
 
 	// Stopping non-existent relay should not panic or error
 	irm.StopInputRelay("nonexistent")
+}
+
+func TestInputRelayManager_ConcurrentAccess(t *testing.T) {
+	t.Parallel()
+	log := logger.NewLogger()
+	dir := t.TempDir()
+	irm := NewInputRelayManager(log, dir)
+
+	rtspServer := NewRTSPServerManager(log, "127.0.0.1", 0)
+	if err := rtspServer.Start(); err != nil {
+		t.Fatalf("failed to start RTSP server: %v", err)
+	}
+	defer rtspServer.Stop()
+	irm.SetRTSPServer(rtspServer)
+
+	num := 10
+	var wg sync.WaitGroup
+	inputNames := make([]string, num)
+	inputURLs := make([]string, num)
+	localURLs := make([]string, num)
+	for i := 0; i < num; i++ {
+		inputNames[i] = "input" + string(rune('A'+i))
+		inputURLs[i] = "rtmp://example.com/live/" + string(rune('A'+i))
+		localURLs[i] = rtspServer.GetRTSPURL("relay/" + string(rune('A'+i)))
+	}
+	timeout := 500 * time.Millisecond
+
+	// Start input relays concurrently
+	for i := 0; i < num; i++ {
+		wg.Add(1)
+		go func(name, inputURL, localURL string) {
+			defer wg.Done()
+			_, _ = irm.StartInputRelay(name, inputURL, localURL, timeout)
+		}(inputNames[i], inputURLs[i], localURLs[i])
+	}
+
+	// Stop input relays concurrently
+	for i := 0; i < num; i++ {
+		wg.Add(1)
+		go func(inputURL string) {
+			defer wg.Done()
+			irm.StopInputRelay(inputURL)
+		}(inputURLs[i])
+	}
+
+	// Delete input relays concurrently
+	for i := 0; i < num; i++ {
+		wg.Add(1)
+		go func(inputURL string) {
+			defer wg.Done()
+			_ = irm.DeleteInput(inputURL)
+		}(inputURLs[i])
+	}
+
+	wg.Wait()
+}
+
+// --- Additional coverage tests ---
+func TestInputRelayManager_ForceStopInputRelay(t *testing.T) {
+	tmpDir := t.TempDir()
+	log := logger.NewLogger()
+	irm := NewInputRelayManager(log, tmpDir)
+
+	// Should not panic or error on non-existent relay
+	irm.ForceStopInputRelay("nonexistent")
+
+	// Create a relay and force stop it
+	inputName := "test"
+	inputURL := "rtmp://example.com/live/test"
+
+	rtspServer := NewRTSPServerManager(log, "127.0.0.1", 0)
+	if err := rtspServer.Start(); err != nil {
+		t.Fatalf("failed to start RTSP server: %v", err)
+	}
+	defer rtspServer.Stop()
+	irm.SetRTSPServer(rtspServer)
+
+	localURL := rtspServer.GetRTSPURL("relay/test")
+	timeout := 1 * time.Second
+	_, _ = irm.StartInputRelay(inputName, inputURL, localURL, timeout)
+	irm.ForceStopInputRelay(inputURL)
+}
+
+func TestInputRelayManager_GetInputNameForURL(t *testing.T) {
+	tmpDir := t.TempDir()
+	log := logger.NewLogger()
+	irm := NewInputRelayManager(log, tmpDir)
+	inputName := "test"
+	inputURL := "rtmp://example.com/live/test"
+
+	rtspServer := NewRTSPServerManager(log, "127.0.0.1", 0)
+	if err := rtspServer.Start(); err != nil {
+		t.Fatalf("failed to start RTSP server: %v", err)
+	}
+	defer rtspServer.Stop()
+	irm.SetRTSPServer(rtspServer)
+
+	localURL := rtspServer.GetRTSPURL("relay/test")
+	timeout := 1 * time.Second
+	_, _ = irm.StartInputRelay(inputName, inputURL, localURL, timeout)
+	name := irm.GetInputNameForURL(inputURL)
+	if name != inputName {
+		t.Errorf("expected %s, got %s", inputName, name)
+	}
+	// Non-existent URL
+	if irm.GetInputNameForURL("nonexistent") != "" {
+		t.Errorf("expected empty string for non-existent URL")
+	}
+}
+
+func TestInputRelayManager_RunInputRelay_ErrorBranches(t *testing.T) {
+	tmpDir := t.TempDir()
+	log := logger.NewLogger()
+	irm := NewInputRelayManager(log, tmpDir)
+	// Create a relay struct manually with nil process to force error
+	inputURL := "rtmp://example.com/live/test"
+	relay := &InputRelay{
+		InputName: inputURL,
+		InputURL:  inputURL,
+		LocalURL:  "rtsp://localhost:8554/relay/test",
+		Status:    InputRunning,
+		RefCount:  1,
+		// Proc is nil
+	}
+	irm.mu.Lock()
+	irm.Relays[inputURL] = relay
+	irm.mu.Unlock()
+	// Should handle nil Proc gracefully
+	go irm.RunInputRelay(relay)
+	time.Sleep(50 * time.Millisecond)
+}
+
+func TestInputRelayManager_StopInputRelay_AlreadyStopped(t *testing.T) {
+	tmpDir := t.TempDir()
+	log := logger.NewLogger()
+	irm := NewInputRelayManager(log, tmpDir)
+	inputName := "test"
+	inputURL := "rtmp://example.com/live/test"
+
+	rtspServer := NewRTSPServerManager(log, "127.0.0.1", 0)
+	if err := rtspServer.Start(); err != nil {
+		t.Fatalf("failed to start RTSP server: %v", err)
+	}
+	defer rtspServer.Stop()
+	irm.SetRTSPServer(rtspServer)
+
+	localURL := rtspServer.GetRTSPURL("relay/test")
+	timeout := 1 * time.Second
+	_, _ = irm.StartInputRelay(inputName, inputURL, localURL, timeout)
+	// Stop relay
+	irm.StopInputRelay(inputURL)
+	// Stop again (should be already stopped)
+	irm.StopInputRelay(inputURL)
+}
+
+func TestInputRelayManager_StartInputRelay_InvalidURL(t *testing.T) {
+	tmpDir := t.TempDir()
+	log := logger.NewLogger()
+	irm := NewInputRelayManager(log, tmpDir)
+	inputName := "test"
+	inputURL := "file://doesnotexist.mp4"
+
+	rtspServer := NewRTSPServerManager(log, "127.0.0.1", 0)
+	if err := rtspServer.Start(); err != nil {
+		t.Fatalf("failed to start RTSP server: %v", err)
+	}
+	defer rtspServer.Stop()
+	irm.SetRTSPServer(rtspServer)
+
+	localURL := rtspServer.GetRTSPURL("relay/test")
+	timeout := 1 * time.Second
+	_, err := irm.StartInputRelay(inputName, inputURL, localURL, timeout)
+	if err == nil {
+		t.Errorf("expected error for missing file inputURL")
+	}
 }

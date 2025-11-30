@@ -6,6 +6,11 @@ services:
       - "1933:1935"
     networks:
       - rtmp-net
+    deploy:
+      resources:
+        limits:
+          memory: 32m
+
   input-rtmp-2:
     image: tiangolo/nginx-rtmp
     container_name: input-rtmp-2
@@ -13,6 +18,10 @@ services:
       - "1934:1935"
     networks:
       - rtmp-net
+    deploy:
+      resources:
+        limits:
+          memory: 32m
 
   output-rtmp-1:
     image: tiangolo/nginx-rtmp
@@ -21,6 +30,10 @@ services:
       - "1935:1935"
     networks:
       - rtmp-net
+    deploy:
+      resources:
+        limits:
+          memory: 32m
 
   output-rtmp-2:
     image: tiangolo/nginx-rtmp
@@ -29,6 +42,10 @@ services:
       - "1936:1935"
     networks:
       - rtmp-net
+    deploy:
+      resources:
+        limits:
+          memory: 32m
 
   output-rtmp-3:
     image: tiangolo/nginx-rtmp
@@ -37,6 +54,10 @@ services:
       - "1937:1935"
     networks:
       - rtmp-net
+    deploy:
+      resources:
+        limits:
+          memory: 32m
 
   output-rtmp-4:
     image: tiangolo/nginx-rtmp
@@ -45,6 +66,10 @@ services:
       - "1938:1935"
     networks:
       - rtmp-net
+    deploy:
+      resources:
+        limits:
+          memory: 32m
 
   ffmpeg-source:
     image: linuxserver/ffmpeg
@@ -56,11 +81,15 @@ services:
       - ./testdata:/testdata:ro
     entrypoint: [
       "sh", "-c",
-      "ffmpeg -stream_loop -1 -re -i /testdata/testsrc.mp4 -c:v libx264 -f flv rtmp://input-rtmp-1/live/stream & \
-       ffmpeg -stream_loop -1 -re -i /testdata/testsrc.mp4 -c:v libx264 -f flv rtmp://input-rtmp-2/live/stream && wait"
+      "ffmpeg -stream_loop -1 -re -i /testdata/testsrc.mp4 -c:v copy -c:a copy -f flv rtmp://input-rtmp-1/live/stream & \
+       ffmpeg -stream_loop -1 -re -i /testdata/testsrc.mp4 -c:v copy -c:a copy -f flv rtmp://input-rtmp-2/live/stream && wait"
     ]
     networks:
       - rtmp-net
+    deploy:
+      resources:
+        limits:
+          memory: 32m
 
   prometheus:
     image: prom/prometheus:latest
@@ -73,6 +102,10 @@ services:
       - "9090:9090"
     networks:
       - rtmp-net
+    deploy:
+      resources:
+        limits:
+          memory: 128m
 
   grafana:
     image: grafana/grafana:latest
@@ -92,12 +125,20 @@ services:
       - rtmp-net
     depends_on:
       - prometheus
+    deploy:
+      resources:
+        limits:
+          memory: 128m
 
   node-exporter:
     image: prom/node-exporter:latest
     container_name: node-exporter
     networks:
       - rtmp-net
+    deploy:
+      resources:
+        limits:
+          memory: 32m
 
   cadvisor:
     image: gcr.io/cadvisor/cadvisor:latest
@@ -111,6 +152,10 @@ services:
       - /var/lib/docker/:/var/lib/docker:ro
     networks:
       - rtmp-net
+    deploy:
+      resources:
+        limits:
+          memory: 128m
 
 networks:
   rtmp-net:

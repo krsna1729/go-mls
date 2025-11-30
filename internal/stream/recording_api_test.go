@@ -3,7 +3,6 @@ package stream
 import (
 	"encoding/json"
 	"go-mls/internal/logger"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,32 +13,27 @@ import (
 )
 
 func TestApiStartRecording(t *testing.T) {
-	// Setup test environment
-	tempDir := t.TempDir()
+	// Setup test environment using shared helpers
+	setupDir, _ := copyTestSrcToTempDir(t)
+	chdirTo(t, setupDir)
+
 	log := logger.NewLogger()
 
 	// Start RTSP server (production-like setup)
-	rtspServer := NewRTSPServerManager(log)
+	rtspServer := NewRTSPServerManager(log, "127.0.0.1", 0)
 	if err := rtspServer.Start(); err != nil {
 		t.Fatalf("failed to start RTSP server: %v", err)
 	}
 	defer rtspServer.Stop()
 
-	relayMgr := NewRelayManager(log, tempDir)
+	relayMgr := NewRelayManager(log, setupDir, "")
 	relayMgr.SetRTSPServer(rtspServer)
-	rm := NewRecordingManager(log, tempDir, relayMgr)
-	defer rm.Shutdown()
 
-	// Copy test file to temp directory for file:// testing
-	testSrcPath := filepath.Join("..", "..", "testdata", "testsrc.mp4")
-	testDestPath := filepath.Join(tempDir, "testsrc.mp4")
-	if srcFile, err := os.Open(testSrcPath); err == nil {
-		defer srcFile.Close()
-		if destFile, err := os.Create(testDestPath); err == nil {
-			defer destFile.Close()
-			_, _ = io.Copy(destFile, srcFile)
-		}
-	}
+	// Register input config for test input (fix for failing test)
+	relayMgr.RegisterInputConfig("test", "file://testsrc.mp4")
+
+	rm := NewRecordingManager(log, setupDir, relayMgr)
+	defer rm.Shutdown()
 
 	handler := ApiStartRecording(rm)
 
@@ -158,7 +152,7 @@ func TestApiStopRecording(t *testing.T) {
 	// Setup test environment
 	tempDir := t.TempDir()
 	log := logger.NewLogger()
-	relayMgr := NewRelayManager(log, tempDir)
+	relayMgr := NewRelayManager(log, tempDir, "")
 	rm := NewRecordingManager(log, tempDir, relayMgr)
 	defer rm.Shutdown()
 
@@ -225,7 +219,7 @@ func TestApiListRecordings(t *testing.T) {
 	// Setup test environment
 	tempDir := t.TempDir()
 	log := logger.NewLogger()
-	relayMgr := NewRelayManager(log, tempDir)
+	relayMgr := NewRelayManager(log, tempDir, "")
 	rm := NewRecordingManager(log, tempDir, relayMgr)
 	defer rm.Shutdown()
 
@@ -282,7 +276,7 @@ func TestApiDeleteRecording(t *testing.T) {
 	// Setup test environment
 	tempDir := t.TempDir()
 	log := logger.NewLogger()
-	relayMgr := NewRelayManager(log, tempDir)
+	relayMgr := NewRelayManager(log, tempDir, "")
 	rm := NewRecordingManager(log, tempDir, relayMgr)
 	defer rm.Shutdown()
 
@@ -371,7 +365,7 @@ func TestApiHandlers_ContentType(t *testing.T) {
 	// Setup test environment
 	tempDir := t.TempDir()
 	log := logger.NewLogger()
-	relayMgr := NewRelayManager(log, tempDir)
+	relayMgr := NewRelayManager(log, tempDir, "")
 	rm := NewRecordingManager(log, tempDir, relayMgr)
 	defer rm.Shutdown()
 
