@@ -16,6 +16,7 @@ import (
 	"go-mls/internal/logger"
 
 	"github.com/fsnotify/fsnotify"
+	"golang.org/x/sync/singleflight"
 )
 
 // RelayManagerAPI defines the interface HLSManager depends on for relay management
@@ -95,6 +96,7 @@ type HLSManager struct {
 	// --- Mutable fields protected by mu ---
 	sessions     map[string]*HLSSession
 	failedInputs map[string]time.Time // Track failed input attempts for cooldown
+	requestGroup singleflight.Group   // Synchronize session creation
 
 	// --- Immutable/config fields (set at construction) ---
 	cleanupInterval time.Duration
@@ -191,45 +193,62 @@ func (m *HLSManager) GetOrStartSession(inputName, localURL string) (*HLSSession,
 	}
 	m.mu.Unlock()
 
-	// Start input relay as a consumer if relay manager is available
-	actualLocalURL, err := m.startInputRelayIfNeeded(inputName, localURL)
-	// actualLocalURL, err := m.relayManager.StartInputRelayForConsumer(inputName)
+	// Use singleflight to ensure only one goroutine creates the session for this input
+	v, err, _ := m.requestGroup.Do(inputName, func() (interface{}, error) {
+		// Double-check if session was created while we were waiting for the lock/singleflight
+		m.mu.Lock()
+		if sess, exists := m.sessions[inputName]; exists {
+			sess.LastAccess = time.Now()
+			m.mu.Unlock()
+			return sess, nil
+		}
+		m.mu.Unlock()
+
+		// Start input relay as a consumer if relay manager is available
+		actualLocalURL, err := m.startInputRelayIfNeeded(inputName, localURL)
+		if err != nil {
+			return nil, err
+		}
+		dir, err := m.createHLSTempDir(inputName)
+		if err != nil {
+			m.stopInputRelayIfNeeded(inputName)
+			return nil, err
+		}
+		proc, err := m.createAndStartFFmpegProcess(actualLocalURL, dir)
+		if err != nil {
+			os.RemoveAll(dir)
+			m.stopInputRelayIfNeeded(inputName)
+			return nil, err
+		}
+
+		sess := &HLSSession{
+			InputName:  inputName,
+			LocalURL:   actualLocalURL,
+			Dir:        dir,
+			IsConsumer: m.relayManager != nil,
+			ViewerIDs:  make(map[string]time.Time),
+			LastAccess: time.Now(),
+			Proc:       proc,
+			Ready:      false,
+		}
+		sess.ViewerManager = &MapViewerManager{sess: sess}
+
+		m.mu.Lock()
+		m.sessions[inputName] = sess
+		m.mu.Unlock()
+		m.logger.Info("Created new HLS session", "inputName", inputName)
+
+		// Start playlist readiness monitoring in a separate goroutine
+		go m.monitorPlaylistReadiness(sess, inputName)
+
+		return sess, nil
+	})
+
 	if err != nil {
 		return nil, err
 	}
-	dir, err := m.createHLSTempDir(inputName)
-	if err != nil {
-		m.stopInputRelayIfNeeded(inputName)
-		return nil, err
-	}
-	proc, err := m.createAndStartFFmpegProcess(actualLocalURL, dir)
-	if err != nil {
-		os.RemoveAll(dir)
-		m.stopInputRelayIfNeeded(inputName)
-		return nil, err
-	}
 
-	sess = &HLSSession{
-		InputName:  inputName,
-		LocalURL:   actualLocalURL,
-		Dir:        dir,
-		IsConsumer: m.relayManager != nil,
-		ViewerIDs:  make(map[string]time.Time),
-		LastAccess: time.Now(),
-		Proc:       proc,
-		Ready:      false,
-	}
-	sess.ViewerManager = &MapViewerManager{sess: sess}
-
-	m.mu.Lock()
-	m.sessions[inputName] = sess
-	m.mu.Unlock()
-	m.logger.Info("Created new HLS session", "inputName", inputName)
-
-	// Start playlist readiness monitoring in a separate goroutine
-	go m.monitorPlaylistReadiness(sess, inputName)
-
-	return sess, nil
+	return v.(*HLSSession), nil
 }
 
 // --- Refactored helpers for GetOrStartSession ---
