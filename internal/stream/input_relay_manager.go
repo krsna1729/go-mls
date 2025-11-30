@@ -354,3 +354,18 @@ func (irm *InputRelayManager) DeleteInput(inputURL string) error {
 	irm.Logger.Info("Input relay deleted successfully", "inputURL", inputURL)
 	return nil
 }
+
+// GetRelayStatus returns the current status and refcount of an input relay safely
+func (irm *InputRelayManager) GetRelayStatus(inputURL string) (InputRelayStatus, int, bool) {
+	irm.mu.Lock()
+	relay, exists := irm.Relays[inputURL]
+	irm.mu.Unlock()
+
+	if !exists {
+		return 0, 0, false
+	}
+
+	relay.mu.Lock()
+	defer relay.mu.Unlock()
+	return relay.Status, relay.RefCount, true
+}
