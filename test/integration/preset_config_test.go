@@ -18,13 +18,30 @@ import (
 // TestPresetConfigImport verifies that platform presets and manual options
 // are correctly applied when importing relay configurations
 func TestPresetConfigImport(t *testing.T) {
+	// Skip if test file doesn't exist
+	testFile := filepath.Join("..", "..", "testdata", "testsrc.mp4")
+	if _, err := os.Stat(testFile); os.IsNotExist(err) {
+		t.Skipf("Skipping test: %s not found", testFile)
+	}
+
 	// Setup
 	tempDir := t.TempDir()
 	log := logger.NewLogger()
 
+	// Copy test file to tempDir for inputs
+	srcData, err := os.ReadFile(testFile)
+	require.NoError(t, err, "Failed to read test file")
+
+	tamilInputFile := filepath.Join(tempDir, "tamil_input.mp4")
+	englishInputFile := filepath.Join(tempDir, "english_input.mp4")
+	err = os.WriteFile(tamilInputFile, srcData, 0644)
+	require.NoError(t, err)
+	err = os.WriteFile(englishInputFile, srcData, 0644)
+	require.NoError(t, err)
+
 	// Create RTSP server
 	rtspServer := stream.NewRTSPServerManager(log, "127.0.0.1", 0)
-	err := rtspServer.Start()
+	err = rtspServer.Start()
 	require.NoError(t, err)
 	t.Cleanup(func() { rtspServer.Stop() })
 
@@ -32,19 +49,19 @@ func TestPresetConfigImport(t *testing.T) {
 	relayMgr := stream.NewRelayManager(log, tempDir, "error")
 	relayMgr.SetRTSPServer(rtspServer)
 
-	// Define test config with various preset/option combinations
+	// Define test config with various preset/option combinations using file:// URLs
 	config := []map[string]interface{}{
 		{
-			"input_url":  "rtmp://localhost:1933/live/stream",
+			"input_url":  "file://tamil_input.mp4",
 			"input_name": "Tamil",
 			"outputs": []map[string]interface{}{
 				{
-					"output_url":      "rtmp://localhost:1935/live/stream",
+					"output_url":      "file://tamil_output_ig.flv",
 					"output_name":     "TN-2",
 					"platform_preset": "Instagram",
 				},
 				{
-					"output_url":  "rtmp://localhost:1936/live/stream",
+					"output_url":  "file://tamil_output_custom.flv",
 					"output_name": "TN-1",
 					"ffmpeg_options": map[string]string{
 						"video_codec": "",
@@ -58,11 +75,11 @@ func TestPresetConfigImport(t *testing.T) {
 			},
 		},
 		{
-			"input_url":  "rtmp://localhost:1934/live/stream",
+			"input_url":  "file://english_input.mp4",
 			"input_name": "English",
 			"outputs": []map[string]interface{}{
 				{
-					"output_url":      "rtmp://localhost:1937/live/stream",
+					"output_url":      "file://english_output_yt.flv",
 					"output_name":     "ENG-1",
 					"platform_preset": "YouTube",
 					"ffmpeg_options": map[string]string{
@@ -75,7 +92,7 @@ func TestPresetConfigImport(t *testing.T) {
 					},
 				},
 				{
-					"output_url":  "rtmp://localhost:1938/live/stream",
+					"output_url":  "file://english_output_none.flv",
 					"output_name": "ENG-2",
 				},
 			},
@@ -105,7 +122,7 @@ func TestPresetConfigImport(t *testing.T) {
 		forbiddenArgs []string // Args that should NOT be present
 	}{
 		{
-			outputURL:   "rtmp://localhost:1935/live/stream",
+			outputURL:   "file://tamil_output_ig.flv",
 			description: "TN-2 (Instagram preset only)",
 			expectedArgs: []string{
 				"-c:v", "libx264",
@@ -118,7 +135,7 @@ func TestPresetConfigImport(t *testing.T) {
 			forbiddenArgs: nil,
 		},
 		{
-			outputURL:   "rtmp://localhost:1936/live/stream",
+			outputURL:   "file://tamil_output_custom.flv",
 			description: "TN-1 (manual options, empty strings skipped)",
 			expectedArgs: []string{
 				"-c:a", "aac",
@@ -132,7 +149,7 @@ func TestPresetConfigImport(t *testing.T) {
 			},
 		},
 		{
-			outputURL:   "rtmp://localhost:1937/live/stream",
+			outputURL:   "file://english_output_yt.flv",
 			description: "ENG-1 (YouTube preset + manual overrides)",
 			expectedArgs: []string{
 				"-c:v", "libx264",
@@ -145,7 +162,7 @@ func TestPresetConfigImport(t *testing.T) {
 			forbiddenArgs: nil,
 		},
 		{
-			outputURL:   "rtmp://localhost:1938/live/stream",
+			outputURL:   "file://english_output_none.flv",
 			description: "ENG-2 (no preset, no options)",
 			expectedArgs: []string{
 				"-f", "flv",
