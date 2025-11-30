@@ -45,7 +45,14 @@ type RelayManager struct {
 	// Mutex map for serializing concurrent starts of the same input URL
 	startMutexes   map[string]*sync.Mutex
 	startMutexesMu sync.Mutex
+
+	// status caching to avoid expensive per-request sampling
+	statusCache   StatusV2Response
+	statusCacheTs time.Time
+	statusCacheMu sync.Mutex
 }
+
+const statusCacheTTL = 500 * time.Millisecond
 
 func NewRelayManager(l *logger.Logger, recDir string, ffmpegLogLevel string) *RelayManager {
 	irm := NewInputRelayManager(l, recDir)
@@ -359,6 +366,14 @@ func (rm *RelayManager) ExportConfig(filename string) error {
 		} `json:"outputs"`
 	}
 	var configs []exportConfig
+	// Copy outputs under the output lock to avoid holding both input and output locks
+	rm.OutputRelays.mu.Lock()
+	outputsAll := make([]*OutputRelay, 0, len(rm.OutputRelays.Relays))
+	for _, out := range rm.OutputRelays.Relays {
+		outputsAll = append(outputsAll, out)
+	}
+	rm.OutputRelays.mu.Unlock()
+
 	rm.InputRelays.mu.Lock()
 	for _, in := range rm.InputRelays.Relays {
 		in.mu.Lock()
@@ -368,8 +383,9 @@ func (rm *RelayManager) ExportConfig(filename string) error {
 			PlatformPreset string            `json:"platform_preset,omitempty"`
 			FFmpegOptions  map[string]string `json:"ffmpeg_options,omitempty"`
 		}
-		rm.OutputRelays.mu.Lock()
-		for _, out := range rm.OutputRelays.Relays {
+
+		// Match outputs from the copied slice (no global locks held)
+		for _, out := range outputsAll {
 			if out.InputURL == in.InputURL {
 				outputs = append(outputs, struct {
 					OutputURL      string            `json:"output_url"`
@@ -384,7 +400,7 @@ func (rm *RelayManager) ExportConfig(filename string) error {
 				})
 			}
 		}
-		rm.OutputRelays.mu.Unlock()
+
 		configs = append(configs, exportConfig{
 			InputURL:  in.InputURL,
 			InputName: in.InputName,
@@ -545,18 +561,40 @@ type StatusV2Response struct {
 
 // StatusV2 returns a struct with server stats and relay statuses for UI
 func (rm *RelayManager) StatusV2() StatusV2Response {
+	// Return cached snapshot if fresh
+	rm.statusCacheMu.Lock()
+	if !rm.statusCacheTs.IsZero() && time.Since(rm.statusCacheTs) < statusCacheTTL {
+		snapshot := rm.statusCache
+		rm.statusCacheMu.Unlock()
+		return snapshot
+	}
+	rm.statusCacheMu.Unlock()
+
 	srv, _ := process.GetSelfUsage()
 	serverStatus := ServerStatus{}
 	if srv != nil {
 		serverStatus = ServerStatus{CPU: srv.CPU, Mem: srv.Mem}
 	}
-	statuses := []RelayStatusV2{}
-	// Gather input relays
+	statuses := make([]RelayStatusV2, 0)
+
+	// Copy maps under their locks to avoid holding multiple locks simultaneously
 	rm.InputRelays.mu.Lock()
+	inputs := make([]*InputRelay, 0, len(rm.InputRelays.Relays))
 	for _, in := range rm.InputRelays.Relays {
+		inputs = append(inputs, in)
+	}
+	rm.InputRelays.mu.Unlock()
+
+	rm.OutputRelays.mu.Lock()
+	outputsAll := make([]*OutputRelay, 0, len(rm.OutputRelays.Relays))
+	for _, out := range rm.OutputRelays.Relays {
+		outputsAll = append(outputsAll, out)
+	}
+	rm.OutputRelays.mu.Unlock()
+
+	for _, in := range inputs {
 		in.mu.Lock()
 		cpu, mem := 0.0, uint64(0)
-		// Safely access process info to avoid data race
 		if in.Proc != nil {
 			pid := in.Proc.GetPID()
 			if pid > 0 {
@@ -580,54 +618,64 @@ func (rm *RelayManager) StatusV2() StatusV2Response {
 			inputStatus.Speed = speed
 			rm.Logger.Debug("StatusV2: Input relay speed", "inputURL", in.InputURL, "speed", speed)
 		}
-		// Gather outputs for this input
-		outputs := []OutputRelayStatusV2{}
-		rm.OutputRelays.mu.Lock()
-		for _, out := range rm.OutputRelays.Relays {
-			if out.InputURL == in.InputURL {
-				out.mu.Lock()
-				cpuO, memO := 0.0, uint64(0)
-				if out.Proc != nil {
-					pid := out.Proc.GetPID()
-					if pid > 0 {
-						if usage, err := process.GetProcUsage(pid); err == nil {
-							cpuO = usage.CPU
-							memO = usage.Mem
-						}
-					}
-				}
-				outputStatus := OutputRelayStatusV2{
-					OutputURL:  out.OutputURL,
-					OutputName: out.OutputName,
-					InputURL:   out.InputURL,
-					LocalURL:   out.LocalURL,
-					Status:     outputRelayStatusString(out.Status),
-					LastError:  out.LastError,
-					CPU:        cpuO,
-					Mem:        memO,
-				}
-				if out.Proc != nil {
-					if bitrate, ok := out.Proc.GetBitrate(); ok {
-						outputStatus.Bitrate = bitrate
-						rm.Logger.Debug("StatusV2: Output relay bitrate", "outputURL", out.OutputURL, "bitrate", bitrate)
-					}
-				}
-				outputs = append(outputs, outputStatus)
-				out.mu.Unlock()
+
+		// Collect outputs matching this inputURL from the copied slice (no global locks held)
+		outputs := make([]OutputRelayStatusV2, 0)
+		for _, out := range outputsAll {
+			// Quick check without locks on immutable fields
+			if out.InputURL != in.InputURL {
+				continue
 			}
+			out.mu.Lock()
+			cpuO, memO := 0.0, uint64(0)
+			if out.Proc != nil {
+				pid := out.Proc.GetPID()
+				if pid > 0 {
+					if usage, err := process.GetProcUsage(pid); err == nil {
+						cpuO = usage.CPU
+						memO = usage.Mem
+					}
+				}
+			}
+			outputStatus := OutputRelayStatusV2{
+				OutputURL:  out.OutputURL,
+				OutputName: out.OutputName,
+				InputURL:   out.InputURL,
+				LocalURL:   out.LocalURL,
+				Status:     outputRelayStatusString(out.Status),
+				LastError:  out.LastError,
+				CPU:        cpuO,
+				Mem:        memO,
+			}
+			if out.Proc != nil {
+				if bitrate, ok := out.Proc.GetBitrate(); ok {
+					outputStatus.Bitrate = bitrate
+					rm.Logger.Debug("StatusV2: Output relay bitrate", "outputURL", out.OutputURL, "bitrate", bitrate)
+				}
+			}
+			outputs = append(outputs, outputStatus)
+			out.mu.Unlock()
 		}
-		rm.OutputRelays.mu.Unlock()
+
 		statuses = append(statuses, RelayStatusV2{
 			Input:   inputStatus,
 			Outputs: outputs,
 		})
 		in.mu.Unlock()
 	}
-	rm.InputRelays.mu.Unlock()
-	return StatusV2Response{
+
+	resp := StatusV2Response{
 		Server: serverStatus,
 		Relays: statuses,
 	}
+
+	// store in cache
+	rm.statusCacheMu.Lock()
+	rm.statusCache = resp
+	rm.statusCacheTs = time.Now()
+	rm.statusCacheMu.Unlock()
+
+	return resp
 }
 
 func inputRelayStatusString(s InputRelayStatus) string {
