@@ -106,6 +106,17 @@ func (irm *InputRelayManager) StartInputRelay(inputName, inputURL, localURL stri
 		irm.Relays[inputURL] = relay
 	}
 	relay.mu.Lock()
+	// If a relay already exists for this inputURL but with a different input name,
+	// treat this as a conflict and return an error. This prevents multiple logical
+	// names from being associated with the same input URL which could cause
+	// confusion when cleaning up RTSP paths.
+	if exists && relay.InputName != "" && relay.InputName != inputName {
+		existingName := relay.InputName
+		relay.mu.Unlock()
+		irm.mu.Unlock()
+		irm.Logger.Warn("Input URL already started with a different name", "inputURL", inputURL, "existingName", existingName, "requestedName", inputName)
+		return "", fmt.Errorf("input URL %s already in use with name %s", inputURL, existingName)
+	}
 	// Increment reference count
 	relay.RefCount++
 	currentRefCount := relay.RefCount // Capture while holding lock

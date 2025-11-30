@@ -282,6 +282,63 @@ func TestInputRelayManager_ConcurrentAccess(t *testing.T) {
 	wg.Wait()
 }
 
+func TestInputRelayManager_ConflictNames(t *testing.T) {
+	t.Parallel()
+	// Use helpers for file-based input
+	dir, _ := copyTestSrcToTempDir(t)
+	chdirTo(t, dir)
+
+	log := logger.NewLogger()
+	irm := NewInputRelayManager(log, dir)
+
+	// Start a test RTSP server (required for ffmpeg relay output)
+	rtspServer := NewRTSPServerManager(log, "127.0.0.1", 0)
+	if err := rtspServer.Start(); err != nil {
+		t.Fatalf("failed to start RTSP server: %v", err)
+	}
+	defer rtspServer.Stop()
+	irm.SetRTSPServer(rtspServer)
+
+	inputURL := "file://testsrc.mp4"
+	localA := rtspServer.GetRTSPURL("relay/A")
+	localB := rtspServer.GetRTSPURL("relay/B")
+	timeout := 2 * time.Second
+
+	// Start first relay with name A
+	_, err := irm.StartInputRelay("A", inputURL, localA, timeout)
+	if err != nil {
+		t.Fatalf("expected no error on first start, got %v", err)
+	}
+
+	// Attempt to start same input URL with a different name B -> expect error
+	_, err2 := irm.StartInputRelay("B", inputURL, localB, timeout)
+	if err2 == nil {
+		t.Fatalf("expected conflict error when starting same input URL with different name")
+	}
+
+	// Ensure refcount remained 1 and InputName kept as A
+	irm.mu.Lock()
+	relay, exists := irm.Relays[inputURL]
+	irm.mu.Unlock()
+	if !exists || relay == nil {
+		t.Fatalf("expected relay to exist for %q", inputURL)
+	}
+	relay.mu.Lock()
+	ref := relay.RefCount
+	name := relay.InputName
+	relay.mu.Unlock()
+
+	if ref != 1 {
+		t.Fatalf("expected refcount 1 after conflict attempt, got %d", ref)
+	}
+	if name != "A" {
+		t.Fatalf("expected relay InputName to remain 'A', got %q", name)
+	}
+
+	// Clean up
+	irm.StopInputRelay(inputURL)
+}
+
 // --- Additional coverage tests ---
 func TestInputRelayManager_ForceStopInputRelay(t *testing.T) {
 	tmpDir := t.TempDir()
