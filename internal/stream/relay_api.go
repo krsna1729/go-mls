@@ -34,27 +34,9 @@ func ApiStartRelay(relayMgr *RelayManager) http.HandlerFunc {
 		}
 		relayMgr.Logger.Debug("apiStartRelay: starting relay", "inputURL", req.InputURL, "outputURL", req.OutputURL, "inputName", req.InputName, "outputName", req.OutputName, "preset", req.PlatformPreset)
 
-		// Check if preset/options are provided in request, otherwise try to get from stored config
-		platformPreset := req.PlatformPreset
-		var opts *FFmpegOptions
-		if req.FFmpegOptions != nil {
-			opts = &FFmpegOptions{
-				VideoCodec: req.FFmpegOptions["video_codec"],
-				AudioCodec: req.FFmpegOptions["audio_codec"],
-				Resolution: req.FFmpegOptions["resolution"],
-				Framerate:  req.FFmpegOptions["framerate"],
-				Bitrate:    req.FFmpegOptions["bitrate"],
-				Rotation:   req.FFmpegOptions["rotation"],
-			}
-		} else if platformPreset == "" {
-			// Try to get stored configuration for this endpoint
-			storedPreset, storedOpts, err := relayMgr.GetEndpointConfig(req.InputURL, req.OutputURL)
-			if err == nil {
-				platformPreset = storedPreset
-				opts = storedOpts
-				relayMgr.Logger.Debug("apiStartRelay: using stored config", "preset", platformPreset, "options", opts)
-			}
-		}
+		// Apply preset and options using centralized helper
+		opts, platformPreset := relayMgr.applyPresetAndOptions(req.PlatformPreset, req.FFmpegOptions, req.InputURL, req.OutputURL)
+
 		if err := relayMgr.StartRelayWithOptions(req.InputURL, req.OutputURL, req.InputName, req.OutputName, opts, platformPreset); err != nil {
 			relayMgr.Logger.Error("apiStartRelay: failed to start relay", "err", err)
 			httputil.WriteError(w, http.StatusInternalServerError, err.Error())

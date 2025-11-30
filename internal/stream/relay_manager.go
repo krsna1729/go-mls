@@ -440,17 +440,8 @@ func (rm *RelayManager) ImportConfig(filename string) error {
 			go func(inputURL, inputName, outputURL, outputName, preset string, ffmpegOpts map[string]string) {
 				defer wg.Done()
 
-				var opts *FFmpegOptions
-				if ffmpegOpts != nil {
-					opts = &FFmpegOptions{
-						VideoCodec: ffmpegOpts["video_codec"],
-						AudioCodec: ffmpegOpts["audio_codec"],
-						Resolution: ffmpegOpts["resolution"],
-						Framerate:  ffmpegOpts["framerate"],
-						Bitrate:    ffmpegOpts["bitrate"],
-						Rotation:   ffmpegOpts["rotation"],
-					}
-				}
+				// Apply preset and options using centralized helper (no stored config for imports)
+				opts, _ := rm.applyPresetAndOptions(preset, ffmpegOpts, "", "")
 
 				err := rm.StartRelayWithOptions(inputURL, outputURL, inputName, outputName, opts, preset)
 				if err != nil {
