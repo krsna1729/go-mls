@@ -13,12 +13,6 @@ import (
 	"go-mls/internal/process"
 )
 
-// InputConfig stores persistent input configuration
-type InputConfig struct {
-	InputURL  string `json:"input_url"`
-	InputName string `json:"input_name"`
-}
-
 // RelayManager manages all relays (per input URL)
 type RelayManager struct {
 	InputRelays  *InputRelayManager
@@ -31,12 +25,7 @@ type RelayManager struct {
 	HLSManager       *HLSManager
 	RecordingManager *RecordingManager
 
-	// Configuration registry for persistent input mappings
-	inputConfigs map[string]*InputConfig // inputName -> InputConfig
-	configMu     sync.RWMutex            // Protects inputConfigs
-
 	// Configurable timeouts
-	inputTimeout  time.Duration
 	outputTimeout time.Duration
 
 	// ffmpeg loglevel (configurable)
@@ -62,8 +51,6 @@ func NewRelayManager(l *logger.Logger, recDir string, ffmpegLogLevel string) *Re
 		OutputRelays:   orm,
 		Logger:         l,
 		recDir:         recDir,
-		inputConfigs:   make(map[string]*InputConfig),
-		inputTimeout:   30 * time.Second, // Default values, can be overridden
 		outputTimeout:  60 * time.Second,
 		startMutexes:   make(map[string]*sync.Mutex),
 		ffmpegLogLevel: ffmpegLogLevel,
@@ -72,21 +59,7 @@ func NewRelayManager(l *logger.Logger, recDir string, ffmpegLogLevel string) *Re
 	// Set up failure callback for output relays to clean up input relay refcount
 	orm.SetFailureCallback(func(inputURL, outputURL string) {
 		l.Info("Output relay failure callback: cleaning up input relay refcount for", "inputURL", inputURL, "outputURL", outputURL)
-		irm.mu.Lock()
-		inputRelay, ok := irm.Relays[inputURL]
-		irm.mu.Unlock()
-		if ok {
-			inputRelay.mu.Lock()
-			if inputRelay.RefCount > 0 {
-				inputRelay.RefCount--
-				l.Info("Input relay refcount decremented (failure callback)", "inputURL", inputURL, "outputURL", outputURL, "refCount", inputRelay.RefCount, "action", "failureCallback")
-			} else {
-				l.Warn("Input relay refcount already zero (failure callback)", "inputURL", inputURL, "outputURL", outputURL, "action", "failureCallback")
-			}
-			inputRelay.mu.Unlock()
-		} else {
-			l.Warn("Input relay not found (failure callback)", "inputURL", inputURL, "outputURL", outputURL, "action", "failureCallback")
-		}
+		irm.DecrementInputRef(inputURL, "failureCallback")
 	})
 
 	return rm
@@ -163,15 +136,15 @@ func (rm *RelayManager) StartRelayWithOptions(inputURL, outputURL, inputName, ou
 	rm.Logger.Debug("StartRelayWithOptions called", "inputURL", inputURL, "outputURL", outputURL, "inputName", inputName, "outputName", outputName, "preset", preset)
 
 	// Register input configuration for future HLS access
-	rm.RegisterInputConfig(inputName, inputURL)
+	rm.InputRelays.RegisterInputConfig(inputName, inputURL)
 
 	// Get mutex for this input URL to serialize concurrent starts
 	startMutex := rm.getStartMutex(inputURL)
 	startMutex.Lock()
 	defer startMutex.Unlock()
 
-	// Use StartInputRelayForConsumer to ensure proper input relay lifecycle (waits until ready)
-	localRelayURL, err := rm.StartInputRelayForConsumer(inputName)
+	// Use GetStream to ensure proper input relay lifecycle (waits until ready)
+	localRelayURL, err := rm.InputRelays.GetStream(inputName)
 	if err != nil {
 		rm.Logger.Error("Failed to start input relay for output", "err", err)
 		return err
@@ -245,7 +218,7 @@ func (rm *RelayManager) StartRelayWithOptions(inputURL, outputURL, inputName, ou
 	err = rm.OutputRelays.StartOutputRelay(config)
 	if err != nil {
 		rm.Logger.Error("Failed to start output relay", "err", err)
-		rm.StopInputRelayForConsumer(inputURL, outputURL)
+		rm.InputRelays.ReleaseStream(inputName)
 		return err
 	}
 
@@ -355,60 +328,59 @@ func (rm *RelayManager) DeleteOutput(inputURL, outputURL, inputName, outputName 
 // ExportConfig saves the current relay configurations to a file (now includes names and presets)
 func (rm *RelayManager) ExportConfig(filename string) error {
 	rm.Logger.Debug("ExportConfig called", "filename", filename)
+
+	type exportOutput struct {
+		OutputURL      string            `json:"output_url"`
+		OutputName     string            `json:"output_name"`
+		PlatformPreset string            `json:"platform_preset,omitempty"`
+		FFmpegOptions  map[string]string `json:"ffmpeg_options,omitempty"`
+	}
+
 	type exportConfig struct {
-		InputURL  string `json:"input_url"`
-		InputName string `json:"input_name"`
-		Outputs   []struct {
-			OutputURL      string            `json:"output_url"`
-			OutputName     string            `json:"output_name"`
-			PlatformPreset string            `json:"platform_preset,omitempty"`
-			FFmpegOptions  map[string]string `json:"ffmpeg_options,omitempty"`
-		} `json:"outputs"`
+		InputURL  string         `json:"input_url"`
+		InputName string         `json:"input_name"`
+		Outputs   []exportOutput `json:"outputs"`
 	}
+
 	var configs []exportConfig
-	// Copy outputs under the output lock to avoid holding both input and output locks
-	rm.OutputRelays.mu.Lock()
-	outputsAll := make([]*OutputRelay, 0, len(rm.OutputRelays.Relays))
-	for _, out := range rm.OutputRelays.Relays {
-		outputsAll = append(outputsAll, out)
-	}
-	rm.OutputRelays.mu.Unlock()
 
-	rm.InputRelays.mu.Lock()
-	for _, in := range rm.InputRelays.Relays {
-		in.mu.Lock()
-		var outputs []struct {
-			OutputURL      string            `json:"output_url"`
-			OutputName     string            `json:"output_name"`
-			PlatformPreset string            `json:"platform_preset,omitempty"`
-			FFmpegOptions  map[string]string `json:"ffmpeg_options,omitempty"`
-		}
+	// Get running input relays safely
+	runningInputs := rm.InputRelays.GetRunningInputRelays()
 
-		// Match outputs from the copied slice (no global locks held)
-		for _, out := range outputsAll {
+	for _, in := range runningInputs {
+		var outputs []exportOutput
+
+		// Get outputs for this input
+		// We need to access OutputRelays safely
+		// Since OutputRelays map is protected by its own mutex, we can iterate it
+		// But we need to filter by inputURL.
+		// For now, let's assume we can iterate OutputRelays.Relays safely if we lock it.
+		// Or we can add a method to OutputRelays to get outputs for an input.
+
+		// Let's iterate OutputRelays directly for now, assuming we can lock it.
+		// Ideally OutputRelayManager should provide this.
+		rm.OutputRelays.mu.Lock()
+		for outURL, out := range rm.OutputRelays.Relays {
+			out.mu.Lock()
 			if out.InputURL == in.InputURL {
-				outputs = append(outputs, struct {
-					OutputURL      string            `json:"output_url"`
-					OutputName     string            `json:"output_name"`
-					PlatformPreset string            `json:"platform_preset,omitempty"`
-					FFmpegOptions  map[string]string `json:"ffmpeg_options,omitempty"`
-				}{
-					OutputURL:      out.OutputURL,
+				outputs = append(outputs, exportOutput{
+					OutputURL:      outURL,
 					OutputName:     out.OutputName,
 					PlatformPreset: out.PlatformPreset,
 					FFmpegOptions:  out.FFmpegOptions,
 				})
 			}
+			out.mu.Unlock()
 		}
+		rm.OutputRelays.mu.Unlock()
 
 		configs = append(configs, exportConfig{
 			InputURL:  in.InputURL,
 			InputName: in.InputName,
 			Outputs:   outputs,
 		})
-		in.mu.Unlock()
 	}
-	rm.InputRelays.mu.Unlock()
+
 	data, err := json.MarshalIndent(configs, "", "  ")
 	if err != nil {
 		return err
@@ -447,7 +419,7 @@ func (rm *RelayManager) ImportConfig(filename string) error {
 
 	// Register all input configurations first
 	for _, relayCfg := range configs {
-		rm.RegisterInputConfig(relayCfg.InputName, relayCfg.InputURL)
+		rm.InputRelays.RegisterInputConfig(relayCfg.InputName, relayCfg.InputURL)
 	}
 
 	for _, relayCfg := range configs {
@@ -799,14 +771,9 @@ func (rm *RelayManager) StopAllRelays() {
 
 // SetTimeouts configures the input and output relay timeouts
 func (rm *RelayManager) SetTimeouts(inputTimeout, outputTimeout time.Duration) {
-	rm.inputTimeout = inputTimeout
+	rm.InputRelays.SetInputTimeout(inputTimeout)
 	rm.outputTimeout = outputTimeout
 	rm.Logger.Debug("RelayManager: Updated timeouts", "inputTimeout", inputTimeout, "outputTimeout", outputTimeout)
-}
-
-// GetInputTimeout returns the configured input timeout
-func (rm *RelayManager) GetInputTimeout() time.Duration {
-	return rm.inputTimeout
 }
 
 // getStartMutex returns a mutex for the given input URL to serialize concurrent starts
@@ -823,118 +790,6 @@ func (rm *RelayManager) getStartMutex(inputURL string) *sync.Mutex {
 	rm.startMutexes[inputURL] = mutex
 	return mutex
 }
-
-// RegisterInputConfig stores an input configuration for later HLS access
-func (rm *RelayManager) RegisterInputConfig(inputName, inputURL string) {
-	rm.configMu.Lock()
-	defer rm.configMu.Unlock()
-
-	rm.inputConfigs[inputName] = &InputConfig{
-		InputURL:  inputURL,
-		InputName: inputName,
-	}
-	rm.Logger.Debug("Registered input config", "inputName", inputName, "inputURL", inputURL)
-}
-
-// GetInputURLByName returns the input URL for a given input name
-func (rm *RelayManager) GetInputURLByName(inputName string) (string, bool) {
-	// First check if there's a running input relay
-	if _, ok := rm.InputRelays.FindLocalURLByInputName(inputName); ok {
-		// Find the input URL from the running relay
-		rm.InputRelays.mu.Lock()
-		defer rm.InputRelays.mu.Unlock()
-		for inputURL, relay := range rm.InputRelays.Relays {
-			if relay.InputName == inputName {
-				return inputURL, true
-			}
-		}
-	}
-
-	// Check stored configuration
-	rm.configMu.RLock()
-	defer rm.configMu.RUnlock()
-
-	if config, exists := rm.inputConfigs[inputName]; exists {
-		return config.InputURL, true
-	}
-
-	return "", false
-}
-
-// StartInputRelayForConsumer starts an input relay and marks it as having a consumer
-// Waits until the RTSP stream is ready, or returns error. All waiting/cleanup logic is internal.
-func (rm *RelayManager) StartInputRelayForConsumer(inputName string) (string, error) {
-	inputURL, exists := rm.GetInputURLByName(inputName)
-	if !exists {
-		return "", fmt.Errorf("input configuration not found for: %s", inputName)
-	}
-
-	if rm.rtspServer == nil {
-		return "", fmt.Errorf("RTSP server manager is not initialized")
-	}
-
-	// Compose local RTSP relay path and URL using the correct dynamic port
-	relayPath := fmt.Sprintf("relay/%s", inputName)
-	localRelayURL := rm.rtspServer.GetRTSPURL(relayPath)
-
-	// Start the input relay with consumer counting
-	localURL, err := rm.InputRelays.StartInputRelay(inputName, inputURL, localRelayURL, rm.inputTimeout)
-	if err != nil {
-		return "", fmt.Errorf("failed to start input relay for %s: %v", inputName, err)
-	}
-
-	// Wait for the RTSP stream to become ready (robust, with cleanup)
-	rm.Logger.Info("Waiting for RTSP stream to become ready", "relayPath", relayPath)
-	err = rm.rtspServer.WaitForStreamReady(relayPath, rm.inputTimeout)
-	if err != nil {
-		rm.Logger.Error("Failed to wait for RTSP stream to become ready", "inputName", inputName, "err", err)
-		if !rm.rtspServer.IsStreamReady(relayPath) {
-			rm.InputRelays.StopInputRelay(inputURL)
-			return "", fmt.Errorf("RTSP stream not ready: %v", err)
-		}
-		rm.Logger.Warn("Stream appears ready but wait failed, continuing anyway", "relayPath", relayPath)
-	}
-
-	return localURL, nil
-}
-
-// StopInputRelayForConsumer decrements the consumer count for an input relay
-// This is used by HLS sessions, recordings, etc. when they stop consuming
-func (rm *RelayManager) StopInputRelayForConsumer(inputURLOrName, outputURL string) {
-	rm.Logger.Info("StopInputRelayForConsumer called", "input", inputURLOrName, "outputURL", outputURL)
-
-	// Try to resolve as inputURL first (direct lookup)
-	targetURL := inputURLOrName
-	rm.InputRelays.mu.Lock()
-	_, exists := rm.InputRelays.Relays[targetURL]
-	rm.InputRelays.mu.Unlock()
-
-	if !exists {
-		// Try to resolve as inputName
-		if url, found := rm.GetInputURLByName(inputURLOrName); found {
-			targetURL = url
-			rm.Logger.Debug("Resolved input name to URL", "name", inputURLOrName, "url", targetURL)
-		} else {
-			// If still not found, it might be that the relay is already gone or never existed
-			// But we should try to look it up in config just in case it's a name
-			rm.configMu.RLock()
-			if cfg, ok := rm.inputConfigs[inputURLOrName]; ok {
-				targetURL = cfg.InputURL
-				rm.Logger.Debug("Resolved input name from config", "name", inputURLOrName, "url", targetURL)
-			}
-			rm.configMu.RUnlock()
-		}
-	}
-
-	stopped := rm.InputRelays.StopInputRelay(targetURL)
-	if stopped {
-		rm.Logger.Info("Input relay stopped by consumer", "inputURL", targetURL, "outputURL", outputURL)
-	} else {
-		rm.Logger.Debug("Input relay refcount decremented but not stopped", "inputURL", targetURL, "outputURL", outputURL)
-	}
-}
-
-var _ RelayManagerAPI = (*RelayManager)(nil)
 
 // NewRelayManagerWithFFmpegLoglevel creates a relay manager with configurable ffmpeg loglevel
 // (removed, use NewRelayManager with ffmpegLogLevel argument)

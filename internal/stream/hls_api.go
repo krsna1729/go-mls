@@ -103,7 +103,7 @@ func ApiHLSViewerHeartbeat(hlsMgr *HLSManager) http.HandlerFunc {
 		}
 
 		if req.InputName == "" || req.ViewerID == "" {
-			hlsMgr.logger.WarnRateLimited("HLS heartbeat: missing input name or viewer ID", "inputName", req.InputName, "viewerID", req.ViewerID)
+			hlsMgr.Logger.WarnRateLimited("HLS heartbeat: missing input name or viewer ID", "inputName", req.InputName, "viewerID", req.ViewerID)
 			httputil.WriteError(w, http.StatusBadRequest, "Input name and viewer ID are required")
 			return
 		}
@@ -111,12 +111,12 @@ func ApiHLSViewerHeartbeat(hlsMgr *HLSManager) http.HandlerFunc {
 		err := hlsMgr.UpdateViewerHeartbeat(req.InputName, req.ViewerID)
 		if err != nil {
 			if err.Error() == "session not found" {
-				hlsMgr.logger.WarnRateLimited("HLS heartbeat: session not found", "inputName", req.InputName, "viewerID", req.ViewerID)
+				hlsMgr.Logger.WarnRateLimited("HLS heartbeat: session not found", "inputName", req.InputName, "viewerID", req.ViewerID)
 				httputil.WriteError(w, http.StatusGone, "Viewer session expired or input deleted")
 				return
 			}
 			// Other errors (e.g., viewerID not found)
-			hlsMgr.logger.WarnRateLimited("HLS heartbeat error", "err", err, "inputName", req.InputName, "viewerID", req.ViewerID)
+			hlsMgr.Logger.WarnRateLimited("HLS heartbeat error", "err", err, "inputName", req.InputName, "viewerID", req.ViewerID)
 			httputil.WriteError(w, http.StatusBadRequest, err.Error())
 			return
 		}

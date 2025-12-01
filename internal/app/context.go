@@ -45,25 +45,18 @@ func NewContext(cfg *config.Config, log *logger.Logger) (*Context, error) {
 	)
 
 	// Initialize recording manager
-	ctx.Recording = stream.NewRecordingManager(log, cfg.Recording.Directory, ctx.Relay)
+	// Pass Logger, recordingDir, and InputRelays as StreamProvider
+	ctx.Recording = stream.NewRecordingManager(log, cfg.Recording.Directory, ctx.Relay.InputRelays)
 
-	// Initialize HLS manager with configuration
-	ctx.HLS = stream.NewHLSManager(stream.HLSManagerConfig{
-		CleanupInterval:        time.Duration(cfg.HLS.CleanupInterval),
-		SessionTimeout:         time.Duration(cfg.HLS.SessionTimeout),
-		FailedCooldown:         time.Duration(cfg.HLS.FailedCooldown),
-		PlaylistReadyTimeout:   time.Duration(cfg.HLS.PlaylistReadyTimeout),
-		PlaylistPollInterval:   time.Duration(cfg.HLS.PlaylistPollInterval),
-		PlaylistPollAttempts:   cfg.HLS.PlaylistPollAttempts,
-		ViewerHeartbeatTimeout: time.Duration(cfg.HLS.ViewerHeartbeatTimeout),
-		FFmpegStopTimeout:      time.Duration(cfg.HLS.FFmpegStopTimeout),
-		PlaylistBaseDir:        cfg.HLS.PlaylistBaseDir,
-	}, log)
+	// Initialize HLS manager
+	// Pass Logger, hlsDir, and InputRelays as StreamProvider
+	ctx.HLS = stream.NewHLSManager(log, cfg.HLS.PlaylistBaseDir, ctx.Relay.InputRelays)
 
 	// Wire up cross-references
+	// RelayManager needs HLS and Recording managers for legacy reasons (if any) or cleanup
 	ctx.Relay.SetHLSManager(ctx.HLS)
 	ctx.Relay.SetRecordingManager(ctx.Recording)
-	ctx.HLS.SetRelayManager(ctx.Relay)
+	// HLS and Recording managers now use StreamProvider (ctx.Relay.InputRelays) directly
 
 	return ctx, nil
 }
