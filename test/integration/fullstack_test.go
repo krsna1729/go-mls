@@ -77,21 +77,10 @@ func setupFullStackTestEnv(t *testing.T) *fullStackTestEnv {
 	relayMgr := stream.NewRelayManager(log, tempDir, "error")
 	relayMgr.SetRTSPServer(rtspServer)
 
-	recordingMgr := stream.NewRecordingManager(log, tempDir, relayMgr)
+	recordingMgr := stream.NewRecordingManager(log, tempDir, relayMgr.InputRelays)
 	t.Cleanup(func() { recordingMgr.Shutdown() })
 
-	hlsMgr := stream.NewHLSManager(stream.HLSManagerConfig{
-		CleanupInterval:        30 * time.Second,
-		SessionTimeout:         60 * time.Second,
-		FailedCooldown:         10 * time.Second,
-		PlaylistReadyTimeout:   10 * time.Second,
-		PlaylistPollInterval:   200 * time.Millisecond,
-		PlaylistPollAttempts:   50,
-		ViewerHeartbeatTimeout: 30 * time.Second,
-		FFmpegStopTimeout:      2 * time.Second,
-		PlaylistBaseDir:        "/tmp",
-	}, log)
-	hlsMgr.SetRelayManager(relayMgr)
+	hlsMgr := stream.NewHLSManager(log, "/tmp", relayMgr.InputRelays)
 	t.Cleanup(func() { hlsMgr.Shutdown() })
 
 	relayMgr.HLSManager = hlsMgr

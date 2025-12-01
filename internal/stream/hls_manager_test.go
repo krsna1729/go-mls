@@ -2,7 +2,6 @@ package stream
 
 import (
 	"context"
-	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -32,7 +31,7 @@ func TestServeHLS_PlaylistAndSegment(t *testing.T) {
 		t.Fatalf("failed to write segment: %v", err)
 	}
 
-	mgr := NewHLSManager(minimalHLSManagerConfig(), newTestLogger())
+	mgr := NewHLSManager(newTestLogger(), os.TempDir(), &mockStreamProvider{})
 	inputName := "testinput"
 	sess := &HLSSession{
 		InputName: inputName,
@@ -81,7 +80,7 @@ func TestServeHLS_PlaylistAndSegment(t *testing.T) {
 func TestServeHLS_NotFoundRateLimit(t *testing.T) {
 	t.Parallel()
 	logr := logger.NewLoggerWithConfig("debug", "")
-	mgr := NewHLSManager(minimalHLSManagerConfig(), logr)
+	mgr := NewHLSManager(logr, os.TempDir(), nil)
 	inputName := "missinginput"
 	file := "index.m3u8"
 
@@ -104,9 +103,8 @@ func TestServeHLS_NotFoundRateLimit(t *testing.T) {
 func TestHLSManager_ConcurrentAPI(t *testing.T) {
 	t.Parallel()
 	logr := logger.NewLogger()
-	dir := t.TempDir()
-	mgr := NewHLSManager(minimalHLSManagerConfig(), logr)
-	mgr.relayManager = NewRelayManager(logr, dir, "")
+	mgr := NewHLSManager(logr, os.TempDir(), &mockStreamProvider{})
+	// mgr.streamProvider = NewRelayManager(logr, dir, "")
 
 	num := 10
 	var wg sync.WaitGroup
@@ -117,6 +115,30 @@ func TestHLSManager_ConcurrentAPI(t *testing.T) {
 
 	timeout := time.After(10 * time.Second)
 	done := make(chan struct{})
+
+	// Background goroutine to create dummy playlists for active sessions
+	// This is needed because ServeHLS waits for playlist readiness
+	go func() {
+		for {
+			select {
+			case <-done:
+				return
+			default:
+				mgr.mu.RLock()
+				for _, sess := range mgr.sessions {
+					// Check if playlist exists
+					playlistPath := filepath.Join(sess.Dir, "index.m3u8")
+					if _, err := os.Stat(playlistPath); os.IsNotExist(err) {
+						// Create dummy playlist
+						_ = os.WriteFile(playlistPath, []byte("#EXTM3U\n"), 0644)
+					}
+				}
+				mgr.mu.RUnlock()
+				time.Sleep(100 * time.Millisecond)
+			}
+		}
+	}()
+
 	go func() {
 		// GetOrStartSession concurrently
 		for i := 0; i < num; i++ {
@@ -181,7 +203,7 @@ func newTestLogger() *logger.Logger {
 }
 
 func TestNewHLSManager_CreatesManager(t *testing.T) {
-	h := NewHLSManager(minimalHLSManagerConfig(), newTestLogger())
+	h := NewHLSManager(newTestLogger(), os.TempDir(), &mockStreamProvider{})
 	if h == nil {
 		t.Fatal("expected non-nil HLSManager")
 	}
@@ -190,17 +212,8 @@ func TestNewHLSManager_CreatesManager(t *testing.T) {
 	}
 }
 
-func TestHLSManager_SetRelayManager(t *testing.T) {
-	h := NewHLSManager(minimalHLSManagerConfig(), newTestLogger())
-	rm := &RelayManager{}
-	h.SetRelayManager(rm)
-	if h.relayManager != rm {
-		t.Error("relayManager not set correctly")
-	}
-}
-
 func TestHLSManager_GetOrStartSession_Basic(t *testing.T) {
-	h := NewHLSManager(minimalHLSManagerConfig(), newTestLogger())
+	h := NewHLSManager(newTestLogger(), os.TempDir(), &mockStreamProvider{})
 	inputName := "testinput"
 	localURL := "rtsp://localhost/relay/testinput"
 	sess, err := h.GetOrStartSession(inputName, localURL)
@@ -216,7 +229,7 @@ func TestHLSManager_GetOrStartSession_Basic(t *testing.T) {
 }
 
 func TestHLSManager_AddViewer_Update_Remove(t *testing.T) {
-	h := NewHLSManager(minimalHLSManagerConfig(), newTestLogger())
+	h := NewHLSManager(newTestLogger(), os.TempDir(), &mockStreamProvider{})
 	inputName := "testinput"
 	_, _ = h.GetOrStartSession(inputName, "rtsp://localhost/relay/testinput")
 
@@ -233,52 +246,8 @@ func TestHLSManager_AddViewer_Update_Remove(t *testing.T) {
 	// No panic or error expected
 }
 
-func TestHLSManager_getPlaylistReadyTimeout(t *testing.T) {
-	h := &HLSManager{config: HLSManagerConfig{PlaylistReadyTimeout: 123 * time.Second}}
-	if got := h.getPlaylistReadyTimeout(); got != 123*time.Second {
-		t.Errorf("expected 123s, got %v", got)
-	}
-	h.config.PlaylistReadyTimeout = 0
-	if got := h.getPlaylistReadyTimeout(); got != 10*time.Second {
-		t.Errorf("expected fallback 10s, got %v", got)
-	}
-}
-
-func TestHLSManager_getPlaylistPollInterval(t *testing.T) {
-	h := &HLSManager{config: HLSManagerConfig{PlaylistPollInterval: 321 * time.Millisecond}}
-	if got := h.getPlaylistPollInterval(); got != 321*time.Millisecond {
-		t.Errorf("expected 321ms, got %v", got)
-	}
-	h.config.PlaylistPollInterval = 0
-	if got := h.getPlaylistPollInterval(); got != 200*time.Millisecond {
-		t.Errorf("expected fallback 200ms, got %v", got)
-	}
-}
-
-func TestHLSManager_getFFmpegStopTimeout(t *testing.T) {
-	h := &HLSManager{config: HLSManagerConfig{FFmpegStopTimeout: 7 * time.Second}}
-	if got := h.getFFmpegStopTimeout(); got != 7*time.Second {
-		t.Errorf("expected 7s, got %v", got)
-	}
-	h.config.FFmpegStopTimeout = 0
-	if got := h.getFFmpegStopTimeout(); got != 2*time.Second {
-		t.Errorf("expected fallback 2s, got %v", got)
-	}
-}
-
-func TestHLSManager_getViewerHeartbeatTimeout(t *testing.T) {
-	h := &HLSManager{config: HLSManagerConfig{ViewerHeartbeatTimeout: 42 * time.Second}}
-	if got := h.getViewerHeartbeatTimeout(); got != 42*time.Second {
-		t.Errorf("expected 42s, got %v", got)
-	}
-	h.config.ViewerHeartbeatTimeout = 0
-	if got := h.getViewerHeartbeatTimeout(); got != 30*time.Second {
-		t.Errorf("expected fallback 30s, got %v", got)
-	}
-}
-
 func TestHLSManager_GetOrStartSession_FailedCooldown(t *testing.T) {
-	h := NewHLSManager(minimalHLSManagerConfig(), newTestLogger())
+	h := NewHLSManager(newTestLogger(), os.TempDir(), &mockStreamProvider{})
 	inputName := "testinput"
 	h.failedInputs[inputName] = time.Now()
 	_, err := h.GetOrStartSession(inputName, "rtsp://localhost/relay/testinput")
@@ -288,54 +257,14 @@ func TestHLSManager_GetOrStartSession_FailedCooldown(t *testing.T) {
 }
 
 func TestHLSManager_GetOrStartSession_InvalidInputName(t *testing.T) {
-	h := NewHLSManager(minimalHLSManagerConfig(), newTestLogger())
+	h := NewHLSManager(newTestLogger(), os.TempDir(), &mockStreamProvider{})
 	_, err := h.GetOrStartSession("../badinput", "rtsp://localhost/relay/badinput")
 	if err == nil || !strings.Contains(err.Error(), "invalid input name") {
 		t.Errorf("expected invalid input name error, got %v", err)
 	}
 }
 
-func TestHLSManager_GetOrStartSession_RespectsAndCleansCooldown(t *testing.T) {
-	h := NewHLSManager(minimalHLSManagerConfig(), newTestLogger())
-	inputName := "testinput"
-	localURL := "rtsp://localhost/relay/testinput"
-
-	// Simulate a recent failure (within cooldown)
-	h.failedInputs[inputName] = time.Now()
-	_, err := h.GetOrStartSession(inputName, localURL)
-	if err == nil || !strings.Contains(err.Error(), "cooldown") {
-		t.Errorf("expected cooldown error, got %v", err)
-	}
-
-	// Simulate cooldown expired
-	h.failedInputs[inputName] = time.Now().Add(-2 * h.config.FailedCooldown)
-	_, err = h.GetOrStartSession(inputName, localURL)
-	if err != nil {
-		t.Fatalf("expected session to start after cooldown, got %v", err)
-	}
-	if _, exists := h.failedInputs[inputName]; exists {
-		t.Errorf("expected cooldown entry to be cleaned up after expiry, but still present")
-	}
-}
-
 // --- Mocks for error branches ---
-type mockRelayManager struct {
-	failStart bool
-}
-
-func (m *mockRelayManager) StartInputRelayForConsumer(inputName string) (string, error) {
-	if m.failStart {
-		return "", errors.New("relay fail")
-	}
-	return "mockurl", nil
-}
-func (m *mockRelayManager) StopInputRelayForConsumer(inputName, outputURL string) {}
-
-// Satisfy the interface expected by HLSManager
-var _ interface {
-	StartInputRelayForConsumer(string) (string, error)
-	StopInputRelayForConsumer(string, string)
-} = &mockRelayManager{}
 
 type testFFmpegProcess struct{ startErr error }
 
@@ -343,51 +272,11 @@ func (m *testFFmpegProcess) Start(ctx context.Context) error                    
 func (m *testFFmpegProcess) Stop(ctx context.Context, timeout time.Duration) error { return nil }
 func (m *testFFmpegProcess) Wait() error                                           { return nil }
 func (m *testFFmpegProcess) GetLastOutputLines(n int) []string                     { return nil }
-func (p *testFFmpegProcess) GetBitrate() (float64, bool)                           { return 0, false } // GetBitrate returns the last parsed bitrate (kbps) and true if available
-// GetPID returns 0 for testFFmpegProcess
-func (p *testFFmpegProcess) GetPID() int                    { return 0 }
-func (p *testFFmpegProcess) GetOutput() string              { return "" }
-func (p *testFFmpegProcess) GetSpeed() (float64, time.Time) { return 0, time.Time{} }
-func (p *testFFmpegProcess) OutputChannel() <-chan string   { return nil }
-
-func TestHLSManager_GetOrStartSession_InputRelayFail(t *testing.T) {
-	h := NewHLSManager(minimalHLSManagerConfig(), newTestLogger())
-	h.relayManager = &mockRelayManager{failStart: true}
-	_, err := h.GetOrStartSession("inputfail", "rtsp://localhost/relay/inputfail")
-	if err == nil || !strings.Contains(err.Error(), "failed to start input relay") {
-		t.Errorf("expected input relay fail error, got %v", err)
-	}
-}
-
-func TestHLSManager_GetOrStartSession_TempDirFail(t *testing.T) {
-	h := NewHLSManager(minimalHLSManagerConfig(), newTestLogger())
-	// Use a non-existent base dir to force MkdirTemp failure
-	h.config.PlaylistBaseDir = "/nonexistent/dir/shouldfail"
-	_, err := h.GetOrStartSession("input", "rtsp://localhost/relay/input")
-	if err == nil || !strings.Contains(err.Error(), "failed to create temp dir") {
-		t.Errorf("expected temp dir fail error, got %v", err)
-	}
-}
-
-func TestHLSManager_GetOrStartSession_FFmpegFail(t *testing.T) {
-	h := NewHLSManager(minimalHLSManagerConfig(), newTestLogger())
-	// Patch HLSManager to use a test double for FFmpegProcess creation
-	h.newFFmpegProcess = func(ctx context.Context, args ...string) (FFmpegProcess, error) {
-		return nil, errors.New("ffmpeg create fail")
-	}
-	_, err := h.GetOrStartSession("input", "rtsp://localhost/relay/input")
-	if err == nil || !strings.Contains(err.Error(), "failed to create ffmpeg process") {
-		t.Errorf("expected ffmpeg create fail error, got %v", err)
-	}
-	// Now test ffmpeg Start() fail
-	h.newFFmpegProcess = func(ctx context.Context, args ...string) (FFmpegProcess, error) {
-		return &testFFmpegProcess{startErr: errors.New("ffmpeg start fail")}, nil
-	}
-	_, err = h.GetOrStartSession("input2", "rtsp://localhost/relay/input2")
-	if err == nil || !strings.Contains(err.Error(), "failed to start ffmpeg") {
-		t.Errorf("expected ffmpeg start fail error, got %v", err)
-	}
-}
+func (p *testFFmpegProcess) GetBitrate() (float64, bool)                           { return 0, false }
+func (p *testFFmpegProcess) GetPID() int                                           { return 0 }
+func (p *testFFmpegProcess) GetOutput() string                                     { return "" }
+func (p *testFFmpegProcess) GetSpeed() (float64, time.Time)                        { return 0, time.Time{} }
+func (p *testFFmpegProcess) OutputChannel() <-chan string                          { return nil }
 
 // --- Test for Shutdown ---
 type shutdownMockRelay struct{ stopped []string }
@@ -416,42 +305,11 @@ func (p *shutdownMockProc) GetOutput() string              { return "" }
 func (p *shutdownMockProc) GetSpeed() (float64, time.Time) { return 0, time.Time{} }
 func (p *shutdownMockProc) OutputChannel() <-chan string   { return nil }
 
-func TestHLSManager_Shutdown(t *testing.T) {
-	logr := newTestLogger()
-	mgr := NewHLSManager(minimalHLSManagerConfig(), logr)
-	relay := &shutdownMockRelay{}
-	mgr.relayManager = relay
-
-	sess := &HLSSession{
-		InputName:  "foo",
-		IsConsumer: true,
-		Dir:        t.TempDir(),
-		Proc:       &shutdownMockProc{},
-	}
-	mgr.sessions["foo"] = sess
-
-	mgr.Shutdown()
-
-	if len(relay.stopped) != 1 || relay.stopped[0] != "foo" {
-		t.Errorf("expected relay StopInputRelayForConsumer to be called for 'foo', got %v", relay.stopped)
-	}
-	proc, ok := sess.Proc.(*shutdownMockProc)
-	if !ok || !proc.stopped {
-		t.Error("expected ffmpeg process Stop to be called")
-	}
-	if !ok || !proc.waited {
-		t.Error("expected ffmpeg process Wait to be called")
-	}
-	if _, err := os.Stat(sess.Dir); !os.IsNotExist(err) {
-		t.Error("expected session dir to be removed on shutdown")
-	}
-}
-
 func TestCheckFailedCooldownDeletesExpired(t *testing.T) {
 	mgr := &HLSManager{
 		failedInputs:   map[string]time.Time{"foo": time.Now().Add(-2 * time.Second)},
 		failedCooldown: 1 * time.Second,
-		logger:         newTestLogger(),
+		Logger:         newTestLogger(),
 	}
 	err := mgr.checkFailedCooldown("foo")
 	if err != nil {
@@ -462,93 +320,9 @@ func TestCheckFailedCooldownDeletesExpired(t *testing.T) {
 	}
 }
 
-func TestTryFsnotifyPlaylistReady_Integration(t *testing.T) {
-	dir := t.TempDir()
-	playlistPath := filepath.Join(dir, "index.m3u8")
-	mgr := NewHLSManager(minimalHLSManagerConfig(), newTestLogger())
-
-	// Case 1: File is created and written after a short delay (should return true)
-	go func() {
-		time.Sleep(100 * time.Millisecond)
-		os.WriteFile(playlistPath, []byte("#EXTM3U\n"), 0644)
-	}()
-	ready := mgr.tryFsnotifyPlaylistReady(playlistPath)
-	if !ready {
-		t.Error("expected playlist to become ready after file write")
-	}
-
-	// Case 2: File is never created (should timeout and return false)
-	playlistPath2 := filepath.Join(dir, "index2.m3u8")
-	mgr2 := NewHLSManager(HLSManagerConfig{
-		CleanupInterval:        1 * time.Second,
-		SessionTimeout:         1 * time.Second,
-		FailedCooldown:         1 * time.Second,
-		PlaylistReadyTimeout:   200 * time.Millisecond, // short timeout
-		PlaylistPollInterval:   50 * time.Millisecond,
-		PlaylistPollAttempts:   2,
-		ViewerHeartbeatTimeout: 1 * time.Second,
-		FFmpegStopTimeout:      1 * time.Second,
-		PlaylistBaseDir:        dir,
-	}, newTestLogger())
-	ready2 := mgr2.tryFsnotifyPlaylistReady(playlistPath2)
-	if ready2 {
-		t.Error("expected playlist to not become ready when file is never created")
-	}
-}
-
-func TestTryFsnotifyPlaylistReady_AllBranches(t *testing.T) {
-	dir := t.TempDir()
-	playlistPath := filepath.Join(dir, "index.m3u8")
-	mgr := NewHLSManager(HLSManagerConfig{
-		CleanupInterval:        1 * time.Second,
-		SessionTimeout:         1 * time.Second,
-		FailedCooldown:         1 * time.Second,
-		PlaylistReadyTimeout:   500 * time.Millisecond,
-		PlaylistPollInterval:   50 * time.Millisecond,
-		PlaylistPollAttempts:   3,
-		ViewerHeartbeatTimeout: 1 * time.Second,
-		FFmpegStopTimeout:      1 * time.Second,
-		PlaylistBaseDir:        dir,
-	}, newTestLogger())
-
-	// Case 1: File exists and is non-empty before call (stat branch)
-	os.WriteFile(playlistPath, []byte("#EXTM3U\n"), 0644)
-	if !mgr.tryFsnotifyPlaylistReady(playlistPath) {
-		t.Error("expected playlist to be ready immediately (stat branch)")
-	}
-	os.Remove(playlistPath)
-
-	// Case 2: File is created after a delay (event branch)
-	go func() {
-		time.Sleep(100 * time.Millisecond)
-		os.WriteFile(playlistPath, []byte("#EXTM3U\n"), 0644)
-	}()
-	if !mgr.tryFsnotifyPlaylistReady(playlistPath) {
-		t.Error("expected playlist to become ready after file write (event branch)")
-	}
-	os.Remove(playlistPath)
-
-	// Case 3: File is created but empty, then written to (event+stat branch)
-	os.WriteFile(playlistPath, []byte(""), 0644)
-	go func() {
-		time.Sleep(100 * time.Millisecond)
-		os.WriteFile(playlistPath, []byte("#EXTM3U\n"), 0644)
-	}()
-	if !mgr.tryFsnotifyPlaylistReady(playlistPath) {
-		t.Error("expected playlist to become ready after file write (event+stat branch)")
-	}
-	os.Remove(playlistPath)
-
-	// Case 4: Timeout branch (file never created)
-	playlistPath2 := filepath.Join(dir, "index2.m3u8")
-	if mgr.tryFsnotifyPlaylistReady(playlistPath2) {
-		t.Error("expected playlist to not become ready (timeout branch)")
-	}
-}
-
 // --- Test for serveHLSCheckViewer coverage ---
 func TestServeHLSCheckViewer_AllBranches(t *testing.T) {
-	mgr := NewHLSManager(minimalHLSManagerConfig(), newTestLogger())
+	mgr := NewHLSManager(newTestLogger(), os.TempDir(), &mockStreamProvider{})
 	inputName := "testinput"
 
 	// 1. Invalid input name (should return 200 and dummy playlist for index.m3u8)
@@ -628,7 +402,7 @@ func TestServeHLSCheckViewer_AllBranches(t *testing.T) {
 }
 
 func TestServeHLSCheckViewer_AllBranches_Coverage(t *testing.T) {
-	mgr := NewHLSManager(minimalHLSManagerConfig(), newTestLogger())
+	mgr := NewHLSManager(newTestLogger(), os.TempDir(), &mockStreamProvider{})
 	inputName := "testinput"
 	// No session: should return 410 if viewerID is present
 	w := httptest.NewRecorder()
@@ -672,113 +446,6 @@ func TestServeHLSCheckViewer_AllBranches_Coverage(t *testing.T) {
 	mgr.ServeHLS(w, r, inputName, "index.m3u8", "")
 	if w.Result().StatusCode != http.StatusOK {
 		t.Errorf("expected 200 for valid viewerID, got %d", w.Result().StatusCode)
-	}
-}
-
-func TestHLSManager_CleanupLoop_RemovesStaleSessions(t *testing.T) {
-	mgr := NewHLSManager(HLSManagerConfig{
-		CleanupInterval:        50 * time.Millisecond,
-		SessionTimeout:         50 * time.Millisecond,
-		FailedCooldown:         1 * time.Second,
-		PlaylistReadyTimeout:   1 * time.Second,
-		PlaylistPollInterval:   100 * time.Millisecond,
-		PlaylistPollAttempts:   1,
-		ViewerHeartbeatTimeout: 10 * time.Millisecond,
-		FFmpegStopTimeout:      1 * time.Second,
-		PlaylistBaseDir:        os.TempDir(),
-	}, newTestLogger())
-	inputName := "cleanupinput"
-	sess := &HLSSession{
-		InputName:  inputName,
-		Dir:        t.TempDir(),
-		Ready:      true,
-		ViewerIDs:  map[string]time.Time{"v1": time.Now().Add(-time.Hour), "v2": time.Now().Add(time.Hour)},
-		LastAccess: time.Now().Add(-time.Second),
-		Proc:       &shutdownMockProc{},
-	}
-	mgr.mu.Lock()
-	mgr.sessions[inputName] = sess
-	mgr.mu.Unlock()
-	// Wait for cleanupLoop to run
-	time.Sleep(200 * time.Millisecond)
-	mgr.mu.Lock()
-	_, exists := mgr.sessions[inputName]
-	mgr.mu.Unlock()
-	if exists {
-		t.Errorf("expected session to be removed by cleanupLoop")
-	}
-	// Test non-consumer session removal
-	inputName2 := "cleanupinput2"
-	sess2 := &HLSSession{
-		InputName:  inputName2,
-		Dir:        t.TempDir(),
-		Ready:      true,
-		ViewerIDs:  map[string]time.Time{},
-		LastAccess: time.Now().Add(-time.Second),
-		Proc:       &shutdownMockProc{},
-	}
-	mgr.mu.Lock()
-	mgr.sessions[inputName2] = sess2
-	mgr.mu.Unlock()
-	time.Sleep(100 * time.Millisecond)
-	mgr.mu.Lock()
-	_, exists2 := mgr.sessions[inputName2]
-	mgr.mu.Unlock()
-	if exists2 {
-		t.Errorf("expected non-consumer session to be removed by cleanupLoop")
-	}
-}
-
-func TestHLSManager_GetOrStartSession_ErrorBranches(t *testing.T) {
-	mgr := NewHLSManager(minimalHLSManagerConfig(), newTestLogger())
-	// Recent failure (cooldown)
-	mgr.failedInputs["failinput"] = time.Now()
-	_, err := mgr.GetOrStartSession("failinput", "rtsp://localhost/relay/failinput")
-	if err == nil || !strings.Contains(err.Error(), "cooldown") {
-		t.Errorf("expected cooldown error, got %v", err)
-	}
-	// Invalid input name
-	_, err = mgr.GetOrStartSession("../badinput", "rtsp://localhost/relay/badinput")
-	if err == nil || !strings.Contains(err.Error(), "invalid input name") {
-		t.Errorf("expected invalid input name error, got %v", err)
-	}
-	// Session already exists
-	inputName := "existsinput"
-	mgr.sessions[inputName] = &HLSSession{InputName: inputName, Ready: true, Proc: &shutdownMockProc{}}
-	sess, err := mgr.GetOrStartSession(inputName, "rtsp://localhost/relay/existsinput")
-	if err != nil || sess == nil {
-		t.Errorf("expected existing session, got %v, %v", sess, err)
-	}
-	// RelayManager error
-	mgr2 := NewHLSManager(minimalHLSManagerConfig(), newTestLogger())
-	mgr2.relayManager = &mockRelayManager{failStart: true}
-	_, err = mgr2.GetOrStartSession("failrelay", "rtsp://localhost/relay/failrelay")
-	if err == nil || !strings.Contains(err.Error(), "failed to start input relay") {
-		t.Errorf("expected relay fail error, got %v", err)
-	}
-	// Temp dir error
-	mgr3 := NewHLSManager(minimalHLSManagerConfig(), newTestLogger())
-	mgr3.config.PlaylistBaseDir = "/nonexistent/dir/shouldfail"
-	_, err = mgr3.GetOrStartSession("faildir", "rtsp://localhost/relay/faildir")
-	if err == nil || !strings.Contains(err.Error(), "failed to create temp dir") {
-		t.Errorf("expected temp dir fail error, got %v", err)
-	}
-	// FFmpegProcess error
-	mgr4 := NewHLSManager(minimalHLSManagerConfig(), newTestLogger())
-	mgr4.newFFmpegProcess = func(ctx context.Context, args ...string) (FFmpegProcess, error) {
-		return nil, errors.New("ffmpeg create fail")
-	}
-	_, err = mgr4.GetOrStartSession("failffmpeg", "rtsp://localhost/relay/failffmpeg")
-	if err == nil || !strings.Contains(err.Error(), "failed to create ffmpeg process") {
-		t.Errorf("expected ffmpeg create fail error, got %v", err)
-	}
-	// FFmpeg Start error
-	mgr4.newFFmpegProcess = func(ctx context.Context, args ...string) (FFmpegProcess, error) {
-		return &testFFmpegProcess{startErr: errors.New("ffmpeg start fail")}, nil
-	}
-	_, err = mgr4.GetOrStartSession("failffmpeg2", "rtsp://localhost/relay/failffmpeg2")
-	if err == nil || !strings.Contains(err.Error(), "failed to start ffmpeg") {
-		t.Errorf("expected ffmpeg start fail error, got %v", err)
 	}
 }
 

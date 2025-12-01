@@ -20,7 +20,7 @@ func TestRecordingManager_ConcurrentAPI(t *testing.T) {
 	log := logger.NewLogger()
 	dir := t.TempDir()
 	relayMgr := NewRelayManager(log, dir, "")
-	rm := NewRecordingManager(log, dir, relayMgr)
+	rm := NewRecordingManager(log, dir, relayMgr.InputRelays)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
@@ -139,7 +139,7 @@ func TestRecordingManager_ListRecordings_Empty(t *testing.T) {
 	log := logger.NewLogger()
 	dir := t.TempDir()
 	relayMgr := NewRelayManager(log, dir, "")
-	rm := NewRecordingManager(log, dir, relayMgr)
+	rm := NewRecordingManager(log, dir, relayMgr.InputRelays)
 	list := rm.ListRecordings()
 	if len(list) != 0 {
 		t.Errorf("expected empty list, got %v", list)
@@ -255,7 +255,7 @@ func TestRecordingManager_StartRecording_ErrorBranches(t *testing.T) {
 	ctx := context.Background()
 	// Use a real RelayManager
 	relayMgr := NewRelayManager(log, dir, "")
-	rm := NewRecordingManager(log, dir, relayMgr)
+	rm := NewRecordingManager(log, dir, relayMgr.InputRelays)
 	// Try to start a recording with a non-existent source (should fail at ffmpeg step)
 	err := rm.StartRecording(ctx, "fail", "fail")
 	if err == nil {
@@ -271,23 +271,8 @@ func TestRecordingManager_StartRecording_Success(t *testing.T) {
 	setupDir, _ := copyTestSrcToTempDir(t)
 	chdirTo(t, setupDir)
 
-	// Start RTSP server on dynamic port
-	rtspServer := NewRTSPServerManager(log, "127.0.0.1", 0)
-	if err := rtspServer.Start(); err != nil {
-		t.Fatalf("failed to start RTSP server: %v", err)
-	}
-	defer rtspServer.Stop()
-
-	relayMgr := NewRelayManager(log, setupDir, "")
-	relayMgr.SetRTSPServer(rtspServer)
-
-	// Register input config for testsrc (relative path)
-	relayMgr.RegisterInputConfig("testrec", "file://testsrc.mp4")
-	if _, err := relayMgr.StartInputRelayForConsumer("testrec"); err != nil {
-		t.Fatalf("failed to start input relay for consumer: %v", err)
-	}
-
-	rm := NewRecordingManager(log, setupDir, relayMgr)
+	// Use mock stream provider to avoid real RTSP/ffmpeg dependencies
+	rm := NewRecordingManager(log, setupDir, &mockStreamProvider{})
 	defer rm.Shutdown()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)

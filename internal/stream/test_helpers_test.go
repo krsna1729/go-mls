@@ -77,3 +77,14 @@ func chdirTo(t *testing.T, dir string) {
 		_ = os.Chdir(oldwd)
 	})
 }
+
+// mockStreamProvider is a simple mock implementation of StreamProvider for testing
+type mockStreamProvider struct{}
+
+func (m *mockStreamProvider) GetStream(inputName string) (string, error) {
+	return "rtsp://localhost/relay/" + inputName, nil
+}
+
+func (m *mockStreamProvider) ReleaseStream(inputName string) {
+	// No-op for mock
+}

@@ -19,20 +19,9 @@ func TestApiStartRecording(t *testing.T) {
 
 	log := logger.NewLogger()
 
-	// Start RTSP server (production-like setup)
-	rtspServer := NewRTSPServerManager(log, "127.0.0.1", 0)
-	if err := rtspServer.Start(); err != nil {
-		t.Fatalf("failed to start RTSP server: %v", err)
-	}
-	defer rtspServer.Stop()
-
-	relayMgr := NewRelayManager(log, setupDir, "")
-	relayMgr.SetRTSPServer(rtspServer)
-
-	// Register input config for test input (fix for failing test)
-	relayMgr.RegisterInputConfig("test", "file://testsrc.mp4")
-
-	rm := NewRecordingManager(log, setupDir, relayMgr)
+	// Use mock stream provider for unit testing API handler
+	// This avoids dependency on real RTSP server and ffmpeg process
+	rm := NewRecordingManager(log, setupDir, &mockStreamProvider{})
 	defer rm.Shutdown()
 
 	handler := ApiStartRecording(rm)
@@ -153,7 +142,7 @@ func TestApiStopRecording(t *testing.T) {
 	tempDir := t.TempDir()
 	log := logger.NewLogger()
 	relayMgr := NewRelayManager(log, tempDir, "")
-	rm := NewRecordingManager(log, tempDir, relayMgr)
+	rm := NewRecordingManager(log, tempDir, relayMgr.InputRelays)
 	defer rm.Shutdown()
 
 	handler := ApiStopRecording(rm)
@@ -220,7 +209,7 @@ func TestApiListRecordings(t *testing.T) {
 	tempDir := t.TempDir()
 	log := logger.NewLogger()
 	relayMgr := NewRelayManager(log, tempDir, "")
-	rm := NewRecordingManager(log, tempDir, relayMgr)
+	rm := NewRecordingManager(log, tempDir, relayMgr.InputRelays)
 	defer rm.Shutdown()
 
 	// Create a test recording file
@@ -277,7 +266,7 @@ func TestApiDeleteRecording(t *testing.T) {
 	tempDir := t.TempDir()
 	log := logger.NewLogger()
 	relayMgr := NewRelayManager(log, tempDir, "")
-	rm := NewRecordingManager(log, tempDir, relayMgr)
+	rm := NewRecordingManager(log, tempDir, relayMgr.InputRelays)
 	defer rm.Shutdown()
 
 	// Create a test recording file
@@ -366,7 +355,7 @@ func TestApiHandlers_ContentType(t *testing.T) {
 	tempDir := t.TempDir()
 	log := logger.NewLogger()
 	relayMgr := NewRelayManager(log, tempDir, "")
-	rm := NewRecordingManager(log, tempDir, relayMgr)
+	rm := NewRecordingManager(log, tempDir, relayMgr.InputRelays)
 	defer rm.Shutdown()
 
 	tests := []struct {
