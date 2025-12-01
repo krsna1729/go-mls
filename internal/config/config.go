@@ -183,21 +183,6 @@ func LoadConfig(filename string, log *logger.Logger) (*Config, error) {
 	return config, nil
 }
 
-// SaveConfig saves the configuration to a file
-// TODO: Use this for dynamic config updates and backup if/when runtime config changes are supported
-func (c *Config) SaveConfig(filename string) error {
-	data, err := json.MarshalIndent(c, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal config: %w", err)
-	}
-
-	if err := os.WriteFile(filename, data, 0644); err != nil {
-		return fmt.Errorf("failed to write config file: %w", err)
-	}
-
-	return nil
-}
-
 // Validate checks if the configuration is valid
 func (c *Config) Validate() error {
 	// Validate HTTP configuration

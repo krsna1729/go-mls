@@ -63,9 +63,6 @@ func (rt *Router) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/relay/hls/stop-viewer", stream.ApiStopHLSViewer(rt.hls, rt.relay))
 	mux.HandleFunc("/api/relay/hls/heartbeat", stream.ApiHLSViewerHeartbeat(rt.hls))
 
-	// Legacy compatibility routes (delegated to delete-input/delete-output)
-	mux.HandleFunc("/api/input/delete", rt.handleDeleteInput)
-	mux.HandleFunc("/api/output/delete", rt.handleDeleteOutput)
 }
 
 // writeError writes an AppError as JSON response
