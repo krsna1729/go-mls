@@ -19,8 +19,8 @@ import (
 func TestRecordingManager_ConcurrentAPI(t *testing.T) {
 	log := logger.NewLogger()
 	dir := t.TempDir()
-	relayMgr := NewRelayManager(log, dir, "")
-	rm := NewRecordingManager(log, dir, relayMgr.InputRelays)
+	streamMgr := NewStreamManager(log, dir, "")
+	rm := NewRecordingManager(log, dir, streamMgr.InputRelays)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
@@ -138,8 +138,8 @@ func TestSSEBroker_AddRemoveClient(t *testing.T) {
 func TestRecordingManager_ListRecordings_Empty(t *testing.T) {
 	log := logger.NewLogger()
 	dir := t.TempDir()
-	relayMgr := NewRelayManager(log, dir, "")
-	rm := NewRecordingManager(log, dir, relayMgr.InputRelays)
+	streamMgr := NewStreamManager(log, dir, "")
+	rm := NewRecordingManager(log, dir, streamMgr.InputRelays)
 	list := rm.ListRecordings()
 	if len(list) != 0 {
 		t.Errorf("expected empty list, got %v", list)
@@ -253,9 +253,13 @@ func TestRecordingManager_StartRecording_ErrorBranches(t *testing.T) {
 	dir := t.TempDir()
 	log := logger.NewLogger()
 	ctx := context.Background()
-	// Use a real RelayManager
-	relayMgr := NewRelayManager(log, dir, "")
-	rm := NewRecordingManager(log, dir, relayMgr.InputRelays)
+	// Use a real StreamManager
+	streamMgr := NewStreamManager(log, dir, "")
+	streamMgr.SetTimeouts(100*time.Millisecond, 100*time.Millisecond)
+
+	// Create RecordingManager with streamMgr.InputRelays
+	rm := NewRecordingManager(log, dir, streamMgr.InputRelays)
+	streamMgr.SetRecordingManager(rm)
 	// Try to start a recording with a non-existent source (should fail at ffmpeg step)
 	err := rm.StartRecording(ctx, "fail", "fail")
 	if err == nil {

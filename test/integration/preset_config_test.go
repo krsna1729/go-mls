@@ -45,9 +45,9 @@ func TestPresetConfigImport(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { rtspServer.Stop() })
 
-	// Create relay manager
-	relayMgr := stream.NewRelayManager(log, tempDir, "error")
-	relayMgr.SetRTSPServer(rtspServer)
+	// Create stream manager
+	streamMgr := stream.NewStreamManager(log, tempDir, "error")
+	streamMgr.SetRTSPServer(rtspServer)
 
 	// Define test config with various preset/option combinations using file:// URLs
 	config := []map[string]interface{}{
@@ -107,7 +107,7 @@ func TestPresetConfigImport(t *testing.T) {
 	require.NoError(t, err)
 
 	// Import config (this will fail to connect to RTMP servers, but we just want to check the args)
-	err = relayMgr.ImportConfig(configFile)
+	err = streamMgr.ImportConfig(configFile)
 	// We expect errors because RTMP servers don't exist, but we can still check the args
 	t.Logf("Import completed (errors expected): %v", err)
 
@@ -176,7 +176,7 @@ func TestPresetConfigImport(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.description, func(t *testing.T) {
 			// Get the output relay using helper
-			outputRelay, exists := relayMgr.OutputRelays.GetOutputRelay(tc.outputURL)
+			outputRelay, exists := streamMgr.OutputRelays.GetOutputRelay(tc.outputURL)
 
 			require.True(t, exists, "Output relay should exist for %s", tc.outputURL)
 			require.NotNil(t, outputRelay, "Output relay should not be nil")

@@ -514,19 +514,15 @@ func (irm *InputRelayManager) GetRelayStatus(inputURL string) (InputRelayStatus,
 }
 
 // GetRunningInputRelays returns a list of currently running input relays
-// This is safe for concurrent use as it returns copies of the relevant data
-func (irm *InputRelayManager) GetRunningInputRelays() []InputRelay {
+// This returns pointers to the relays. Callers must be careful with concurrency
+// or use the snapshot methods.
+func (irm *InputRelayManager) GetRunningInputRelays() []*InputRelay {
 	irm.mu.RLock()
 	defer irm.mu.RUnlock()
 
-	relays := make([]InputRelay, 0, len(irm.Relays))
+	relays := make([]*InputRelay, 0, len(irm.Relays))
 	for _, relay := range irm.Relays {
-		relay.mu.Lock()
-		// Create a shallow copy of the relay struct to avoid race conditions on fields
-		// Note: The Proc field is an interface and might still be shared, but basic fields like InputName are safe
-		copyRelay := *relay
-		relay.mu.Unlock()
-		relays = append(relays, copyRelay)
+		relays = append(relays, relay)
 	}
 	return relays
 }

@@ -14,7 +14,7 @@ import (
 type Context struct {
 	Logger    *logger.Logger
 	Config    *config.Config
-	Relay     *stream.RelayManager
+	Stream    *stream.StreamManager // Replaces RelayManager
 	Recording *stream.RecordingManager
 	HLS       *stream.HLSManager
 	RTSP      *stream.RTSPServerManager
@@ -36,27 +36,25 @@ func NewContext(cfg *config.Config, log *logger.Logger) (*Context, error) {
 	// Initialize RTSP server with configuration
 	ctx.RTSP = stream.NewRTSPServerManager(log, cfg.Relay.RTSPServer.Host, cfg.Relay.RTSPServer.Port)
 
-	// Initialize relay manager
-	ctx.Relay = stream.NewRelayManager(log, cfg.Recording.Directory, cfg.FFmpeg.LogLevel)
-	ctx.Relay.SetRTSPServer(ctx.RTSP)
-	ctx.Relay.SetTimeouts(
+	// Initialize StreamManager (replaces RelayManager)
+	ctx.Stream = stream.NewStreamManager(log, cfg.Recording.Directory, cfg.FFmpeg.LogLevel)
+	ctx.Stream.SetRTSPServer(ctx.RTSP)
+	ctx.Stream.SetTimeouts(
 		time.Duration(cfg.Relay.InputTimeout),
 		time.Duration(cfg.Relay.OutputTimeout),
 	)
 
 	// Initialize recording manager
-	// Pass Logger, recordingDir, and InputRelays as StreamProvider
-	ctx.Recording = stream.NewRecordingManager(log, cfg.Recording.Directory, ctx.Relay.InputRelays)
+	// Pass Logger, recordingDir, and InputRelays (from StreamManager) as StreamProvider
+	ctx.Recording = stream.NewRecordingManager(log, cfg.Recording.Directory, ctx.Stream.InputRelays)
 
 	// Initialize HLS manager
-	// Pass Logger, hlsDir, and InputRelays as StreamProvider
-	ctx.HLS = stream.NewHLSManager(log, cfg.HLS.PlaylistBaseDir, ctx.Relay.InputRelays)
+	// Pass Logger, hlsDir, and InputRelays (from StreamManager) as StreamProvider
+	ctx.HLS = stream.NewHLSManager(log, cfg.HLS.PlaylistBaseDir, ctx.Stream.InputRelays)
 
-	// Wire up cross-references
-	// RelayManager needs HLS and Recording managers for legacy reasons (if any) or cleanup
-	ctx.Relay.SetHLSManager(ctx.HLS)
-	ctx.Relay.SetRecordingManager(ctx.Recording)
-	// HLS and Recording managers now use StreamProvider (ctx.Relay.InputRelays) directly
+	// Wire up cross-references in StreamManager
+	ctx.Stream.SetHLSManager(ctx.HLS)
+	ctx.Stream.SetRecordingManager(ctx.Recording)
 
 	return ctx, nil
 }
@@ -87,9 +85,9 @@ func (c *Context) Shutdown() {
 	c.Logger.Info("Shutting down recording manager...")
 	c.Recording.Shutdown()
 
-	// Stop all active relays
-	c.Logger.Info("Stopping all active relays...")
-	c.Relay.StopAllRelays()
+	// Stop all active streams/relays via StreamManager
+	c.Logger.Info("Stopping all active streams...")
+	c.Stream.Shutdown()
 
 	// Stop RTSP server
 	c.Logger.Info("Stopping RTSP server...")

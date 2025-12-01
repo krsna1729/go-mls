@@ -141,11 +141,18 @@ func TestApiStopRecording(t *testing.T) {
 	// Setup test environment
 	tempDir := t.TempDir()
 	log := logger.NewLogger()
-	relayMgr := NewRelayManager(log, tempDir, "")
-	rm := NewRecordingManager(log, tempDir, relayMgr.InputRelays)
-	defer rm.Shutdown()
+	streamMgr := NewStreamManager(log, tempDir, "")
+	streamMgr.SetTimeouts(100*time.Millisecond, 100*time.Millisecond)
 
-	handler := ApiStopRecording(rm)
+	// Create RecordingManager with streamMgr.InputRelays
+	recMgr := NewRecordingManager(log, tempDir, streamMgr.InputRelays)
+
+	// Set RecordingManager on StreamManager
+	streamMgr.SetRecordingManager(recMgr)
+	defer recMgr.Shutdown()
+	defer streamMgr.Shutdown()
+
+	handler := ApiStopRecording(recMgr)
 
 	tests := []struct {
 		name           string
@@ -208,8 +215,8 @@ func TestApiListRecordings(t *testing.T) {
 	// Setup test environment
 	tempDir := t.TempDir()
 	log := logger.NewLogger()
-	relayMgr := NewRelayManager(log, tempDir, "")
-	rm := NewRecordingManager(log, tempDir, relayMgr.InputRelays)
+	streamMgr := NewStreamManager(log, tempDir, "")
+	rm := NewRecordingManager(log, tempDir, streamMgr.InputRelays)
 	defer rm.Shutdown()
 
 	// Create a test recording file
@@ -265,8 +272,8 @@ func TestApiDeleteRecording(t *testing.T) {
 	// Setup test environment
 	tempDir := t.TempDir()
 	log := logger.NewLogger()
-	relayMgr := NewRelayManager(log, tempDir, "")
-	rm := NewRecordingManager(log, tempDir, relayMgr.InputRelays)
+	streamMgr := NewStreamManager(log, tempDir, "")
+	rm := NewRecordingManager(log, tempDir, streamMgr.InputRelays)
 	defer rm.Shutdown()
 
 	// Create a test recording file
@@ -354,8 +361,8 @@ func TestApiHandlers_ContentType(t *testing.T) {
 	// Setup test environment
 	tempDir := t.TempDir()
 	log := logger.NewLogger()
-	relayMgr := NewRelayManager(log, tempDir, "")
-	rm := NewRecordingManager(log, tempDir, relayMgr.InputRelays)
+	streamMgr := NewStreamManager(log, tempDir, "")
+	rm := NewRecordingManager(log, tempDir, streamMgr.InputRelays)
 	defer rm.Shutdown()
 
 	tests := []struct {

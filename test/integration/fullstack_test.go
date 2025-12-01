@@ -23,7 +23,7 @@ import (
 // fullStackTestEnv holds the components for a full-stack integration test
 type fullStackTestEnv struct {
 	tempDir      string
-	relayMgr     *stream.RelayManager
+	streamMgr    *stream.StreamManager
 	recordingMgr *stream.RecordingManager
 	hlsMgr       *stream.HLSManager
 	ts           *httptest.Server
@@ -74,32 +74,32 @@ func setupFullStackTestEnv(t *testing.T) *fullStackTestEnv {
 	require.NoError(t, err, "Failed to start RTSP server")
 	t.Cleanup(func() { rtspServer.Stop() })
 
-	relayMgr := stream.NewRelayManager(log, tempDir, "error")
-	relayMgr.SetRTSPServer(rtspServer)
+	streamMgr := stream.NewStreamManager(log, tempDir, "error")
+	streamMgr.SetRTSPServer(rtspServer)
 
-	recordingMgr := stream.NewRecordingManager(log, tempDir, relayMgr.InputRelays)
+	recordingMgr := stream.NewRecordingManager(log, tempDir, streamMgr.InputRelays)
 	t.Cleanup(func() { recordingMgr.Shutdown() })
 
-	hlsMgr := stream.NewHLSManager(log, "/tmp", relayMgr.InputRelays)
+	hlsMgr := stream.NewHLSManager(log, "/tmp", streamMgr.InputRelays)
 	t.Cleanup(func() { hlsMgr.Shutdown() })
 
-	relayMgr.HLSManager = hlsMgr
-	relayMgr.RecordingManager = recordingMgr
+	streamMgr.SetHLSManager(hlsMgr)
+	streamMgr.SetRecordingManager(recordingMgr)
 
 	// === Setup HTTP Server with API Handlers ===
 	mux := http.NewServeMux()
 
 	// Relay APIs
-	mux.HandleFunc("/api/relay/start", stream.ApiStartRelay(relayMgr))
-	mux.HandleFunc("/api/relay/stop", stream.ApiStopRelay(relayMgr))
+	mux.HandleFunc("/api/relay/start", stream.ApiStartRelay(streamMgr))
+	mux.HandleFunc("/api/relay/stop", stream.ApiStopRelay(streamMgr))
 
 	// Recording APIs
 	mux.HandleFunc("/api/recording/start", stream.ApiStartRecording(recordingMgr))
 	mux.HandleFunc("/api/recording/stop", stream.ApiStopRecording(recordingMgr))
 
 	// HLS APIs
-	mux.HandleFunc("/api/relay/hls/start-viewer", stream.ApiStartHLSViewer(hlsMgr, relayMgr))
-	mux.HandleFunc("/api/relay/hls/stop-viewer", stream.ApiStopHLSViewer(hlsMgr, relayMgr))
+	mux.HandleFunc("/api/relay/hls/start-viewer", stream.ApiStartHLSViewer(hlsMgr, streamMgr))
+	mux.HandleFunc("/api/relay/hls/stop-viewer", stream.ApiStopHLSViewer(hlsMgr, streamMgr))
 
 	// Create test HTTP server
 	ts := httptest.NewServer(mux)
@@ -107,7 +107,7 @@ func setupFullStackTestEnv(t *testing.T) *fullStackTestEnv {
 
 	return &fullStackTestEnv{
 		tempDir:      tempDir,
-		relayMgr:     relayMgr,
+		streamMgr:    streamMgr,
 		recordingMgr: recordingMgr,
 		hlsMgr:       hlsMgr,
 		ts:           ts,
@@ -136,7 +136,7 @@ func execute(n int, concurrent bool, fn func(i int)) {
 // runFullStackLifecycle runs the full integration test lifecycle
 func runFullStackLifecycle(t *testing.T, concurrent bool) {
 	env := setupFullStackTestEnv(t)
-	relayMgr := env.relayMgr
+	streamMgr := env.streamMgr
 	hlsMgr := env.hlsMgr
 	tempDir := env.tempDir
 	doRequest := env.doRequest
@@ -164,7 +164,7 @@ func runFullStackLifecycle(t *testing.T, concurrent bool) {
 	})
 
 	// Verify refcount = 5
-	status, refCount, exists := relayMgr.InputRelays.GetRelayStatus(inputURL)
+	status, refCount, exists := streamMgr.InputRelays.GetRelayStatus(inputURL)
 	require.True(t, exists, "Input relay should exist")
 	assert.Equal(t, 5, refCount, "RefCount should be 5 after 5 outputs")
 	assert.Equal(t, stream.InputRunning, status, "Input should be running")
@@ -180,7 +180,7 @@ func runFullStackLifecycle(t *testing.T, concurrent bool) {
 	resp.Body.Close()
 
 	time.Sleep(1 * time.Second)
-	_, refCount, _ = relayMgr.InputRelays.GetRelayStatus(inputURL)
+	_, refCount, _ = streamMgr.InputRelays.GetRelayStatus(inputURL)
 	assert.Equal(t, 6, refCount, "RefCount should be 6 after recording starts")
 
 	// Start 3 HLS viewers (HLS session counts as 1 consumer)
@@ -212,7 +212,7 @@ func runFullStackLifecycle(t *testing.T, concurrent bool) {
 
 	time.Sleep(1 * time.Second)
 	// Refcount should be 7 (5 outputs + 1 recording + 1 HLS session)
-	status, refCount, _ = relayMgr.InputRelays.GetRelayStatus(inputURL)
+	status, refCount, _ = streamMgr.InputRelays.GetRelayStatus(inputURL)
 	assert.Equal(t, 7, refCount, "RefCount should be 7 (5 outputs + 1 recording + 1 HLS)")
 	assert.Equal(t, stream.InputRunning, status, "Input should be running")
 
@@ -235,7 +235,7 @@ func runFullStackLifecycle(t *testing.T, concurrent bool) {
 	})
 
 	time.Sleep(500 * time.Millisecond)
-	status, refCount, _ = relayMgr.InputRelays.GetRelayStatus(inputURL)
+	status, refCount, _ = streamMgr.InputRelays.GetRelayStatus(inputURL)
 	assert.Equal(t, 2, refCount, "RefCount should be 2 (recording + HLS)")
 	assert.Equal(t, stream.InputRunning, status, "Input should still be running")
 
@@ -250,7 +250,7 @@ func runFullStackLifecycle(t *testing.T, concurrent bool) {
 	resp.Body.Close()
 
 	time.Sleep(500 * time.Millisecond)
-	status, refCount, _ = relayMgr.InputRelays.GetRelayStatus(inputURL)
+	status, refCount, _ = streamMgr.InputRelays.GetRelayStatus(inputURL)
 	assert.Equal(t, 1, refCount, "RefCount should be 1 (HLS only)")
 	assert.Equal(t, stream.InputRunning, status, "Input should still be running")
 
@@ -267,7 +267,7 @@ func runFullStackLifecycle(t *testing.T, concurrent bool) {
 	})
 
 	time.Sleep(500 * time.Millisecond)
-	status, refCount, _ = relayMgr.InputRelays.GetRelayStatus(inputURL)
+	status, refCount, _ = streamMgr.InputRelays.GetRelayStatus(inputURL)
 	assert.Equal(t, 1, refCount, "RefCount still 1 (HLS has 1 viewer left)")
 	assert.Equal(t, stream.InputRunning, status, "Input should still be running")
 
@@ -288,7 +288,7 @@ func runFullStackLifecycle(t *testing.T, concurrent bool) {
 	time.Sleep(500 * time.Millisecond)
 
 	// Verify Input Relay has been stopped
-	status, refCount, _ = relayMgr.InputRelays.GetRelayStatus(inputURL)
+	status, refCount, _ = streamMgr.InputRelays.GetRelayStatus(inputURL)
 	assert.Equal(t, 0, refCount, "RefCount should be 0 after all consumers stop")
 	assert.Equal(t, stream.InputStopped, status, "Input relay should be stopped")
 

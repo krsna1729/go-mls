@@ -4,7 +4,7 @@ package stream
 // 1. Apply platform preset if provided
 // 2. Override with manual FFmpeg options if provided
 // 3. If neither, try stored config (only if inputURL and outputURL are provided)
-func (rm *RelayManager) applyPresetAndOptions(preset string, manualOpts map[string]string, inputURL, outputURL string) (*FFmpegOptions, string) {
+func (sm *StreamManager) applyPresetAndOptions(preset string, manualOpts map[string]string, inputURL, outputURL string) (*FFmpegOptions, string) {
 	var opts *FFmpegOptions
 	usedPreset := preset
 
@@ -19,9 +19,9 @@ func (rm *RelayManager) applyPresetAndOptions(preset string, manualOpts map[stri
 				Bitrate:    presetData.Options.Bitrate,
 				Rotation:   presetData.Options.Rotation,
 			}
-			rm.Logger.Debug("Applied platform preset", "preset", preset)
+			sm.Logger.Debug("Applied platform preset", "preset", preset)
 		} else {
-			rm.Logger.Warn("Unknown platform preset", "preset", preset)
+			sm.Logger.Warn("Unknown platform preset", "preset", preset)
 		}
 	}
 
@@ -49,16 +49,16 @@ func (rm *RelayManager) applyPresetAndOptions(preset string, manualOpts map[stri
 		if manualOpts["rotation"] != "" {
 			opts.Rotation = manualOpts["rotation"]
 		}
-		rm.Logger.Debug("Applied manual options overrides")
+		sm.Logger.Debug("Applied manual options overrides")
 	}
 
 	// Step 3: If still no options and no preset, try stored config (only for API calls with URLs)
 	if opts == nil && preset == "" && inputURL != "" && outputURL != "" {
-		storedPreset, storedOpts, err := rm.GetEndpointConfig(inputURL, outputURL)
+		storedPreset, storedOpts, err := sm.GetEndpointConfig(inputURL, outputURL)
 		if err == nil {
 			usedPreset = storedPreset
 			opts = storedOpts
-			rm.Logger.Debug("Using stored config", "preset", storedPreset)
+			sm.Logger.Debug("Using stored config", "preset", storedPreset)
 		}
 	}
 

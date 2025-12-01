@@ -16,7 +16,7 @@ import (
 
 // Router handles all HTTP API routes
 type Router struct {
-	relay     *stream.RelayManager
+	stream    *stream.StreamManager // Replaces RelayManager
 	recording *stream.RecordingManager
 	hls       *stream.HLSManager
 	rtsp      *stream.RTSPServerManager
@@ -26,7 +26,7 @@ type Router struct {
 // NewRouter creates a new API router from an application context
 func NewRouter(appCtx *app.Context) *Router {
 	return &Router{
-		relay:     appCtx.Relay,
+		stream:    appCtx.Stream,
 		recording: appCtx.Recording,
 		hls:       appCtx.HLS,
 		rtsp:      appCtx.RTSP,
@@ -36,7 +36,7 @@ func NewRouter(appCtx *app.Context) *Router {
 
 // RegisterRoutes registers all API routes with the given mux
 func (rt *Router) RegisterRoutes(mux *http.ServeMux) {
-	// Relay routes
+	// Relay routes (now Stream routes)
 	mux.HandleFunc("/api/relay/start", rt.handleStartRelay)
 	mux.HandleFunc("/api/relay/stop", rt.handleStopRelay)
 	mux.HandleFunc("/api/relay/status", rt.handleRelayStatus)
@@ -58,9 +58,10 @@ func (rt *Router) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/recording/sse", stream.ApiRecordingsSSE())
 
 	// HLS routes
-	mux.HandleFunc("/api/relay/watch-input/hls/", stream.ApiWatchInputHLS(rt.hls, rt.relay))
-	mux.HandleFunc("/api/relay/hls/start-viewer", stream.ApiStartHLSViewer(rt.hls, rt.relay))
-	mux.HandleFunc("/api/relay/hls/stop-viewer", stream.ApiStopHLSViewer(rt.hls, rt.relay))
+	// Note: ApiWatchInputHLS and others still need StreamManager for input relay coordination
+	mux.HandleFunc("/api/relay/watch-input/hls/", stream.ApiWatchInputHLS(rt.hls, rt.stream))
+	mux.HandleFunc("/api/relay/hls/start-viewer", stream.ApiStartHLSViewer(rt.hls, rt.stream))
+	mux.HandleFunc("/api/relay/hls/stop-viewer", stream.ApiStopHLSViewer(rt.hls, rt.stream))
 	mux.HandleFunc("/api/relay/hls/heartbeat", stream.ApiHLSViewerHeartbeat(rt.hls))
 
 }
@@ -119,7 +120,7 @@ func (rt *Router) handleStartRelay(w http.ResponseWriter, r *http.Request) {
 		}
 	} else if platformPreset == "" {
 		// Try to get stored configuration
-		storedPreset, storedOpts, err := rt.relay.GetEndpointConfig(req.InputURL, req.OutputURL)
+		storedPreset, storedOpts, err := rt.stream.GetEndpointConfig(req.InputURL, req.OutputURL)
 		if err == nil {
 			platformPreset = storedPreset
 			opts = storedOpts
@@ -127,7 +128,8 @@ func (rt *Router) handleStartRelay(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := rt.relay.StartRelayWithOptions(req.InputURL, req.OutputURL, req.InputName, req.OutputName, opts, platformPreset); err != nil {
+	// Call StartStream on StreamManager
+	if err := rt.stream.StartStream(req.InputURL, req.OutputURL, req.InputName, req.OutputName, opts, platformPreset); err != nil {
 		rt.logger.Error("handleStartRelay: failed to start relay", "err", err)
 		rt.writeError(w, errors.Internal(err.Error()))
 		return
@@ -165,7 +167,7 @@ func (rt *Router) handleStopRelay(w http.ResponseWriter, r *http.Request) {
 		"inputName", req.InputName,
 		"outputName", req.OutputName)
 
-	if err := rt.relay.StopRelay(req.InputURL, req.OutputURL, req.InputName, req.OutputName); err != nil {
+	if err := rt.stream.StopStream(req.InputURL, req.OutputURL, req.InputName, req.OutputName); err != nil {
 		rt.logger.Error("handleStopRelay: failed to stop relay", "err", err)
 		rt.writeError(w, errors.Internal(err.Error()))
 		return
@@ -177,14 +179,15 @@ func (rt *Router) handleStopRelay(w http.ResponseWriter, r *http.Request) {
 
 func (rt *Router) handleRelayStatus(w http.ResponseWriter, r *http.Request) {
 	rt.logger.Debug("handleRelayStatus called")
-	httputil.WriteJSON(w, http.StatusOK, rt.relay.StatusV2())
+	// Returns the new unified StreamStatus
+	httputil.WriteJSON(w, http.StatusOK, rt.stream.Status())
 	rt.logger.Debug("handleRelayStatus: status returned")
 }
 
 func (rt *Router) handleExportRelays(w http.ResponseWriter, r *http.Request) {
 	rt.logger.Debug("handleExportRelays called")
 
-	if err := rt.relay.ExportConfig("relay_config.json"); err != nil {
+	if err := rt.stream.ExportConfig("relay_config.json"); err != nil {
 		rt.logger.Error("handleExportRelays: failed to export config", "err", err)
 		rt.writeError(w, errors.Internal(err.Error()))
 		return
@@ -218,7 +221,7 @@ func (rt *Router) handleImportRelays(w http.ResponseWriter, r *http.Request) {
 
 	io.Copy(f, file)
 
-	if err := rt.relay.ImportConfig("relay_config.json"); err != nil {
+	if err := rt.stream.ImportConfig("relay_config.json"); err != nil {
 		rt.logger.Error("handleImportRelays: failed to import config", "err", err)
 		rt.writeError(w, errors.Internal(err.Error()))
 		return
@@ -264,8 +267,7 @@ func (rt *Router) handleDeleteInput(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rt.logger.Debug("handleDeleteInput: deleting input", "inputURL", req.InputURL, "inputName", req.InputName)
-
-	if err := rt.relay.DeleteInput(req.InputURL, req.InputName); err != nil {
+	if err := rt.stream.DeleteInput(req.InputURL, req.InputName); err != nil {
 		rt.logger.Error("handleDeleteInput: failed to delete input", "err", err)
 		rt.writeError(w, errors.Internal(err.Error()))
 		return
@@ -303,7 +305,7 @@ func (rt *Router) handleDeleteOutput(w http.ResponseWriter, r *http.Request) {
 		"inputName", req.InputName,
 		"outputName", req.OutputName)
 
-	if err := rt.relay.DeleteOutput(req.InputURL, req.OutputURL, req.InputName, req.OutputName); err != nil {
+	if err := rt.stream.DeleteOutput(req.InputURL, req.OutputURL, req.InputName, req.OutputName); err != nil {
 		rt.logger.Error("handleDeleteOutput: failed to delete output", "err", err)
 		rt.writeError(w, errors.Internal(err.Error()))
 		return
