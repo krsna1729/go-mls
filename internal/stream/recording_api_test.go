@@ -21,7 +21,7 @@ func TestApiStartRecording(t *testing.T) {
 
 	// Use mock stream provider for unit testing API handler
 	// This avoids dependency on real RTSP server and ffmpeg process
-	rm := NewRecordingManager(log, setupDir, &mockStreamProvider{})
+	rm := NewRecordingManager(log, setupDir, &mockStreamProvider{}, nil)
 	defer rm.Shutdown()
 
 	handler := ApiStartRecording(rm)
@@ -145,7 +145,7 @@ func TestApiStopRecording(t *testing.T) {
 	streamMgr.SetTimeouts(100*time.Millisecond, 100*time.Millisecond)
 
 	// Create RecordingManager with streamMgr.InputRelays
-	recMgr := NewRecordingManager(log, tempDir, streamMgr.InputRelays)
+	recMgr := NewRecordingManager(log, tempDir, streamMgr.InputRelays, nil)
 
 	// Set RecordingManager on StreamManager
 	streamMgr.SetRecordingManager(recMgr)
@@ -216,7 +216,7 @@ func TestApiListRecordings(t *testing.T) {
 	tempDir := t.TempDir()
 	log := logger.NewLogger()
 	streamMgr := NewStreamManager(log, tempDir, "")
-	rm := NewRecordingManager(log, tempDir, streamMgr.InputRelays)
+	rm := NewRecordingManager(log, tempDir, streamMgr.InputRelays, nil)
 	defer rm.Shutdown()
 
 	// Create a test recording file
@@ -273,7 +273,7 @@ func TestApiDeleteRecording(t *testing.T) {
 	tempDir := t.TempDir()
 	log := logger.NewLogger()
 	streamMgr := NewStreamManager(log, tempDir, "")
-	rm := NewRecordingManager(log, tempDir, streamMgr.InputRelays)
+	rm := NewRecordingManager(log, tempDir, streamMgr.InputRelays, nil)
 	defer rm.Shutdown()
 
 	// Create a test recording file
@@ -362,7 +362,7 @@ func TestApiHandlers_ContentType(t *testing.T) {
 	tempDir := t.TempDir()
 	log := logger.NewLogger()
 	streamMgr := NewStreamManager(log, tempDir, "")
-	rm := NewRecordingManager(log, tempDir, streamMgr.InputRelays)
+	rm := NewRecordingManager(log, tempDir, streamMgr.InputRelays, nil)
 	defer rm.Shutdown()
 
 	tests := []struct {

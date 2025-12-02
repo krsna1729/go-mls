@@ -103,6 +103,9 @@ type StreamManager struct {
 	startMutexes   map[string]*sync.Mutex
 	startMutexesMu sync.Mutex
 
+	// Consumer registry for tracking all active consumers
+	consumerRegistry *ConsumerRegistry
+
 	// status caching
 	statusCache   StreamStatus
 	statusCacheTs time.Time
@@ -116,25 +119,35 @@ func NewStreamManager(l *logger.Logger, recDir string, ffmpegLogLevel string) *S
 	irm := NewInputRelayManager(l, recDir)
 	orm := NewOutputRelayManager(l)
 	sm := &StreamManager{
-		InputRelays:    irm,
-		OutputRelays:   orm,
-		Logger:         l,
-		recDir:         recDir,
-		outputTimeout:  60 * time.Second,
-		startMutexes:   make(map[string]*sync.Mutex),
-		ffmpegLogLevel: ffmpegLogLevel,
+		InputRelays:      irm,
+		OutputRelays:     orm,
+		Logger:           l,
+		recDir:           recDir,
+		outputTimeout:    60 * time.Second,
+		startMutexes:     make(map[string]*sync.Mutex),
+		ffmpegLogLevel:   ffmpegLogLevel,
+		consumerRegistry: NewConsumerRegistry(),
 	}
 
-	// Set up failure callback for output relays
-	orm.SetFailureCallback(func(inputURL, outputURL string) {
-		l.Info("Output relay failure callback: cleaning up input relay refcount", "inputURL", inputURL, "outputURL", outputURL)
-		irm.DecrementInputRef(inputURL, "failureCallback")
-	})
+	// Set up Consumer cleanup handler for output relay failures
+	// When an output fails, it will call sm.OnConsumerFailure via dependency injection
+	orm.SetCleanupHandler(sm) // StreamManager implements ConsumerCleanupHandler
 
 	return sm
 }
 
 // Setters for dependencies (to handle initialization cycles if needed, though NewContext handles most)
+
+// UnregisterConsumer unregisters a consumer and decrements the input reference count.
+func (sm *StreamManager) UnregisterConsumer(inputURL, consumerID string) bool {
+	unregistered := sm.consumerRegistry.Unregister(inputURL, consumerID)
+	if unregistered {
+		sm.Logger.Debug("Unregistered consumer", "inputURL", inputURL, "consumerID", consumerID)
+		// Decrement refcount since consumer is removed
+		sm.InputRelays.DecrementInputRef(inputURL, "consumer-"+consumerID)
+	}
+	return unregistered
+}
 
 func (sm *StreamManager) SetRTSPServer(server *RTSPServerManager) {
 	sm.RTSPServer = server
@@ -153,6 +166,26 @@ func (sm *StreamManager) SetTimeouts(inputTimeout, outputTimeout time.Duration) 
 	sm.InputRelays.SetInputTimeout(inputTimeout)
 	sm.outputTimeout = outputTimeout
 	sm.Logger.Debug("StreamManager: Updated timeouts", "inputTimeout", inputTimeout, "outputTimeout", outputTimeout)
+}
+
+// OnConsumerFailure implements ConsumerCleanupHandler.
+// This is called by consumers when they fail, providing automatic cleanup.
+func (sm *StreamManager) OnConsumerFailure(inputURL, consumerID string) error {
+	sm.Logger.Info("Handling consumer failure", "inputURL", inputURL, "consumerID", consumerID)
+
+	// Unregister from registry
+	unregistered := sm.consumerRegistry.Unregister(inputURL, consumerID)
+	if !unregistered {
+		sm.Logger.Warn("Consumer not found in registry during failure", "consumerID", consumerID)
+		return nil
+	}
+
+	sm.Logger.Debug("Unregistered failed consumer from registry", "inputURL", inputURL, "consumerID", consumerID)
+
+	// Decrement refcount - input will auto-stop if refcount reaches 0
+	sm.InputRelays.DecrementInputRef(inputURL, "consumer-failure-"+consumerID)
+
+	return nil
 }
 
 // --- Unified Status API ---
@@ -464,6 +497,25 @@ func (sm *StreamManager) StartStream(inputURL, outputURL, inputName, outputName 
 		return err
 	}
 
+	// Register consumer in registry and store in relay
+	// Get the output relay that was just created
+	sm.OutputRelays.mu.Lock()
+	outputRelay, exists := sm.OutputRelays.Relays[outputURL]
+	sm.OutputRelays.mu.Unlock()
+
+	if exists {
+		consumer := NewOutputRelayConsumer(outputRelay, sm.OutputRelays, inputURL)
+
+		// Store consumer in relay for failure handling
+		outputRelay.mu.Lock()
+		outputRelay.consumer = consumer
+		outputRelay.mu.Unlock()
+
+		// Register in consumer registry
+		sm.consumerRegistry.Register(inputURL, consumer)
+		sm.Logger.Debug("Registered output consumer", "inputURL", inputURL, "outputURL", outputURL, "consumerID", consumer.GetConsumerID())
+	}
+
 	sm.Logger.Info("Started stream relay", "inputName", inputName, "outputName", outputName)
 	return nil
 }
@@ -471,8 +523,11 @@ func (sm *StreamManager) StartStream(inputURL, outputURL, inputName, outputName 
 // StopStream stops a relay stream.
 func (sm *StreamManager) StopStream(inputURL, outputURL, inputName, outputName string) error {
 	sm.Logger.Debug("StopStream called", "inputName", inputName, "outputName", outputName)
+
+	// Unregister consumer from registry (this also decrements refcount)
+	sm.UnregisterConsumer(inputURL, outputURL)
+
 	sm.OutputRelays.StopOutputRelay(outputURL)
-	sm.InputRelays.StopInputRelay(inputURL)
 	return nil
 }
 
@@ -480,18 +535,27 @@ func (sm *StreamManager) StopStream(inputURL, outputURL, inputName, outputName s
 func (sm *StreamManager) DeleteInput(inputURL, inputName string) error {
 	sm.Logger.Debug("DeleteInput called", "inputName", inputName)
 
-	// 1. Delete associated outputs
+	// 1. Delete associated outputs (must unregister consumers first)
 	sm.OutputRelays.mu.Lock()
-	var outputsToDelete []string
+	var outputsToDelete []struct {
+		outputURL string
+		inputURL  string
+	}
 	for outURL, relay := range sm.OutputRelays.Relays {
 		if relay.InputURL == inputURL {
-			outputsToDelete = append(outputsToDelete, outURL)
+			outputsToDelete = append(outputsToDelete, struct {
+				outputURL string
+				inputURL  string
+			}{outURL, relay.InputURL})
 		}
 	}
 	sm.OutputRelays.mu.Unlock()
 
-	for _, outURL := range outputsToDelete {
-		sm.OutputRelays.DeleteOutput(outURL)
+	for _, output := range outputsToDelete {
+		// Unregister consumer first to decrement refcount
+		sm.UnregisterConsumer(output.inputURL, output.outputURL)
+		// Then delete the output
+		sm.OutputRelays.DeleteOutput(output.outputURL)
 	}
 
 	// 2. Stop recordings
@@ -512,6 +576,9 @@ func (sm *StreamManager) DeleteInput(inputURL, inputName string) error {
 func (sm *StreamManager) DeleteOutput(inputURL, outputURL, inputName, outputName string) error {
 	sm.Logger.Debug("DeleteOutput called", "outputName", outputName)
 
+	// Unregister consumer first (this also decrements refcount)
+	sm.UnregisterConsumer(inputURL, outputURL)
+
 	// Stop if running
 	sm.OutputRelays.mu.Lock()
 	out, exists := sm.OutputRelays.Relays[outputURL]
@@ -523,7 +590,7 @@ func (sm *StreamManager) DeleteOutput(inputURL, outputURL, inputName, outputName
 		out.mu.Unlock()
 		if running {
 			sm.OutputRelays.StopOutputRelay(outputURL)
-			sm.InputRelays.StopInputRelay(inputURL)
+			// sm.InputRelays.StopInputRelay(inputURL) - Removed to avoid double decrement
 		}
 	}
 

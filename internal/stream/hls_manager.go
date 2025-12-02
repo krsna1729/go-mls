@@ -69,6 +69,7 @@ type HLSSession struct {
 	// Immutable fields (set at creation, never change)
 	InputName  string
 	LocalURL   string
+	InputURL   string // The original input URL (e.g. file://... or rtsp://...)
 	Dir        string
 	IsConsumer bool // Whether this session is registered as an input relay consumer
 
@@ -94,6 +95,7 @@ type HLSManager struct {
 	Logger          *logger.Logger
 	hlsDir          string
 	streamProvider  StreamProvider // Replaces RelayManagerAPI
+	streamManager   *StreamManager // For consumer registration
 	failedCooldown  time.Duration  // Cooldown period for failed inputs
 	sessionTimeout  time.Duration  // Session timeout duration
 	cleanupInterval time.Duration  // Cleanup ticker interval
@@ -120,7 +122,7 @@ type HLSManagerConfig struct {
 }
 
 // NewHLSManager creates a new HLS manager
-func NewHLSManager(l *logger.Logger, hlsDir string, streamProvider StreamProvider) *HLSManager {
+func NewHLSManager(l *logger.Logger, hlsDir string, streamProvider StreamProvider, streamManager *StreamManager) *HLSManager {
 	// Ensure HLS directory exists
 	if err := os.MkdirAll(hlsDir, 0755); err != nil {
 		l.Error("Failed to create HLS directory", "dir", hlsDir, "err", err)
@@ -133,6 +135,7 @@ func NewHLSManager(l *logger.Logger, hlsDir string, streamProvider StreamProvide
 		Logger:          l,
 		hlsDir:          hlsDir,
 		streamProvider:  streamProvider,
+		streamManager:   streamManager,
 		failedCooldown:  5 * time.Minute,  // Default cooldown
 		sessionTimeout:  30 * time.Second, // Default session timeout
 		cleanupInterval: 10 * time.Second, // Default cleanup interval
@@ -210,6 +213,7 @@ func (m *HLSManager) GetOrStartSession(inputName, localURL string) (*HLSSession,
 		sess := &HLSSession{
 			InputName:  inputName,
 			LocalURL:   actualLocalURL,
+			InputURL:   "", // Will be populated if possible
 			Dir:        dir,
 			IsConsumer: m.streamProvider != nil,
 			ViewerIDs:  make(map[string]time.Time),
@@ -217,12 +221,28 @@ func (m *HLSManager) GetOrStartSession(inputName, localURL string) (*HLSSession,
 			Proc:       proc,
 			Ready:      false,
 		}
+
+		// Try to resolve InputURL from StreamProvider if it's an InputRelayManager
+		if irm, ok := m.streamProvider.(*InputRelayManager); ok {
+			if url, exists := irm.GetInputURLByName(inputName); exists {
+				sess.InputURL = url
+			}
+		}
 		sess.ViewerManager = &MapViewerManager{sess: sess}
 
 		m.mu.Lock()
 		m.sessions[inputName] = sess
 		m.mu.Unlock()
 		m.Logger.Info("Created new HLS session", "inputName", inputName)
+
+		// Register as consumer in StreamManager's consumer registry
+		if m.streamManager != nil && sess.InputURL != "" {
+			consumer := NewHLSConsumer(m, inputName, sess.InputURL)
+			m.streamManager.consumerRegistry.Register(sess.InputURL, consumer)
+			m.Logger.Debug("Registered HLS consumer", "inputURL", sess.InputURL, "inputName", inputName, "consumerID", consumer.GetConsumerID())
+		} else if m.streamManager != nil {
+			m.Logger.Warn("Could not register HLS consumer: InputURL not found", "inputName", inputName)
+		}
 
 		// Start playlist readiness monitoring in a separate goroutine
 		go m.monitorPlaylistReadiness(sess, inputName)
@@ -678,10 +698,15 @@ func (m *HLSManager) DeleteSession(inputName string) {
 		m.Logger.Warn("HLSManager: DeleteSession called for non-existent inputName", "inputName", inputName)
 		return
 	}
-	// If session is a consumer, release the stream
-	if sess.IsConsumer && m.streamProvider != nil {
-		m.streamProvider.ReleaseStream(inputName)
+
+	// Unregister consumer from registry
+	if m.streamManager != nil && sess.InputURL != "" {
+		unregistered := m.streamManager.UnregisterConsumer(sess.InputURL, "hls-"+inputName)
+		if unregistered {
+			m.Logger.Debug("Unregistered HLS consumer", "inputURL", sess.InputURL, "inputName", inputName)
+		}
 	}
+
 	if sess.Proc != nil {
 		sess.Proc.Stop(m.ctx, m.getFFmpegStopTimeout())
 		sess.Proc.Wait() // Ensure process is fully cleaned up

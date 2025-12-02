@@ -44,6 +44,7 @@ type OutputRelay struct {
 	LastError    string            // protected by mu
 	shuttingDown bool              // protected by mu
 	cleanedUp    bool              // protected by mu, ensures cleanup is only done once
+	consumer     Consumer          // The consumer for this relay, set when registered
 
 	// --- Concurrency primitives ---
 	mu sync.Mutex // protects all mutable fields above
@@ -66,12 +67,12 @@ type OutputRelayConfig struct {
 //
 // Concurrency notes:
 // - All accesses to Relays map must hold mu.
-// - Logger and FailureCallback are set at construction and never changed.
+// - Logger and cleanupHandler are set at construction and never changed.
 type OutputRelayManager struct {
 	Relays             map[string]*OutputRelay            // key: output URL, protected by mu
 	mu                 sync.Mutex                         // protects Relays
 	Logger             *logger.Logger                     // immutable
-	FailureCallback    func(inputURL, outputURL string)   // immutable after set
+	cleanupHandler     ConsumerCleanupHandler             // Consumer pattern cleanup handler
 	_testFFmpegFactory func(args ...string) FFmpegProcess // test-only, nil in prod
 }
 
@@ -82,9 +83,10 @@ func NewOutputRelayManager(l *logger.Logger) *OutputRelayManager {
 	}
 }
 
-// SetFailureCallback sets the callback function to be called when an output relay fails
-func (orm *OutputRelayManager) SetFailureCallback(callback func(inputURL, outputURL string)) {
-	orm.FailureCallback = callback
+// SetCleanupHandler sets the handler to be called when a consumer fails
+// This is used by the Consumer pattern to auto-unregister consumers and manage refcounts
+func (orm *OutputRelayManager) SetCleanupHandler(handler ConsumerCleanupHandler) {
+	orm.cleanupHandler = handler
 }
 
 // StartOutputRelay starts an output ffmpeg process from local RTSP to output URL
@@ -176,13 +178,18 @@ func (orm *OutputRelayManager) cleanupOutputRelay(relay *OutputRelay, reason str
 			orm.Logger.Warn("Error stopping ffmpeg process during cleanup", "outputURL", outputURL, "err", err, "reason", reason)
 		}
 	}
-	// Only call failure callback if this is NOT a graceful shutdown
-	if !shuttingDown && orm.FailureCallback != nil {
-		orm.Logger.Warn("Calling failure callback for failed output (cleanup)", "inputURL", inputURL, "outputURL", outputURL, "reason", reason)
-		return true, inputURL, outputURL
+
+	// Only call consumer cleanup if this is NOT a graceful shutdown and we have a consumer
+	relay.mu.Lock()
+	consumer := relay.consumer
+	relay.mu.Unlock()
+
+	if !shuttingDown && consumer != nil && orm.cleanupHandler != nil {
+		orm.Logger.Warn("Calling consumer OnFailure for failed output", "inputURL", inputURL, "outputURL", outputURL, "reason", reason)
+		consumer.OnFailure(orm.cleanupHandler) // Dependency injection!
 	}
 	if shuttingDown {
-		orm.Logger.Info("Graceful shutdown, not calling failure callback (cleanup)", "outputURL", outputURL, "reason", reason)
+		orm.Logger.Info("Graceful shutdown, not calling consumer cleanup", "outputURL", outputURL, "reason", reason)
 	}
 	return false, inputURL, outputURL
 }
@@ -202,10 +209,7 @@ func (orm *OutputRelayManager) StopOutputRelay(outputURL string) {
 	relay.mu.Unlock()
 	orm.mu.Unlock()
 
-	shouldCallFailure, inputURL, outputURL := orm.cleanupOutputRelay(relay, "stop")
-	if shouldCallFailure {
-		orm.FailureCallback(inputURL, outputURL)
-	}
+	orm.cleanupOutputRelay(relay, "stop")
 }
 
 // RunOutputRelay runs and monitors the output relay process
@@ -229,10 +233,7 @@ func (orm *OutputRelayManager) RunOutputRelay(relay *OutputRelay) {
 
 	if err != nil {
 		if !alreadyCleaned {
-			shouldCallFailure, inputURL, outputURL := orm.cleanupOutputRelay(relay, "run-error")
-			if shouldCallFailure {
-				orm.FailureCallback(inputURL, outputURL)
-			}
+			orm.cleanupOutputRelay(relay, "run-error")
 		}
 		if shuttingDown {
 			orm.Logger.Info("Output relay stopped (signal)", "outputURL", outputURL, "signal", err)
@@ -265,11 +266,7 @@ func (orm *OutputRelayManager) DeleteOutput(outputURL string) error {
 	delete(orm.Relays, outputURL)
 	orm.mu.Unlock()
 
-	shouldCallFailure, inputURL, outputURL := orm.cleanupOutputRelay(relay, "delete")
-	if shouldCallFailure {
-		orm.Logger.Debug("Calling failure callback for deleted output", "inputURL", inputURL, "outputURL", outputURL)
-		orm.FailureCallback(inputURL, outputURL)
-	}
+	orm.cleanupOutputRelay(relay, "delete")
 	orm.Logger.Info("Output relay deleted successfully", "outputURL", outputURL)
 	return nil
 }

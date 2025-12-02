@@ -31,7 +31,7 @@ func TestServeHLS_PlaylistAndSegment(t *testing.T) {
 		t.Fatalf("failed to write segment: %v", err)
 	}
 
-	mgr := NewHLSManager(newTestLogger(), os.TempDir(), &mockStreamProvider{})
+	mgr := NewHLSManager(newTestLogger(), os.TempDir(), &mockStreamProvider{}, nil)
 	inputName := "testinput"
 	sess := &HLSSession{
 		InputName: inputName,
@@ -80,7 +80,7 @@ func TestServeHLS_PlaylistAndSegment(t *testing.T) {
 func TestServeHLS_NotFoundRateLimit(t *testing.T) {
 	t.Parallel()
 	logr := logger.NewLoggerWithConfig("debug", "")
-	mgr := NewHLSManager(logr, os.TempDir(), nil)
+	mgr := NewHLSManager(logr, os.TempDir(), nil, nil)
 	inputName := "missinginput"
 	file := "index.m3u8"
 
@@ -103,7 +103,7 @@ func TestServeHLS_NotFoundRateLimit(t *testing.T) {
 func TestHLSManager_ConcurrentAPI(t *testing.T) {
 	t.Parallel()
 	logr := logger.NewLogger()
-	mgr := NewHLSManager(logr, os.TempDir(), &mockStreamProvider{})
+	mgr := NewHLSManager(logr, os.TempDir(), &mockStreamProvider{}, nil)
 	// mgr.streamProvider = NewRelayManager(logr, dir, "")
 
 	num := 10
@@ -203,7 +203,7 @@ func newTestLogger() *logger.Logger {
 }
 
 func TestNewHLSManager_CreatesManager(t *testing.T) {
-	h := NewHLSManager(newTestLogger(), os.TempDir(), &mockStreamProvider{})
+	h := NewHLSManager(newTestLogger(), os.TempDir(), &mockStreamProvider{}, nil)
 	if h == nil {
 		t.Fatal("expected non-nil HLSManager")
 	}
@@ -213,7 +213,7 @@ func TestNewHLSManager_CreatesManager(t *testing.T) {
 }
 
 func TestHLSManager_GetOrStartSession_Basic(t *testing.T) {
-	h := NewHLSManager(newTestLogger(), os.TempDir(), &mockStreamProvider{})
+	h := NewHLSManager(newTestLogger(), os.TempDir(), &mockStreamProvider{}, nil)
 	inputName := "testinput"
 	localURL := "rtsp://localhost/relay/testinput"
 	sess, err := h.GetOrStartSession(inputName, localURL)
@@ -229,7 +229,7 @@ func TestHLSManager_GetOrStartSession_Basic(t *testing.T) {
 }
 
 func TestHLSManager_AddViewer_Update_Remove(t *testing.T) {
-	h := NewHLSManager(newTestLogger(), os.TempDir(), &mockStreamProvider{})
+	h := NewHLSManager(newTestLogger(), os.TempDir(), &mockStreamProvider{}, nil)
 	inputName := "testinput"
 	_, _ = h.GetOrStartSession(inputName, "rtsp://localhost/relay/testinput")
 
@@ -247,7 +247,7 @@ func TestHLSManager_AddViewer_Update_Remove(t *testing.T) {
 }
 
 func TestHLSManager_GetOrStartSession_FailedCooldown(t *testing.T) {
-	h := NewHLSManager(newTestLogger(), os.TempDir(), &mockStreamProvider{})
+	h := NewHLSManager(newTestLogger(), os.TempDir(), &mockStreamProvider{}, nil)
 	inputName := "testinput"
 	h.failedInputs[inputName] = time.Now()
 	_, err := h.GetOrStartSession(inputName, "rtsp://localhost/relay/testinput")
@@ -257,7 +257,7 @@ func TestHLSManager_GetOrStartSession_FailedCooldown(t *testing.T) {
 }
 
 func TestHLSManager_GetOrStartSession_InvalidInputName(t *testing.T) {
-	h := NewHLSManager(newTestLogger(), os.TempDir(), &mockStreamProvider{})
+	h := NewHLSManager(newTestLogger(), os.TempDir(), &mockStreamProvider{}, nil)
 	_, err := h.GetOrStartSession("../badinput", "rtsp://localhost/relay/badinput")
 	if err == nil || !strings.Contains(err.Error(), "invalid input name") {
 		t.Errorf("expected invalid input name error, got %v", err)
@@ -322,7 +322,7 @@ func TestCheckFailedCooldownDeletesExpired(t *testing.T) {
 
 // --- Test for serveHLSCheckViewer coverage ---
 func TestServeHLSCheckViewer_AllBranches(t *testing.T) {
-	mgr := NewHLSManager(newTestLogger(), os.TempDir(), &mockStreamProvider{})
+	mgr := NewHLSManager(newTestLogger(), os.TempDir(), &mockStreamProvider{}, nil)
 	inputName := "testinput"
 
 	// 1. Invalid input name (should return 200 and dummy playlist for index.m3u8)
@@ -402,7 +402,7 @@ func TestServeHLSCheckViewer_AllBranches(t *testing.T) {
 }
 
 func TestServeHLSCheckViewer_AllBranches_Coverage(t *testing.T) {
-	mgr := NewHLSManager(newTestLogger(), os.TempDir(), &mockStreamProvider{})
+	mgr := NewHLSManager(newTestLogger(), os.TempDir(), &mockStreamProvider{}, nil)
 	inputName := "testinput"
 	// No session: should return 410 if viewerID is present
 	w := httptest.NewRecorder()

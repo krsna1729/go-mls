@@ -77,10 +77,10 @@ func setupFullStackTestEnv(t *testing.T) *fullStackTestEnv {
 	streamMgr := stream.NewStreamManager(log, tempDir, "error")
 	streamMgr.SetRTSPServer(rtspServer)
 
-	recordingMgr := stream.NewRecordingManager(log, tempDir, streamMgr.InputRelays)
+	recordingMgr := stream.NewRecordingManager(log, tempDir, streamMgr.InputRelays, streamMgr)
 	t.Cleanup(func() { recordingMgr.Shutdown() })
 
-	hlsMgr := stream.NewHLSManager(log, "/tmp", streamMgr.InputRelays)
+	hlsMgr := stream.NewHLSManager(log, "/tmp", streamMgr.InputRelays, streamMgr)
 	t.Cleanup(func() { hlsMgr.Shutdown() })
 
 	streamMgr.SetHLSManager(hlsMgr)
@@ -287,10 +287,12 @@ func runFullStackLifecycle(t *testing.T, concurrent bool) {
 	// Allow time for cleanup to complete
 	time.Sleep(500 * time.Millisecond)
 
-	// Verify Input Relay has been stopped
-	status, refCount, _ = streamMgr.InputRelays.GetRelayStatus(inputURL)
-	assert.Equal(t, 0, refCount, "RefCount should be 0 after all consumers stop")
-	assert.Equal(t, stream.InputStopped, status, "Input relay should be stopped")
+	// Verify Input Relay has been stopped (refcount=0 stops but doesn't delete)
+	assert.Eventually(t, func() bool {
+		s, r, exists := streamMgr.InputRelays.GetRelayStatus(inputURL)
+		// Relay should still exist but be stopped with refcount 0
+		return exists && r == 0 && s == stream.InputStopped
+	}, 5*time.Second, 100*time.Millisecond, "Input relay should be stopped with RefCount 0")
 
 	t.Log("=== SUCCESS: RefCount 7→2→1→0, Input relay stopped correctly ===")
 }

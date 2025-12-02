@@ -126,23 +126,85 @@ func (irm *InputRelayManager) GetInputURLByName(inputName string) (string, bool)
 	return "", false
 }
 
+// IncrementInputRef increments the reference count for an input
+func (m *InputRelayManager) IncrementInputRef(inputURL, reason string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	relay, exists := m.Relays[inputURL]
+	if !exists {
+		return
+	}
+
+	relay.mu.Lock()
+	defer relay.mu.Unlock()
+	relay.RefCount++
+}
+
 // DecrementInputRef decrements the reference count for an input relay
 func (irm *InputRelayManager) DecrementInputRef(inputURL string, reason string) {
 	irm.mu.Lock()
-	inputRelay, ok := irm.Relays[inputURL]
+	relay, exists := irm.Relays[inputURL]
 	irm.mu.Unlock()
 
-	if ok {
-		inputRelay.mu.Lock()
-		defer inputRelay.mu.Unlock()
-		if inputRelay.RefCount > 0 {
-			inputRelay.RefCount--
-			irm.Logger.Info("Input relay refcount decremented", "inputURL", inputURL, "reason", reason, "refCount", inputRelay.RefCount)
-		} else {
-			irm.Logger.Warn("Input relay refcount already zero", "inputURL", inputURL, "reason", reason)
+	if !exists {
+		return
+	}
+
+	relay.mu.Lock()
+	relay.RefCount--
+	refCount := relay.RefCount
+	relay.mu.Unlock()
+
+	irm.Logger.Info("DecrementInputRef", "inputURL", inputURL, "reason", reason, "newRefCount", refCount)
+
+	if refCount <= 0 {
+		irm.Logger.Info("Input ref count reached 0, stopping input", "inputURL", inputURL)
+		// Stop the input but keep it in the map (preserves state/history)
+		// Deletion is only performed by explicit user action (DeleteInput API)
+		irm.stopInputRelayAtZero(inputURL)
+	}
+}
+
+// stopInputRelayAtZero stops an input relay that has already reached refcount 0
+// This is called internally by DecrementInputRef and does NOT decrement the refcount
+func (irm *InputRelayManager) stopInputRelayAtZero(inputURL string) {
+	irm.mu.Lock()
+	relay, exists := irm.Relays[inputURL]
+	if !exists {
+		irm.mu.Unlock()
+		return
+	}
+	relay.mu.Lock()
+
+	// Only stop if refcount is actually 0 (guard against race conditions)
+	if relay.RefCount != 0 {
+		relay.mu.Unlock()
+		irm.mu.Unlock()
+		irm.Logger.Warn("stopInputRelayAtZero: refcount is not 0, skipping", "inputURL", inputURL, "refCount", relay.RefCount)
+		return
+	}
+
+	proc := relay.Proc
+	relay.Proc = nil
+	relay.Status = InputStopped
+	inputName := relay.InputName
+	relay.mu.Unlock()
+	irm.mu.Unlock()
+
+	// Stop the process outside of any locks
+	if proc != nil {
+		err := proc.Stop(context.Background(), 2*time.Second)
+		if err != nil {
+			irm.Logger.Warn("Error stopping ffmpeg process", "inputURL", inputURL, "err", err)
 		}
-	} else {
-		irm.Logger.Warn("Input relay not found for refcount decrement", "inputURL", inputURL, "reason", reason)
+	}
+
+	// Clean up RTSP stream
+	if irm.rtspServer != nil && inputName != "" {
+		relayPath := "relay/" + inputName
+		irm.Logger.Debug("Cleaning up RTSP stream for stopped input relay", "relayPath", relayPath)
+		irm.rtspServer.RemoveStream(relayPath)
 	}
 }
 
@@ -462,6 +524,7 @@ func (irm *InputRelayManager) FindLocalURLByInputName(inputName string) (string,
 
 // DeleteInput completely removes an input relay and all associated outputs
 func (irm *InputRelayManager) DeleteInput(inputURL string) error {
+
 	irm.Logger.Info("Deleting input", "inputURL", inputURL)
 	irm.mu.Lock()
 	relay, exists := irm.Relays[inputURL]
@@ -471,6 +534,15 @@ func (irm *InputRelayManager) DeleteInput(inputURL string) error {
 		return fmt.Errorf("input relay not found: %s", inputURL)
 	}
 	relay.mu.Lock()
+	// Double-check refcount to prevent race condition where input was resurrected
+	if relay.RefCount > 0 {
+		relay.mu.Unlock()
+		irm.mu.Unlock()
+		irm.Logger.Info("DeleteInput aborted: input resurrected", "inputURL", inputURL, "refCount", relay.RefCount)
+		return nil
+	}
+	irm.Logger.Info("DeleteInput proceeding", "inputURL", inputURL, "refCount", relay.RefCount)
+
 	proc := relay.Proc
 	relay.Proc = nil
 	relay.Status = InputStopped

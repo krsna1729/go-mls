@@ -45,12 +45,12 @@ func NewContext(cfg *config.Config, log *logger.Logger) (*Context, error) {
 	)
 
 	// Initialize recording manager
-	// Pass Logger, recordingDir, and InputRelays (from StreamManager) as StreamProvider
-	ctx.Recording = stream.NewRecordingManager(log, cfg.Recording.Directory, ctx.Stream.InputRelays)
+	// Pass Logger, recordingDir, InputRelays (StreamProvider), and StreamManager for consumer registration
+	ctx.Recording = stream.NewRecordingManager(log, cfg.Recording.Directory, ctx.Stream.InputRelays, ctx.Stream)
 
 	// Initialize HLS manager
 	// Pass Logger, hlsDir, and InputRelays (from StreamManager) as StreamProvider
-	ctx.HLS = stream.NewHLSManager(log, cfg.HLS.PlaylistBaseDir, ctx.Stream.InputRelays)
+	ctx.HLS = stream.NewHLSManager(log, cfg.HLS.PlaylistBaseDir, ctx.Stream.InputRelays, ctx.Stream)
 
 	// Wire up cross-references in StreamManager
 	ctx.Stream.SetHLSManager(ctx.HLS)

@@ -41,6 +41,7 @@ type RecordingManager struct {
 	// --- Immutable/config fields (set at construction) ---
 	Logger         *logger.Logger // Logger
 	StreamProvider StreamProvider // Interface for getting streams
+	streamManager  *StreamManager // For consumer registration
 
 	// Configuration
 	recordingDir string
@@ -55,7 +56,7 @@ type RecordingManager struct {
 }
 
 // NewRecordingManager creates a RecordingManager and ensures the directory exists
-func NewRecordingManager(l *logger.Logger, recordingDir string, streamProvider StreamProvider) *RecordingManager {
+func NewRecordingManager(l *logger.Logger, recordingDir string, streamProvider StreamProvider, streamManager *StreamManager) *RecordingManager {
 	// Ensure recording directory exists
 	if err := os.MkdirAll(recordingDir, 0755); err != nil {
 		l.Error("Failed to create recording directory", "dir", recordingDir, "err", err)
@@ -68,6 +69,7 @@ func NewRecordingManager(l *logger.Logger, recordingDir string, streamProvider S
 		dones:          make(map[string]chan struct{}),
 		Logger:         l,
 		StreamProvider: streamProvider,
+		streamManager:  streamManager,
 		recordingDir:   recordingDir,
 		sseBroker:      sseBroker, // Use the global sseBroker
 		ctx:            ctx,
@@ -149,9 +151,21 @@ func (rm *RecordingManager) startRecordingProcess(name, uniqueKey string) (strin
 }
 
 // handleRecordingLifecycle runs the recording lifecycle goroutine.
-func (rm *RecordingManager) handleRecordingLifecycle(name, uniqueKey string, proc FFmpegProcess, procCancel context.CancelFunc, done chan struct{}) {
-	defer procCancel() // Ensure process context is canceled when lifecycle ends
-	defer rm.StreamProvider.ReleaseStream(name)
+func (rm *RecordingManager) handleRecordingLifecycle(name, uniqueKey, sourceURL string, proc FFmpegProcess, procCancel context.CancelFunc, done chan struct{}) {
+	defer func() {
+		procCancel() // Ensure process context is canceled when lifecycle ends
+	}()
+
+	// Unregister consumer when recording finishes - this handles refcount decrement
+	defer func() {
+		if rm.streamManager != nil && sourceURL != "" {
+			unregistered := rm.streamManager.UnregisterConsumer(sourceURL, "recording-"+name)
+			if unregistered {
+				rm.Logger.Debug("Unregistered recording consumer", "inputURL", sourceURL, "inputName", name)
+			}
+		}
+	}()
+
 	cmdDone := make(chan error, 1)
 	go func() { cmdDone <- proc.Wait() }()
 	select {
@@ -227,10 +241,19 @@ func (rm *RecordingManager) StartRecording(ctx context.Context, name, sourceURL 
 	placeholderRec.FilePath = filePath
 	placeholderRec.Filename = filepath.Base(filePath)
 	rm.processes[uniqueKey] = proc
+	// Start the lifecycle manager
 	done := make(chan struct{})
 	rm.dones[uniqueKey] = done
 	rm.mu.Unlock()
-	go rm.handleRecordingLifecycle(name, uniqueKey, proc, procCancel, done)
+	go rm.handleRecordingLifecycle(name, uniqueKey, sourceURL, proc, procCancel, done)
+
+	// Register as consumer in StreamManager's consumer registry
+	if rm.streamManager != nil {
+		consumer := NewRecordingConsumer(rm, name, sourceURL)
+		rm.streamManager.consumerRegistry.Register(sourceURL, consumer)
+		rm.Logger.Debug("Registered recording consumer", "inputURL", sourceURL, "inputName", name, "consumer ID", consumer.GetConsumerID())
+	}
+
 	sseBroker.NotifyAll("update")
 	return nil
 }

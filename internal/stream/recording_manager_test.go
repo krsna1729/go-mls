@@ -20,7 +20,7 @@ func TestRecordingManager_ConcurrentAPI(t *testing.T) {
 	log := logger.NewLogger()
 	dir := t.TempDir()
 	streamMgr := NewStreamManager(log, dir, "")
-	rm := NewRecordingManager(log, dir, streamMgr.InputRelays)
+	rm := NewRecordingManager(log, dir, streamMgr.InputRelays, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
@@ -72,7 +72,7 @@ func TestRecordingManager_DeleteRecordingByFilename(t *testing.T) {
 		t.Fatalf("failed to create test file: %v", err)
 	}
 	log := logger.NewLogger()
-	rm := NewRecordingManager(log, dir, nil)
+	rm := NewRecordingManager(log, dir, nil, nil)
 	// Add a recording to the manager
 	rm.recordings["testkey"] = &Recording{
 		Name:     "test",
@@ -139,7 +139,7 @@ func TestRecordingManager_ListRecordings_Empty(t *testing.T) {
 	log := logger.NewLogger()
 	dir := t.TempDir()
 	streamMgr := NewStreamManager(log, dir, "")
-	rm := NewRecordingManager(log, dir, streamMgr.InputRelays)
+	rm := NewRecordingManager(log, dir, streamMgr.InputRelays, nil)
 	list := rm.ListRecordings()
 	if len(list) != 0 {
 		t.Errorf("expected empty list, got %v", list)
@@ -167,7 +167,7 @@ func TestApiRecordingsSSE(t *testing.T) {
 func TestRecordingManager_ListRecordings_DiskAndMemory(t *testing.T) {
 	dir := t.TempDir()
 	log := logger.NewLogger()
-	rm := NewRecordingManager(log, dir, nil)
+	rm := NewRecordingManager(log, dir, nil, nil)
 
 	// Create a file on disk only
 	diskFile := "diskonly_1234.mp4"
@@ -232,7 +232,7 @@ func TestRecordingManager_ListRecordings_DiskAndMemory(t *testing.T) {
 func TestRecordingManager_StartRecording_Duplicate(t *testing.T) {
 	dir := t.TempDir()
 	log := logger.NewLogger()
-	rm := NewRecordingManager(log, dir, nil)
+	rm := NewRecordingManager(log, dir, nil, nil)
 	ctx := context.Background()
 	name := "recdup"
 	source := "srcdup"
@@ -258,7 +258,7 @@ func TestRecordingManager_StartRecording_ErrorBranches(t *testing.T) {
 	streamMgr.SetTimeouts(100*time.Millisecond, 100*time.Millisecond)
 
 	// Create RecordingManager with streamMgr.InputRelays
-	rm := NewRecordingManager(log, dir, streamMgr.InputRelays)
+	rm := NewRecordingManager(log, dir, streamMgr.InputRelays, nil)
 	streamMgr.SetRecordingManager(rm)
 	// Try to start a recording with a non-existent source (should fail at ffmpeg step)
 	err := rm.StartRecording(ctx, "fail", "fail")
@@ -276,7 +276,7 @@ func TestRecordingManager_StartRecording_Success(t *testing.T) {
 	chdirTo(t, setupDir)
 
 	// Use mock stream provider to avoid real RTSP/ffmpeg dependencies
-	rm := NewRecordingManager(log, setupDir, &mockStreamProvider{})
+	rm := NewRecordingManager(log, setupDir, &mockStreamProvider{}, nil)
 	defer rm.Shutdown()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
