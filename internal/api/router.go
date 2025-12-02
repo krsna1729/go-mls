@@ -5,17 +5,15 @@ import (
 	"net/http"
 
 	"go-mls/internal/app"
-	"go-mls/internal/logger"
 	"go-mls/internal/stream"
 )
 
 // Router handles all HTTP API routes
 type Router struct {
-	stream    *stream.StreamManager // Replaces RelayManager
+	stream    *stream.StreamManager
 	recording *stream.RecordingManager
 	hls       *stream.HLSManager
 	rtsp      *stream.RTSPServerManager
-	logger    *logger.Logger
 }
 
 // NewRouter creates a new API router from an application context
@@ -25,7 +23,6 @@ func NewRouter(appCtx *app.Context) *Router {
 		recording: appCtx.Recording,
 		hls:       appCtx.HLS,
 		rtsp:      appCtx.RTSP,
-		logger:    appCtx.Logger,
 	}
 }
 

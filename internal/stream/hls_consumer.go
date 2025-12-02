@@ -5,7 +5,6 @@ type HLSConsumer struct {
 	manager   *HLSManager
 	inputName string
 	inputURL  string
-	sessionID string
 }
 
 // NewHLSConsumer creates a new HLSConsumer wrapper
