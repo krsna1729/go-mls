@@ -47,9 +47,9 @@ func ApiStartOutputRelay(streamMgr *StreamManager) http.HandlerFunc {
 	}
 }
 
-func ApiStopOutputRelay(orm *OutputRelayManager) http.HandlerFunc {
+func ApiStopOutputRelay(streamMgr *StreamManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		orm.Logger.Debug("apiStopOutputRelay called")
+		streamMgr.Logger.Debug("apiStopOutputRelay called")
 		var req struct {
 			InputURL   string `json:"input_url"`
 			OutputURL  string `json:"output_url"`
@@ -59,25 +59,25 @@ func ApiStopOutputRelay(orm *OutputRelayManager) http.HandlerFunc {
 
 		// Use secure JSON decoding with size limits
 		if err := httputil.DecodeJSON(r, &req); err != nil {
-			orm.Logger.Error("apiStopOutputRelay: failed to decode request", "err", err)
+			streamMgr.Logger.Error("apiStopOutputRelay: failed to decode request", "err", err)
 			httputil.WriteError(w, http.StatusBadRequest, "Invalid request")
 			return
 		}
 		if req.OutputName == "" {
-			orm.Logger.Error("apiStopOutputRelay: missing output name")
+			streamMgr.Logger.Error("apiStopOutputRelay: missing output name")
 			httputil.WriteError(w, http.StatusBadRequest, "Output name is required")
 			return
 		}
-		orm.Logger.Debug("apiStopOutputRelay: stopping relay", "outputURL", req.OutputURL, "outputName", req.OutputName)
+		streamMgr.Logger.Debug("apiStopOutputRelay: stopping relay", "outputURL", req.OutputURL, "outputName", req.OutputName)
 
-		// Call OutputRelayManager directly
-		if err := orm.StopOutputRelay(req.OutputURL); err != nil {
-			orm.Logger.Error("apiStopOutputRelay: failed to stop relay", "err", err)
+		// Call StreamManager for consistent routing
+		if err := streamMgr.StopStream(req.InputURL, req.OutputURL, req.InputName, req.OutputName); err != nil {
+			streamMgr.Logger.Error("apiStopOutputRelay: failed to stop relay", "err", err)
 			httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "stopped"})
-		orm.Logger.Debug("apiStopOutputRelay: relay stopped successfully")
+		streamMgr.Logger.Debug("apiStopOutputRelay: relay stopped successfully")
 	}
 }
 

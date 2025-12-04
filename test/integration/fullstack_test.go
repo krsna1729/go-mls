@@ -91,7 +91,7 @@ func setupFullStackTestEnv(t *testing.T) *fullStackTestEnv {
 
 	// Relay APIs
 	mux.HandleFunc("/api/relay/start", stream.ApiStartOutputRelay(streamMgr))
-	mux.HandleFunc("/api/relay/stop", stream.ApiStopOutputRelay(streamMgr.OutputRelays))
+	mux.HandleFunc("/api/relay/stop", stream.ApiStopOutputRelay(streamMgr))
 
 	// Recording APIs
 	mux.HandleFunc("/api/recording/start", stream.ApiStartRecording(recordingMgr))
