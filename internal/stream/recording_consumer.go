@@ -1,5 +1,7 @@
 package stream
 
+import "fmt"
+
 // RecordingConsumer wraps a Recording to implement the Consumer interface.
 type RecordingConsumer struct {
 	manager   *RecordingManager
@@ -16,13 +18,6 @@ func NewRecordingConsumer(manager *RecordingManager, inputName string, inputURL 
 	}
 }
 
-// Start begins consuming from the specified input (no-op, already started).
-func (rc *RecordingConsumer) Start(inputName string, inputURL string) error {
-	// Recording is already started when created
-	// This method exists to satisfy the Consumer interface
-	return nil
-}
-
 // Stop stops the recording.
 func (rc *RecordingConsumer) Stop(inputName string) error {
 	// Stop the recording
@@ -34,7 +29,7 @@ func (rc *RecordingConsumer) Stop(inputName string) error {
 func (rc *RecordingConsumer) OnFailure(handler ConsumerCleanupHandler) error {
 	rc.manager.Logger.Debug("RecordingConsumer failure", "inputName", rc.inputName)
 	// Handler knows how to clean up - we just provide the data
-	return handler.OnConsumerFailure(rc.inputURL, rc.GetConsumerID())
+	return handler.OnConsumerDone(rc.inputURL, rc.GetConsumerID(), fmt.Errorf("recording consumer failed"))
 }
 
 // GetConsumerType returns "recording".

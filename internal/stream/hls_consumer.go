@@ -1,5 +1,9 @@
 package stream
 
+import (
+	"fmt"
+)
+
 // HLSConsumer wraps an HLS session to implement the Consumer interface.
 type HLSConsumer struct {
 	manager   *HLSManager
@@ -16,13 +20,6 @@ func NewHLSConsumer(hlsManager *HLSManager, inputName string, inputURL string) *
 	}
 }
 
-// Start begins consuming from the specified input (no-op, already started).
-func (hc *HLSConsumer) Start(inputName string, inputURL string) error {
-	// HLS session is already started when created
-	// This method exists to satisfy the Consumer interface
-	return nil
-}
-
 // Stop stops the HLS session.
 func (hc *HLSConsumer) Stop(inputName string) error {
 	// HLS sessions are managed by viewer lifecycle
@@ -34,7 +31,7 @@ func (hc *HLSConsumer) Stop(inputName string) error {
 func (hc *HLSConsumer) OnFailure(handler ConsumerCleanupHandler) error {
 	hc.manager.Logger.Debug("HLSConsumer failure", "inputName", hc.inputName)
 	// Handler knows how to clean up - we just provide the data
-	return handler.OnConsumerFailure(hc.inputURL, hc.GetConsumerID())
+	return handler.OnConsumerDone(hc.inputURL, hc.GetConsumerID(), fmt.Errorf("hls consumer failed"))
 }
 
 // GetConsumerType returns "hls".

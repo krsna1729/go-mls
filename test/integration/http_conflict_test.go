@@ -45,7 +45,7 @@ func TestHTTPStartRelayConflict(t *testing.T) {
 
 	// HTTP mux
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/relay/start", stream.ApiStartRelay(streamMgr))
+	mux.HandleFunc("/api/relay/start", stream.ApiStartOutputRelay(streamMgr))
 
 	ts := httptest.NewServer(mux)
 	defer ts.Close()

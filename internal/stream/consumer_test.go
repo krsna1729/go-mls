@@ -1,6 +1,7 @@
 package stream
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -15,11 +16,6 @@ type MockConsumer struct {
 	stopCalled   bool
 }
 
-func (mc *MockConsumer) Start(inputName string, inputURL string) error {
-	mc.startCalled = true
-	return nil
-}
-
 func (mc *MockConsumer) Stop(inputName string) error {
 	mc.stopCalled = true
 	return nil
@@ -27,7 +23,7 @@ func (mc *MockConsumer) Stop(inputName string) error {
 
 func (mc *MockConsumer) OnFailure(handler ConsumerCleanupHandler) error {
 	// Mock implementation - just call the handler
-	return handler.OnConsumerFailure("mock-input-url", mc.id)
+	return handler.OnConsumerDone("mock-input-url", mc.id, fmt.Errorf("mock failure"))
 }
 
 func (mc *MockConsumer) GetConsumerType() string {

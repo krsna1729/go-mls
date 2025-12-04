@@ -67,7 +67,7 @@ func TestOutputRelayManager_FailureCallback(t *testing.T) {
 	// Create a mock handler
 	var called int32
 	handler := &mockConsumerCleanupHandler{
-		onFailure: func(inputURL, consumerID string) error {
+		onDone: func(inputURL, consumerID string, err error) error {
 			atomic.AddInt32(&called, 1)
 			return nil
 		},
@@ -116,11 +116,14 @@ func TestOutputRelayManager_FailureCallback(t *testing.T) {
 
 // Mock implementation of ConsumerCleanupHandler for testing
 type mockConsumerCleanupHandler struct {
-	onFailure func(inputURL, consumerID string) error
+	onDone func(inputURL, consumerID string, err error) error
 }
 
-func (m *mockConsumerCleanupHandler) OnConsumerFailure(inputURL, consumerID string) error {
-	return m.onFailure(inputURL, consumerID)
+func (m *mockConsumerCleanupHandler) OnConsumerDone(inputURL, consumerID string, err error) error {
+	if m.onDone != nil {
+		return m.onDone(inputURL, consumerID, err)
+	}
+	return nil
 }
 
 func TestOutputRelayManager_ConcurrentAPI(t *testing.T) {

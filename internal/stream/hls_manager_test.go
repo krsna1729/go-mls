@@ -450,7 +450,7 @@ func TestServeHLSCheckViewer_AllBranches_Coverage(t *testing.T) {
 }
 
 // ensureSessionReady ensures the session for inputName exists and is marked Ready, and sets the session's ViewerManager.
-func ensureSessionReady(mgr *HLSManager, inputName string, vm ViewerManager) {
+func ensureSessionReady(mgr *HLSManager, inputName string, vm *MapViewerManager) {
 	delete(mgr.sessions, inputName)
 	sess, _ := mgr.GetOrStartSession(inputName, "rtsp://localhost/relay/"+inputName)
 	sess.Ready = true

@@ -29,8 +29,8 @@ func NewRouter(appCtx *app.Context) *Router {
 // RegisterRoutes registers all API routes with the given mux
 func (rt *Router) RegisterRoutes(mux *http.ServeMux) {
 	// Relay routes (now Stream routes) - using canonical Api* handlers
-	mux.HandleFunc("/api/relay/start", stream.ApiStartRelay(rt.stream))
-	mux.HandleFunc("/api/relay/stop", stream.ApiStopRelay(rt.stream))
+	mux.HandleFunc("/api/relay/start", stream.ApiStartOutputRelay(rt.stream))
+	mux.HandleFunc("/api/relay/stop", stream.ApiStopOutputRelay(rt.stream.OutputRelays))
 	mux.HandleFunc("/api/relay/status", stream.ApiRelayStatus(rt.stream))
 	mux.HandleFunc("/api/relay/export", stream.ApiExportRelays(rt.stream))
 	mux.HandleFunc("/api/relay/import", stream.ApiImportRelays(rt.stream))

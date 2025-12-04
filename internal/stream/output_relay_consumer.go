@@ -1,5 +1,9 @@
 package stream
 
+import (
+	"fmt"
+)
+
 // OutputRelayConsumer wraps an OutputRelay to implement the Consumer interface.
 type OutputRelayConsumer struct {
 	relay    *OutputRelay
@@ -16,13 +20,6 @@ func NewOutputRelayConsumer(relay *OutputRelay, manager *OutputRelayManager, inp
 	}
 }
 
-// Start begins consuming from the specified input (no-op for outputs, already started).
-func (orc *OutputRelayConsumer) Start(inputName string, inputURL string) error {
-	// Output relay is already started when created
-	// This method exists to satisfy the Consumer interface
-	return nil
-}
-
 // Stop stops consuming from the specified input.
 func (orc *OutputRelayConsumer) Stop(inputName string) error {
 	// Stop the output relay
@@ -34,7 +31,8 @@ func (orc *OutputRelayConsumer) Stop(inputName string) error {
 func (orc *OutputRelayConsumer) OnFailure(handler ConsumerCleanupHandler) error {
 	orc.manager.Logger.Debug("OutputRelayConsumer failure", "outputURL", orc.relay.OutputURL)
 	// Handler knows how to clean up - we just provide the data
-	return handler.OnConsumerFailure(orc.inputURL, orc.GetConsumerID())
+	// We pass a generic error here since we don't have the specific error context
+	return handler.OnConsumerDone(orc.inputURL, orc.GetConsumerID(), fmt.Errorf("consumer failed"))
 }
 
 // GetConsumerType returns "output".

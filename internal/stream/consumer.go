@@ -7,16 +7,12 @@ import (
 // ConsumerCleanupHandler handles cleanup when a consumer fails.
 // This interface is implemented by StreamManager and passed to consumers on failure.
 type ConsumerCleanupHandler interface {
-	OnConsumerFailure(inputURL, consumerID string) error
+	OnConsumerDone(inputURL, consumerID string, err error) error
 }
 
 // Consumer represents any component that consumes from an input stream.
 // Consumers include OutputRelay, Recording, and HLS sessions.
 type Consumer interface {
-	// Start begins consuming from the given input
-	// Returns error if consumer cannot start
-	Start(inputName string, inputURL string) error
-
 	// Stop stops consuming from the given input
 	Stop(inputName string) error
 

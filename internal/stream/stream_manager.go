@@ -149,6 +149,18 @@ func (sm *StreamManager) UnregisterConsumer(inputURL, consumerID string) bool {
 	return unregistered
 }
 
+// OnConsumerDone handles cleanup when a consumer is done (stopped or failed).
+func (sm *StreamManager) OnConsumerDone(inputURL, consumerID string, err error) error {
+	if err != nil {
+		sm.Logger.Warn("Consumer failed", "inputURL", inputURL, "consumerID", consumerID, "err", err)
+	} else {
+		sm.Logger.Info("Consumer stopped gracefully", "inputURL", inputURL, "consumerID", consumerID)
+	}
+	// Unregister consumer and decrement refcount
+	sm.UnregisterConsumer(inputURL, consumerID)
+	return nil
+}
+
 func (sm *StreamManager) SetRTSPServer(server *RTSPServerManager) {
 	sm.RTSPServer = server
 	sm.InputRelays.SetRTSPServer(server)

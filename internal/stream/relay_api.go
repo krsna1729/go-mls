@@ -7,9 +7,9 @@ import (
 	"os"
 )
 
-func ApiStartRelay(streamMgr *StreamManager) http.HandlerFunc {
+func ApiStartOutputRelay(streamMgr *StreamManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		streamMgr.Logger.Debug("apiStartRelay called")
+		streamMgr.Logger.Debug("apiStartOutputRelay called")
 		var req struct {
 			InputURL       string            `json:"input_url"`
 			OutputURL      string            `json:"output_url"`
@@ -21,35 +21,35 @@ func ApiStartRelay(streamMgr *StreamManager) http.HandlerFunc {
 
 		// Use secure JSON decoding with size limits
 		if err := httputil.DecodeJSON(r, &req); err != nil {
-			streamMgr.Logger.Error("apiStartRelay: failed to decode request", "err", err)
+			streamMgr.Logger.Error("apiStartOutputRelay: failed to decode request", "err", err)
 			httputil.WriteError(w, http.StatusBadRequest, "Invalid request")
 			return
 		}
 
 		// Validate required fields
 		if req.InputName == "" || req.OutputName == "" {
-			streamMgr.Logger.Error("apiStartRelay: missing input or output name")
+			streamMgr.Logger.Error("apiStartOutputRelay: missing input or output name")
 			httputil.WriteError(w, http.StatusBadRequest, "Input and output names are required")
 			return
 		}
-		streamMgr.Logger.Debug("apiStartRelay: starting relay", "inputURL", req.InputURL, "outputURL", req.OutputURL, "inputName", req.InputName, "outputName", req.OutputName, "preset", req.PlatformPreset)
+		streamMgr.Logger.Debug("apiStartOutputRelay: starting relay", "inputURL", req.InputURL, "outputURL", req.OutputURL, "inputName", req.InputName, "outputName", req.OutputName, "preset", req.PlatformPreset)
 
 		// Apply preset and options using centralized helper
 		opts, platformPreset := streamMgr.applyPresetAndOptions(req.PlatformPreset, req.FFmpegOptions, req.InputURL, req.OutputURL)
 
 		if err := streamMgr.StartStream(req.InputURL, req.OutputURL, req.InputName, req.OutputName, opts, platformPreset); err != nil {
-			streamMgr.Logger.Error("apiStartRelay: failed to start relay", "err", err)
+			streamMgr.Logger.Error("apiStartOutputRelay: failed to start relay", "err", err)
 			httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "started"})
-		streamMgr.Logger.Debug("apiStartRelay: relay started successfully")
+		streamMgr.Logger.Debug("apiStartOutputRelay: relay started successfully")
 	}
 }
 
-func ApiStopRelay(streamMgr *StreamManager) http.HandlerFunc {
+func ApiStopOutputRelay(orm *OutputRelayManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		streamMgr.Logger.Debug("apiStopRelay called")
+		orm.Logger.Debug("apiStopOutputRelay called")
 		var req struct {
 			InputURL   string `json:"input_url"`
 			OutputURL  string `json:"output_url"`
@@ -59,23 +59,25 @@ func ApiStopRelay(streamMgr *StreamManager) http.HandlerFunc {
 
 		// Use secure JSON decoding with size limits
 		if err := httputil.DecodeJSON(r, &req); err != nil {
-			streamMgr.Logger.Error("apiStopRelay: failed to decode request", "err", err)
+			orm.Logger.Error("apiStopOutputRelay: failed to decode request", "err", err)
 			httputil.WriteError(w, http.StatusBadRequest, "Invalid request")
 			return
 		}
-		if req.InputName == "" || req.OutputName == "" {
-			streamMgr.Logger.Error("apiStopRelay: missing input or output name")
-			httputil.WriteError(w, http.StatusBadRequest, "Input and output names are required")
+		if req.OutputName == "" {
+			orm.Logger.Error("apiStopOutputRelay: missing output name")
+			httputil.WriteError(w, http.StatusBadRequest, "Output name is required")
 			return
 		}
-		streamMgr.Logger.Debug("apiStopRelay: stopping relay", "inputURL", req.InputURL, "outputURL", req.OutputURL, "inputName", req.InputName, "outputName", req.OutputName)
-		if err := streamMgr.StopStream(req.InputURL, req.OutputURL, req.InputName, req.OutputName); err != nil {
-			streamMgr.Logger.Error("apiStopRelay: failed to stop relay", "err", err)
+		orm.Logger.Debug("apiStopOutputRelay: stopping relay", "outputURL", req.OutputURL, "outputName", req.OutputName)
+
+		// Call OutputRelayManager directly
+		if err := orm.StopOutputRelay(req.OutputURL); err != nil {
+			orm.Logger.Error("apiStopOutputRelay: failed to stop relay", "err", err)
 			httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "stopped"})
-		streamMgr.Logger.Debug("apiStopRelay: relay stopped successfully")
+		orm.Logger.Debug("apiStopOutputRelay: relay stopped successfully")
 	}
 }
 

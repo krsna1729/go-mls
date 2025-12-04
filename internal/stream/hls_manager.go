@@ -22,13 +22,6 @@ import (
 // RelayManagerAPI is replaced by StreamProvider
 // type RelayManagerAPI interface { ... }
 
-// ViewerManager defines the interface for managing viewers in HLS sessions.
-type ViewerManager interface {
-	AddViewer() (string, error)
-	UpdateViewerHeartbeat(viewerID string) error
-	RemoveViewer(viewerID string) error
-}
-
 // MapViewerManager is the default implementation using in-memory maps (concurrent-safe via HLSManager.mu).
 type MapViewerManager struct {
 	sess *HLSSession
@@ -82,7 +75,7 @@ type HLSSession struct {
 	// --- Process management (concurrent-safe via FFmpegProcess interface) ---
 	Proc FFmpegProcess // FFmpeg process abstraction (handles concurrency and output capture)
 
-	ViewerManager ViewerManager // Per-session viewer management
+	ViewerManager *MapViewerManager // Per-session viewer management
 }
 
 type HLSManager struct {
@@ -152,7 +145,7 @@ func NewHLSManager(l *logger.Logger, hlsDir string, streamProvider StreamProvide
 }
 
 // SetViewerManager allows injection of a custom ViewerManager (for testing or extension).
-func (m *HLSManager) SetViewerManager(vmFactory func(sess *HLSSession) ViewerManager) {
+func (m *HLSManager) SetViewerManager(vmFactory func(sess *HLSSession) *MapViewerManager) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, sess := range m.sessions {

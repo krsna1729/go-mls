@@ -154,17 +154,17 @@ func (orm *OutputRelayManager) StartOutputRelay(config OutputRelayConfig) error 
 }
 
 // cleanupOutputRelay stops the ffmpeg process, updates relay state, and ensures failure callback is only called once.
-// Returns true if failure callback should be called (i.e., not graceful shutdown, not already cleaned up, not already stopped).
-func (orm *OutputRelayManager) cleanupOutputRelay(relay *OutputRelay, reason string) (shouldCallFailure bool, inputURL, outputURL string) {
+// Returns error if stopping the process failed.
+func (orm *OutputRelayManager) cleanupOutputRelay(relay *OutputRelay, reason string) error {
 	relay.mu.Lock()
 	if relay.cleanedUp {
 		relay.mu.Unlock()
-		return false, relay.InputURL, relay.OutputURL
+		return nil
 	}
 	proc := relay.Proc
 	shuttingDown := relay.shuttingDown
-	inputURL = relay.InputURL
-	outputURL = relay.OutputURL
+	inputURL := relay.InputURL
+	outputURL := relay.OutputURL
 	// Mark as cleaned up to prevent double-callbacks
 	relay.cleanedUp = true
 	relay.Proc = nil
@@ -172,10 +172,12 @@ func (orm *OutputRelayManager) cleanupOutputRelay(relay *OutputRelay, reason str
 	relay.mu.Unlock()
 
 	// Stop the process outside the lock
+	var stopErr error
 	if proc != nil {
 		err := proc.Stop(context.Background(), 2*time.Second)
 		if err != nil {
 			orm.Logger.Warn("Error stopping ffmpeg process during cleanup", "outputURL", outputURL, "err", err, "reason", reason)
+			stopErr = err
 		}
 	}
 
@@ -191,25 +193,36 @@ func (orm *OutputRelayManager) cleanupOutputRelay(relay *OutputRelay, reason str
 	if shuttingDown {
 		orm.Logger.Info("Graceful shutdown, not calling consumer cleanup", "outputURL", outputURL, "reason", reason)
 	}
-	return false, inputURL, outputURL
+	return stopErr
 }
 
 // StopOutputRelay stops an output ffmpeg process
-func (orm *OutputRelayManager) StopOutputRelay(outputURL string) {
+func (orm *OutputRelayManager) StopOutputRelay(outputURL string) error {
 	orm.Logger.Info("Stopping output relay", "outputURL", outputURL)
 	orm.mu.Lock()
 	relay, exists := orm.Relays[outputURL]
 	if !exists {
 		orm.Logger.Warn("relay not found", "outputURL", outputURL)
 		orm.mu.Unlock()
-		return
+		return fmt.Errorf("output relay not found: %s", outputURL)
 	}
 	relay.mu.Lock()
 	relay.shuttingDown = true
+	inputURL := relay.InputURL
+	consumer := relay.consumer
 	relay.mu.Unlock()
 	orm.mu.Unlock()
 
-	orm.cleanupOutputRelay(relay, "stop")
+	// Notify cleanup handler (StreamManager) to unregister consumer/decrement refcount
+	if orm.cleanupHandler != nil && consumer != nil {
+		// Graceful stop -> err is nil
+		if err := orm.cleanupHandler.OnConsumerDone(inputURL, consumer.GetConsumerID(), nil); err != nil {
+			orm.Logger.Error("Failed to notify consumer stopped", "err", err)
+		}
+	}
+
+	// Stop the process
+	return orm.cleanupOutputRelay(relay, "stop-request")
 }
 
 // RunOutputRelay runs and monitors the output relay process
