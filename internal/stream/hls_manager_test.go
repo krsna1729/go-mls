@@ -84,17 +84,17 @@ func TestServeHLS_NotFoundRateLimit(t *testing.T) {
 	inputName := "missinginput"
 	file := "index.m3u8"
 
-	// Call ServeHLS multiple times, expect logger to handle rate limiting
+	// Call ServeHLS multiple times, expect 404 for missing input
 	for i := 0; i < 5; i++ {
 		w := httptest.NewRecorder()
 		r := httptest.NewRequest("GET", "/index.m3u8", nil)
 		mgr.ServeHLS(w, r, inputName, file, "")
-		if w.Result().StatusCode != http.StatusOK {
-			t.Errorf("expected 200, got %d", w.Result().StatusCode)
+		if w.Result().StatusCode != http.StatusNotFound {
+			t.Errorf("expected 404, got %d", w.Result().StatusCode)
 		}
 		body, _ := io.ReadAll(w.Result().Body)
-		if !strings.Contains(string(body), "#EXTM3U") || !strings.Contains(string(body), "#EXT-X-ENDLIST") {
-			t.Errorf("expected dummy playlist content, got: %s", string(body))
+		if !strings.Contains(string(body), "HLS session not found") {
+			t.Errorf("expected 'HLS session not found' error message, got: %s", string(body))
 		}
 	}
 	// We do not check log count here; logger should handle rate limiting
@@ -325,28 +325,20 @@ func TestServeHLSCheckViewer_AllBranches(t *testing.T) {
 	mgr := NewHLSManager(newTestLogger(), os.TempDir(), &mockStreamProvider{}, nil)
 	inputName := "testinput"
 
-	// 1. Invalid input name (should return 200 and dummy playlist for index.m3u8)
+	// 1. Invalid input name (should return 404 for index.m3u8)
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("GET", "/index.m3u8", nil)
 	mgr.ServeHLS(w, r, "../badinput", "index.m3u8", "rtsp://localhost/relay/testinput")
-	if w.Result().StatusCode != http.StatusOK {
-		t.Errorf("expected 200 for invalid input name, got %d", w.Result().StatusCode)
-	}
-	body, _ := io.ReadAll(w.Result().Body)
-	if !strings.Contains(string(body), "#EXTM3U") || !strings.Contains(string(body), "#EXT-X-ENDLIST") {
-		t.Errorf("expected dummy playlist content, got: %s", string(body))
+	if w.Result().StatusCode != http.StatusNotFound {
+		t.Errorf("expected 404 for invalid input name, got %d", w.Result().StatusCode)
 	}
 
-	// 2. Session not found (should return 200 and dummy playlist)
+	// 2. Session not found (should return 404)
 	w = httptest.NewRecorder()
 	r = httptest.NewRequest("GET", "/index.m3u8", nil)
 	mgr.ServeHLS(w, r, "missinginput", "index.m3u8", "rtsp://localhost/relay/testinput")
-	if w.Result().StatusCode != http.StatusOK {
-		t.Errorf("expected 200 for missing session, got %d", w.Result().StatusCode)
-	}
-	body, _ = io.ReadAll(w.Result().Body)
-	if !strings.Contains(string(body), "#EXTM3U") || !strings.Contains(string(body), "#EXT-X-ENDLIST") {
-		t.Errorf("expected dummy playlist content, got: %s", string(body))
+	if w.Result().StatusCode != http.StatusNotFound {
+		t.Errorf("expected 404 for missing session, got %d", w.Result().StatusCode)
 	}
 
 	// 3. Session with no ViewerManager (should return 404)
@@ -395,7 +387,7 @@ func TestServeHLSCheckViewer_AllBranches(t *testing.T) {
 	if w.Result().StatusCode != http.StatusOK {
 		t.Errorf("expected 200 for valid viewerID, got %d", w.Result().StatusCode)
 	}
-	body, _ = io.ReadAll(w.Result().Body)
+	body, _ := io.ReadAll(w.Result().Body)
 	if !strings.Contains(string(body), "#EXTM3U") {
 		t.Errorf("expected playlist content, got: %s", string(body))
 	}

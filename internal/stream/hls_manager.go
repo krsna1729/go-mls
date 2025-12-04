@@ -596,13 +596,7 @@ func (m *HLSManager) serveHLSGetSession(w http.ResponseWriter, inputName, file s
 	sess, exists := m.sessions[inputName]
 	m.mu.Unlock()
 	if !exists {
-		if file == "index.m3u8" {
-			m.Logger.Info("Input not found, serving dummy HLS playlist", "inputName", inputName, "file", file)
-			w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte("#EXTM3U\n#EXT-X-ENDLIST\n"))
-			return nil, true
-		}
+
 		m.Logger.WarnRateLimited("HLSManager: input not found for file", "inputName", inputName, "file", file)
 		http.Error(w, "HLS session not found", http.StatusNotFound)
 		return nil, true
