@@ -19,8 +19,8 @@ import (
 func TestRecordingManager_ConcurrentAPI(t *testing.T) {
 	log := logger.NewLogger()
 	dir := t.TempDir()
-	relayMgr := NewRelayManager(log, dir, "")
-	rm := NewRecordingManager(log, dir, relayMgr)
+	streamMgr := NewStreamManager(log, dir, "")
+	rm := NewRecordingManager(log, dir, streamMgr.InputRelays, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
@@ -72,7 +72,7 @@ func TestRecordingManager_DeleteRecordingByFilename(t *testing.T) {
 		t.Fatalf("failed to create test file: %v", err)
 	}
 	log := logger.NewLogger()
-	rm := NewRecordingManager(log, dir, nil)
+	rm := NewRecordingManager(log, dir, nil, nil)
 	// Add a recording to the manager
 	rm.recordings["testkey"] = &Recording{
 		Name:     "test",
@@ -138,8 +138,8 @@ func TestSSEBroker_AddRemoveClient(t *testing.T) {
 func TestRecordingManager_ListRecordings_Empty(t *testing.T) {
 	log := logger.NewLogger()
 	dir := t.TempDir()
-	relayMgr := NewRelayManager(log, dir, "")
-	rm := NewRecordingManager(log, dir, relayMgr)
+	streamMgr := NewStreamManager(log, dir, "")
+	rm := NewRecordingManager(log, dir, streamMgr.InputRelays, nil)
 	list := rm.ListRecordings()
 	if len(list) != 0 {
 		t.Errorf("expected empty list, got %v", list)
@@ -167,7 +167,7 @@ func TestApiRecordingsSSE(t *testing.T) {
 func TestRecordingManager_ListRecordings_DiskAndMemory(t *testing.T) {
 	dir := t.TempDir()
 	log := logger.NewLogger()
-	rm := NewRecordingManager(log, dir, nil)
+	rm := NewRecordingManager(log, dir, nil, nil)
 
 	// Create a file on disk only
 	diskFile := "diskonly_1234.mp4"
@@ -232,7 +232,7 @@ func TestRecordingManager_ListRecordings_DiskAndMemory(t *testing.T) {
 func TestRecordingManager_StartRecording_Duplicate(t *testing.T) {
 	dir := t.TempDir()
 	log := logger.NewLogger()
-	rm := NewRecordingManager(log, dir, nil)
+	rm := NewRecordingManager(log, dir, nil, nil)
 	ctx := context.Background()
 	name := "recdup"
 	source := "srcdup"
@@ -253,9 +253,13 @@ func TestRecordingManager_StartRecording_ErrorBranches(t *testing.T) {
 	dir := t.TempDir()
 	log := logger.NewLogger()
 	ctx := context.Background()
-	// Use a real RelayManager
-	relayMgr := NewRelayManager(log, dir, "")
-	rm := NewRecordingManager(log, dir, relayMgr)
+	// Use a real StreamManager
+	streamMgr := NewStreamManager(log, dir, "")
+	streamMgr.SetTimeouts(100*time.Millisecond, 100*time.Millisecond)
+
+	// Create RecordingManager with streamMgr.InputRelays
+	rm := NewRecordingManager(log, dir, streamMgr.InputRelays, nil)
+	streamMgr.SetRecordingManager(rm)
 	// Try to start a recording with a non-existent source (should fail at ffmpeg step)
 	err := rm.StartRecording(ctx, "fail", "fail")
 	if err == nil {
@@ -271,23 +275,8 @@ func TestRecordingManager_StartRecording_Success(t *testing.T) {
 	setupDir, _ := copyTestSrcToTempDir(t)
 	chdirTo(t, setupDir)
 
-	// Start RTSP server on dynamic port
-	rtspServer := NewRTSPServerManager(log, "127.0.0.1", 0)
-	if err := rtspServer.Start(); err != nil {
-		t.Fatalf("failed to start RTSP server: %v", err)
-	}
-	defer rtspServer.Stop()
-
-	relayMgr := NewRelayManager(log, setupDir, "")
-	relayMgr.SetRTSPServer(rtspServer)
-
-	// Register input config for testsrc (relative path)
-	relayMgr.RegisterInputConfig("testrec", "file://testsrc.mp4")
-	if _, err := relayMgr.StartInputRelayForConsumer("testrec"); err != nil {
-		t.Fatalf("failed to start input relay for consumer: %v", err)
-	}
-
-	rm := NewRecordingManager(log, setupDir, relayMgr)
+	// Use mock stream provider to avoid real RTSP/ffmpeg dependencies
+	rm := NewRecordingManager(log, setupDir, &mockStreamProvider{}, nil)
 	defer rm.Shutdown()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)

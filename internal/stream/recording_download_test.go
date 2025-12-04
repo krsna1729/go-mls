@@ -19,7 +19,7 @@ func TestApiDownloadRecording(t *testing.T) {
 		t.Fatalf("failed to create test file: %v", err)
 	}
 	log := logger.NewLogger()
-	rm := NewRecordingManager(log, dir, nil)
+	rm := NewRecordingManager(log, dir, nil, nil)
 	ts := httptest.NewServer(ApiDownloadRecording(rm))
 	defer ts.Close()
 
@@ -61,7 +61,7 @@ func TestApiDownloadRecording(t *testing.T) {
 func TestApiDownloadRecording_Errors(t *testing.T) {
 	dir := t.TempDir()
 	log := logger.NewLogger()
-	rm := NewRecordingManager(log, dir, nil)
+	rm := NewRecordingManager(log, dir, nil, nil)
 	ts := httptest.NewServer(ApiDownloadRecording(rm))
 	defer ts.Close()
 

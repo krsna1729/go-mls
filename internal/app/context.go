@@ -14,7 +14,7 @@ import (
 type Context struct {
 	Logger    *logger.Logger
 	Config    *config.Config
-	Relay     *stream.RelayManager
+	Stream    *stream.StreamManager // Replaces RelayManager
 	Recording *stream.RecordingManager
 	HLS       *stream.HLSManager
 	RTSP      *stream.RTSPServerManager
@@ -36,34 +36,25 @@ func NewContext(cfg *config.Config, log *logger.Logger) (*Context, error) {
 	// Initialize RTSP server with configuration
 	ctx.RTSP = stream.NewRTSPServerManager(log, cfg.Relay.RTSPServer.Host, cfg.Relay.RTSPServer.Port)
 
-	// Initialize relay manager
-	ctx.Relay = stream.NewRelayManager(log, cfg.Recording.Directory, cfg.FFmpeg.LogLevel)
-	ctx.Relay.SetRTSPServer(ctx.RTSP)
-	ctx.Relay.SetTimeouts(
+	// Initialize StreamManager (replaces RelayManager)
+	ctx.Stream = stream.NewStreamManager(log, cfg.Recording.Directory, cfg.FFmpeg.LogLevel)
+	ctx.Stream.SetRTSPServer(ctx.RTSP)
+	ctx.Stream.SetTimeouts(
 		time.Duration(cfg.Relay.InputTimeout),
 		time.Duration(cfg.Relay.OutputTimeout),
 	)
 
 	// Initialize recording manager
-	ctx.Recording = stream.NewRecordingManager(log, cfg.Recording.Directory, ctx.Relay)
+	// Pass Logger, recordingDir, InputRelays (StreamProvider), and StreamManager for consumer registration
+	ctx.Recording = stream.NewRecordingManager(log, cfg.Recording.Directory, ctx.Stream.InputRelays, ctx.Stream)
 
-	// Initialize HLS manager with configuration
-	ctx.HLS = stream.NewHLSManager(stream.HLSManagerConfig{
-		CleanupInterval:        time.Duration(cfg.HLS.CleanupInterval),
-		SessionTimeout:         time.Duration(cfg.HLS.SessionTimeout),
-		FailedCooldown:         time.Duration(cfg.HLS.FailedCooldown),
-		PlaylistReadyTimeout:   time.Duration(cfg.HLS.PlaylistReadyTimeout),
-		PlaylistPollInterval:   time.Duration(cfg.HLS.PlaylistPollInterval),
-		PlaylistPollAttempts:   cfg.HLS.PlaylistPollAttempts,
-		ViewerHeartbeatTimeout: time.Duration(cfg.HLS.ViewerHeartbeatTimeout),
-		FFmpegStopTimeout:      time.Duration(cfg.HLS.FFmpegStopTimeout),
-		PlaylistBaseDir:        cfg.HLS.PlaylistBaseDir,
-	}, log)
+	// Initialize HLS manager
+	// Pass Logger, hlsDir, and InputRelays (from StreamManager) as StreamProvider
+	ctx.HLS = stream.NewHLSManager(log, cfg.HLS.PlaylistBaseDir, ctx.Stream.InputRelays, ctx.Stream)
 
-	// Wire up cross-references
-	ctx.Relay.SetHLSManager(ctx.HLS)
-	ctx.Relay.SetRecordingManager(ctx.Recording)
-	ctx.HLS.SetRelayManager(ctx.Relay)
+	// Wire up cross-references in StreamManager
+	ctx.Stream.SetHLSManager(ctx.HLS)
+	ctx.Stream.SetRecordingManager(ctx.Recording)
 
 	return ctx, nil
 }
@@ -94,9 +85,9 @@ func (c *Context) Shutdown() {
 	c.Logger.Info("Shutting down recording manager...")
 	c.Recording.Shutdown()
 
-	// Stop all active relays
-	c.Logger.Info("Stopping all active relays...")
-	c.Relay.StopAllRelays()
+	// Stop all active streams/relays via StreamManager
+	c.Logger.Info("Stopping all active streams...")
+	c.Stream.Shutdown()
 
 	// Stop RTSP server
 	c.Logger.Info("Stopping RTSP server...")

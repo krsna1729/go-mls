@@ -7,9 +7,9 @@ import (
 	"os"
 )
 
-func ApiStartRelay(relayMgr *RelayManager) http.HandlerFunc {
+func ApiStartOutputRelay(streamMgr *StreamManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		relayMgr.Logger.Debug("apiStartRelay called")
+		streamMgr.Logger.Debug("apiStartOutputRelay called")
 		var req struct {
 			InputURL       string            `json:"input_url"`
 			OutputURL      string            `json:"output_url"`
@@ -21,35 +21,35 @@ func ApiStartRelay(relayMgr *RelayManager) http.HandlerFunc {
 
 		// Use secure JSON decoding with size limits
 		if err := httputil.DecodeJSON(r, &req); err != nil {
-			relayMgr.Logger.Error("apiStartRelay: failed to decode request", "err", err)
+			streamMgr.Logger.Error("apiStartOutputRelay: failed to decode request", "err", err)
 			httputil.WriteError(w, http.StatusBadRequest, "Invalid request")
 			return
 		}
 
 		// Validate required fields
 		if req.InputName == "" || req.OutputName == "" {
-			relayMgr.Logger.Error("apiStartRelay: missing input or output name")
+			streamMgr.Logger.Error("apiStartOutputRelay: missing input or output name")
 			httputil.WriteError(w, http.StatusBadRequest, "Input and output names are required")
 			return
 		}
-		relayMgr.Logger.Debug("apiStartRelay: starting relay", "inputURL", req.InputURL, "outputURL", req.OutputURL, "inputName", req.InputName, "outputName", req.OutputName, "preset", req.PlatformPreset)
+		streamMgr.Logger.Debug("apiStartOutputRelay: starting relay", "inputURL", req.InputURL, "outputURL", req.OutputURL, "inputName", req.InputName, "outputName", req.OutputName, "preset", req.PlatformPreset)
 
 		// Apply preset and options using centralized helper
-		opts, platformPreset := relayMgr.applyPresetAndOptions(req.PlatformPreset, req.FFmpegOptions, req.InputURL, req.OutputURL)
+		opts, platformPreset := streamMgr.applyPresetAndOptions(req.PlatformPreset, req.FFmpegOptions, req.InputURL, req.OutputURL)
 
-		if err := relayMgr.StartRelayWithOptions(req.InputURL, req.OutputURL, req.InputName, req.OutputName, opts, platformPreset); err != nil {
-			relayMgr.Logger.Error("apiStartRelay: failed to start relay", "err", err)
+		if err := streamMgr.StartStream(req.InputURL, req.OutputURL, req.InputName, req.OutputName, opts, platformPreset); err != nil {
+			streamMgr.Logger.Error("apiStartOutputRelay: failed to start relay", "err", err)
 			httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "started"})
-		relayMgr.Logger.Debug("apiStartRelay: relay started successfully")
+		streamMgr.Logger.Debug("apiStartOutputRelay: relay started successfully")
 	}
 }
 
-func ApiStopRelay(relayMgr *RelayManager) http.HandlerFunc {
+func ApiStopOutputRelay(streamMgr *StreamManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		relayMgr.Logger.Debug("apiStopRelay called")
+		streamMgr.Logger.Debug("apiStopOutputRelay called")
 		var req struct {
 			InputURL   string `json:"input_url"`
 			OutputURL  string `json:"output_url"`
@@ -59,39 +59,41 @@ func ApiStopRelay(relayMgr *RelayManager) http.HandlerFunc {
 
 		// Use secure JSON decoding with size limits
 		if err := httputil.DecodeJSON(r, &req); err != nil {
-			relayMgr.Logger.Error("apiStopRelay: failed to decode request", "err", err)
+			streamMgr.Logger.Error("apiStopOutputRelay: failed to decode request", "err", err)
 			httputil.WriteError(w, http.StatusBadRequest, "Invalid request")
 			return
 		}
-		if req.InputName == "" || req.OutputName == "" {
-			relayMgr.Logger.Error("apiStopRelay: missing input or output name")
-			httputil.WriteError(w, http.StatusBadRequest, "Input and output names are required")
+		if req.OutputName == "" {
+			streamMgr.Logger.Error("apiStopOutputRelay: missing output name")
+			httputil.WriteError(w, http.StatusBadRequest, "Output name is required")
 			return
 		}
-		relayMgr.Logger.Debug("apiStopRelay: stopping relay", "inputURL", req.InputURL, "outputURL", req.OutputURL, "inputName", req.InputName, "outputName", req.OutputName)
-		if err := relayMgr.StopRelay(req.InputURL, req.OutputURL, req.InputName, req.OutputName); err != nil {
-			relayMgr.Logger.Error("apiStopRelay: failed to stop relay", "err", err)
+		streamMgr.Logger.Debug("apiStopOutputRelay: stopping relay", "outputURL", req.OutputURL, "outputName", req.OutputName)
+
+		// Call StreamManager for consistent routing
+		if err := streamMgr.StopStream(req.InputURL, req.OutputURL, req.InputName, req.OutputName); err != nil {
+			streamMgr.Logger.Error("apiStopOutputRelay: failed to stop relay", "err", err)
 			httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "stopped"})
-		relayMgr.Logger.Debug("apiStopRelay: relay stopped successfully")
+		streamMgr.Logger.Debug("apiStopOutputRelay: relay stopped successfully")
 	}
 }
 
-func ApiRelayStatus(relayMgr *RelayManager) http.HandlerFunc {
+func ApiRelayStatus(streamMgr *StreamManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		relayMgr.Logger.Debug("apiRelayStatus called")
-		httputil.WriteJSON(w, http.StatusOK, relayMgr.StatusV2())
-		relayMgr.Logger.Debug("apiRelayStatus: status returned")
+		streamMgr.Logger.Debug("apiRelayStatus called")
+		httputil.WriteJSON(w, http.StatusOK, streamMgr.Status())
+		streamMgr.Logger.Debug("apiRelayStatus: status returned")
 	}
 }
 
-func ApiExportRelays(relayMgr *RelayManager) http.HandlerFunc {
+func ApiExportRelays(streamMgr *StreamManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		relayMgr.Logger.Debug("apiExportRelays called")
-		if err := relayMgr.ExportConfig("relay_config.json"); err != nil {
-			relayMgr.Logger.Error("apiExportRelays: failed to export config", "err", err)
+		streamMgr.Logger.Debug("apiExportRelays called")
+		if err := streamMgr.ExportConfig("relay_config.json"); err != nil {
+			streamMgr.Logger.Error("apiExportRelays: failed to export config", "err", err)
 			httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -99,35 +101,35 @@ func ApiExportRelays(relayMgr *RelayManager) http.HandlerFunc {
 		w.Header().Set("Content-Disposition", "attachment; filename=relay_config.json")
 		data, _ := os.ReadFile("relay_config.json")
 		w.Write(data)
-		relayMgr.Logger.Debug("apiExportRelays: config exported successfully")
+		streamMgr.Logger.Debug("apiExportRelays: config exported successfully")
 	}
 }
 
-func ApiImportRelays(relayMgr *RelayManager) http.HandlerFunc {
+func ApiImportRelays(streamMgr *StreamManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		relayMgr.Logger.Debug("apiImportRelays called")
+		streamMgr.Logger.Debug("apiImportRelays called")
 		file, _, err := r.FormFile("file")
 		if err != nil {
-			relayMgr.Logger.Error("apiImportRelays: no file uploaded", "err", err)
+			streamMgr.Logger.Error("apiImportRelays: no file uploaded", "err", err)
 			httputil.WriteError(w, http.StatusBadRequest, "No file uploaded")
 			return
 		}
 		defer file.Close()
 		f, err := os.Create("relay_config.json")
 		if err != nil {
-			relayMgr.Logger.Error("apiImportRelays: failed to save file", "err", err)
+			streamMgr.Logger.Error("apiImportRelays: failed to save file", "err", err)
 			httputil.WriteError(w, http.StatusInternalServerError, "Failed to save file")
 			return
 		}
 		defer f.Close()
 		io.Copy(f, file)
-		if err := relayMgr.ImportConfig("relay_config.json"); err != nil {
-			relayMgr.Logger.Error("apiImportRelays: failed to import config", "err", err)
+		if err := streamMgr.ImportConfig("relay_config.json"); err != nil {
+			streamMgr.Logger.Error("apiImportRelays: failed to import config", "err", err)
 			httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "imported"})
-		relayMgr.Logger.Debug("apiImportRelays: config imported successfully")
+		streamMgr.Logger.Debug("apiImportRelays: config imported successfully")
 	}
 }
 
@@ -162,9 +164,9 @@ func ApiRelayPresets() http.HandlerFunc {
 	}
 }
 
-func ApiDeleteInput(relayMgr *RelayManager) http.HandlerFunc {
+func ApiDeleteInput(streamMgr *StreamManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		relayMgr.Logger.Debug("apiDeleteInput called")
+		streamMgr.Logger.Debug("apiDeleteInput called")
 		var req struct {
 			InputURL  string `json:"input_url"`
 			InputName string `json:"input_name"`
@@ -172,29 +174,29 @@ func ApiDeleteInput(relayMgr *RelayManager) http.HandlerFunc {
 
 		// Use secure JSON decoding with size limits
 		if err := httputil.DecodeJSON(r, &req); err != nil {
-			relayMgr.Logger.Error("apiDeleteInput: failed to decode request", "err", err)
+			streamMgr.Logger.Error("apiDeleteInput: failed to decode request", "err", err)
 			httputil.WriteError(w, http.StatusBadRequest, "Invalid request")
 			return
 		}
 		if req.InputName == "" {
-			relayMgr.Logger.Error("apiDeleteInput: missing input name")
+			streamMgr.Logger.Error("apiDeleteInput: missing input name")
 			httputil.WriteError(w, http.StatusBadRequest, "Input name is required")
 			return
 		}
-		relayMgr.Logger.Debug("apiDeleteInput: deleting input", "inputURL", req.InputURL, "inputName", req.InputName)
-		if err := relayMgr.DeleteInput(req.InputURL, req.InputName); err != nil {
-			relayMgr.Logger.Error("apiDeleteInput: failed to delete input", "err", err)
+		streamMgr.Logger.Debug("apiDeleteInput: deleting input", "inputURL", req.InputURL, "inputName", req.InputName)
+		if err := streamMgr.DeleteInput(req.InputURL, req.InputName); err != nil {
+			streamMgr.Logger.Error("apiDeleteInput: failed to delete input", "err", err)
 			httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
-		relayMgr.Logger.Debug("apiDeleteInput: input deleted successfully")
+		streamMgr.Logger.Debug("apiDeleteInput: input deleted successfully")
 	}
 }
 
-func ApiDeleteOutput(relayMgr *RelayManager) http.HandlerFunc {
+func ApiDeleteOutput(streamMgr *StreamManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		relayMgr.Logger.Debug("apiDeleteOutput called")
+		streamMgr.Logger.Debug("apiDeleteOutput called")
 		var req struct {
 			InputURL   string `json:"input_url"`
 			OutputURL  string `json:"output_url"`
@@ -204,22 +206,22 @@ func ApiDeleteOutput(relayMgr *RelayManager) http.HandlerFunc {
 
 		// Use secure JSON decoding with size limits
 		if err := httputil.DecodeJSON(r, &req); err != nil {
-			relayMgr.Logger.Error("apiDeleteOutput: failed to decode request", "err", err)
+			streamMgr.Logger.Error("apiDeleteOutput: failed to decode request", "err", err)
 			httputil.WriteError(w, http.StatusBadRequest, "Invalid request")
 			return
 		}
 		if req.InputName == "" || req.OutputName == "" {
-			relayMgr.Logger.Error("apiDeleteOutput: missing input or output name")
+			streamMgr.Logger.Error("apiDeleteOutput: missing input or output name")
 			httputil.WriteError(w, http.StatusBadRequest, "Input and output names are required")
 			return
 		}
-		relayMgr.Logger.Debug("apiDeleteOutput: deleting output", "inputURL", req.InputURL, "outputURL", req.OutputURL, "inputName", req.InputName, "outputName", req.OutputName)
-		if err := relayMgr.DeleteOutput(req.InputURL, req.OutputURL, req.InputName, req.OutputName); err != nil {
-			relayMgr.Logger.Error("apiDeleteOutput: failed to delete output", "err", err)
+		streamMgr.Logger.Debug("apiDeleteOutput: deleting output", "inputURL", req.InputURL, "outputURL", req.OutputURL, "inputName", req.InputName, "outputName", req.OutputName)
+		if err := streamMgr.DeleteOutput(req.InputURL, req.OutputURL, req.InputName, req.OutputName); err != nil {
+			streamMgr.Logger.Error("apiDeleteOutput: failed to delete output", "err", err)
 			httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
-		relayMgr.Logger.Debug("apiDeleteOutput: output deleted successfully")
+		streamMgr.Logger.Debug("apiDeleteOutput: output deleted successfully")
 	}
 }

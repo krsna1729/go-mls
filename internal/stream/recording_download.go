@@ -31,11 +31,11 @@ func ApiDownloadRecording(rm *RecordingManager) http.HandlerFunc {
 		}
 
 		// Resolve and clean the file path
-		filePath := filepath.Join(rm.dir, filename)
-		cleanPath := filepath.Clean(filePath)
+		fileToServe := filepath.Join(rm.recordingDir, filename)
+		cleanPath := filepath.Clean(fileToServe)
 
 		// Additional security: Ensure the resolved path is still within the recordings directory
-		if !strings.HasPrefix(cleanPath, rm.dir) {
+		if !strings.HasPrefix(cleanPath, rm.recordingDir) {
 			httputil.WriteError(w, http.StatusForbidden, "Access denied")
 			return
 		}
@@ -61,7 +61,7 @@ func ApiDownloadRecording(rm *RecordingManager) http.HandlerFunc {
 
 		// Copy file to response (using io.Copy is efficient for large files)
 		if _, err := io.Copy(w, f); err != nil {
-			rm.Logger.Error("Failed to serve recording file", "filename", filename, "err", err)
+			rm.Logger.Error("File requested outside recording directory", "filename", filename, "expectedDir", rm.recordingDir)
 		}
 	}
 }

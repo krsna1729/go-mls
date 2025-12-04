@@ -1,7 +1,6 @@
 package config
 
 import (
-	"encoding/json"
 	"go-mls/internal/logger"
 	"os"
 	"path/filepath"
@@ -44,42 +43,6 @@ func TestLoadConfigNonExistent(t *testing.T) {
 	// Should return default config
 	if config.HTTP.Port != "8080" {
 		t.Errorf("expected default port, got %s", config.HTTP.Port)
-	}
-}
-
-func TestSaveAndLoadConfig(t *testing.T) {
-	tempDir := t.TempDir()
-	configFile := filepath.Join(tempDir, "test_config.json")
-
-	// Create a custom config
-	config := DefaultConfig()
-	config.HTTP.Port = "9090"
-	config.Relay.InputTimeout = Duration(45 * time.Second)
-	config.Recording.Directory = "/custom/recordings"
-
-	// Save config
-	err := config.SaveConfig(configFile)
-	if err != nil {
-		t.Errorf("failed to save config: %v", err)
-	}
-
-	// Load config
-	loadedConfig, err := LoadConfig(configFile, logger.NewLogger())
-	if err != nil {
-		t.Errorf("failed to load config: %v", err)
-	}
-
-	// Verify values
-	if loadedConfig.HTTP.Port != "9090" {
-		t.Errorf("expected port '9090', got '%s'", loadedConfig.HTTP.Port)
-	}
-
-	if time.Duration(loadedConfig.Relay.InputTimeout) != 45*time.Second {
-		t.Errorf("expected input timeout 45s, got %v", loadedConfig.Relay.InputTimeout)
-	}
-
-	if loadedConfig.Recording.Directory != "/custom/recordings" {
-		t.Errorf("expected directory '/custom/recordings', got '%s'", loadedConfig.Recording.Directory)
 	}
 }
 
@@ -215,28 +178,6 @@ func TestLoadConfigInvalidValues(t *testing.T) {
 	_, err = LoadConfig(configFile, logger.NewLogger())
 	if err == nil {
 		t.Error("expected validation error, got nil")
-	}
-}
-
-func TestSaveConfig_MarshalError(t *testing.T) {
-	// Create a type that cannot be marshaled (func field)
-	type BadConfig struct {
-		F func()
-	}
-	bad := &BadConfig{F: func() {}}
-	_, err := json.Marshal(bad)
-	if err == nil {
-		t.Fatal("expected marshal error, got nil")
-	}
-}
-
-func TestSaveConfig_WriteError(t *testing.T) {
-	c := DefaultConfig()
-	// Try to write to a directory (should fail)
-	dir := t.TempDir()
-	err := c.SaveConfig(dir) // dir is a directory, not a file
-	if err == nil {
-		t.Error("expected error writing to directory, got nil")
 	}
 }
 

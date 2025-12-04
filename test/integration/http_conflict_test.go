@@ -39,13 +39,13 @@ func TestHTTPStartRelayConflict(t *testing.T) {
 	require.NoError(t, rtspServer.Start())
 	t.Cleanup(func() { rtspServer.Stop() })
 
-	// Relay manager
-	relayMgr := stream.NewRelayManager(log, tempDir, "error")
-	relayMgr.SetRTSPServer(rtspServer)
+	// Stream manager
+	streamMgr := stream.NewStreamManager(log, tempDir, "error")
+	streamMgr.SetRTSPServer(rtspServer)
 
 	// HTTP mux
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/relay/start", stream.ApiStartRelay(relayMgr))
+	mux.HandleFunc("/api/relay/start", stream.ApiStartOutputRelay(streamMgr))
 
 	ts := httptest.NewServer(mux)
 	defer ts.Close()

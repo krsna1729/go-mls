@@ -11,6 +11,12 @@ import (
 	"time"
 )
 
+// InputConfig stores persistent input configuration
+type InputConfig struct {
+	InputURL  string `json:"input_url"`
+	InputName string `json:"input_name"`
+}
+
 // InputRelayStatus represents the state of an input relay process
 // (input URL -> local RTSP server)
 type InputRelayStatus int
@@ -53,18 +59,211 @@ type InputRelay struct {
 // - All accesses to Relays map must hold mu.
 // - Logger, recDir, rtspServer are set at construction and never changed.
 type InputRelayManager struct {
-	Relays     map[string]*InputRelay // key: input URL, protected by mu
-	mu         sync.Mutex             // protects Relays
-	Logger     *logger.Logger         // immutable
-	recDir     string                 // immutable
-	rtspServer *RTSPServerManager     // set at construction or via SetRTSPServer
+	// Configuration registry for persistent input mappings
+	inputConfigs map[string]*InputConfig // inputName -> InputConfig
+	configMu     sync.RWMutex            // Protects inputConfigs
+
+	// Configurable timeouts
+	inputTimeout time.Duration
+
+	// --- Mutable fields protected by mu ---
+	Relays map[string]*InputRelay // inputURL -> InputRelay
+	mu     sync.RWMutex           // Protects Relays map
+
+	// --- Immutable/config fields (set at construction) ---
+	Logger     *logger.Logger
+	recDir     string
+	rtspServer *RTSPServerManager
 }
 
 func NewInputRelayManager(l *logger.Logger, recDir string) *InputRelayManager {
 	return &InputRelayManager{
-		Relays: make(map[string]*InputRelay),
-		Logger: l,
-		recDir: recDir,
+		Relays:       make(map[string]*InputRelay),
+		inputConfigs: make(map[string]*InputConfig),
+		Logger:       l,
+		recDir:       recDir,
+		inputTimeout: 30 * time.Second, // Default
+	}
+}
+
+// SetInputTimeout sets the timeout for waiting for input streams
+func (irm *InputRelayManager) SetInputTimeout(timeout time.Duration) {
+	irm.inputTimeout = timeout
+}
+
+// RegisterInputConfig stores an input configuration
+func (irm *InputRelayManager) RegisterInputConfig(inputName, inputURL string) {
+	irm.configMu.Lock()
+	defer irm.configMu.Unlock()
+
+	irm.inputConfigs[inputName] = &InputConfig{
+		InputURL:  inputURL,
+		InputName: inputName,
+	}
+	irm.Logger.Debug("Registered input config", "inputName", inputName, "inputURL", inputURL)
+}
+
+// GetInputURLByName returns the input URL for a given input name
+func (irm *InputRelayManager) GetInputURLByName(inputName string) (string, bool) {
+	// Check active relays first
+	irm.mu.Lock()
+	for inputURL, relay := range irm.Relays {
+		if relay.InputName == inputName {
+			irm.mu.Unlock()
+			return inputURL, true
+		}
+	}
+	irm.mu.Unlock()
+
+	// Check stored configuration
+	irm.configMu.RLock()
+	defer irm.configMu.RUnlock()
+
+	if config, exists := irm.inputConfigs[inputName]; exists {
+		return config.InputURL, true
+	}
+
+	return "", false
+}
+
+// IncrementInputRef increments the reference count for an input
+func (m *InputRelayManager) IncrementInputRef(inputURL, reason string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	relay, exists := m.Relays[inputURL]
+	if !exists {
+		return
+	}
+
+	relay.mu.Lock()
+	defer relay.mu.Unlock()
+	relay.RefCount++
+}
+
+// DecrementInputRef decrements the reference count for an input relay
+func (irm *InputRelayManager) DecrementInputRef(inputURL string, reason string) {
+	irm.mu.Lock()
+	relay, exists := irm.Relays[inputURL]
+	irm.mu.Unlock()
+
+	if !exists {
+		return
+	}
+
+	relay.mu.Lock()
+	relay.RefCount--
+	refCount := relay.RefCount
+	relay.mu.Unlock()
+
+	irm.Logger.Info("DecrementInputRef", "inputURL", inputURL, "reason", reason, "newRefCount", refCount)
+
+	if refCount <= 0 {
+		irm.Logger.Info("Input ref count reached 0, stopping input", "inputURL", inputURL)
+		// Stop the input but keep it in the map (preserves state/history)
+		// Deletion is only performed by explicit user action (DeleteInput API)
+		irm.stopInputRelayAtZero(inputURL)
+	}
+}
+
+// stopInputRelayAtZero stops an input relay that has already reached refcount 0
+// This is called internally by DecrementInputRef and does NOT decrement the refcount
+func (irm *InputRelayManager) stopInputRelayAtZero(inputURL string) {
+	irm.mu.Lock()
+	relay, exists := irm.Relays[inputURL]
+	if !exists {
+		irm.mu.Unlock()
+		return
+	}
+	relay.mu.Lock()
+
+	// Only stop if refcount is actually 0 (guard against race conditions)
+	if relay.RefCount != 0 {
+		relay.mu.Unlock()
+		irm.mu.Unlock()
+		irm.Logger.Warn("stopInputRelayAtZero: refcount is not 0, skipping", "inputURL", inputURL, "refCount", relay.RefCount)
+		return
+	}
+
+	proc := relay.Proc
+	relay.Proc = nil
+	relay.Status = InputStopped
+	inputName := relay.InputName
+	relay.mu.Unlock()
+	irm.mu.Unlock()
+
+	// Stop the process outside of any locks
+	if proc != nil {
+		err := proc.Stop(context.Background(), 2*time.Second)
+		if err != nil {
+			irm.Logger.Warn("Error stopping ffmpeg process", "inputURL", inputURL, "err", err)
+		}
+	}
+
+	// Clean up RTSP stream
+	if irm.rtspServer != nil && inputName != "" {
+		relayPath := "relay/" + inputName
+		irm.Logger.Debug("Cleaning up RTSP stream for stopped input relay", "relayPath", relayPath)
+		irm.rtspServer.RemoveStream(relayPath)
+	}
+}
+
+// SetRTSPServer sets the RTSP server instance
+func (irm *InputRelayManager) SetRTSPServer(server *RTSPServerManager) {
+	irm.rtspServer = server
+}
+
+// GetStream implements StreamProvider.GetStream
+func (irm *InputRelayManager) GetStream(inputName string) (string, error) {
+	inputURL, exists := irm.GetInputURLByName(inputName)
+	if !exists {
+		return "", fmt.Errorf("input configuration not found for: %s", inputName)
+	}
+
+	if irm.rtspServer == nil {
+		return "", fmt.Errorf("RTSP server manager is not initialized")
+	}
+
+	// Compose local RTSP relay path and URL using the correct dynamic port
+	relayPath := fmt.Sprintf("relay/%s", inputName)
+	localRelayURL := irm.rtspServer.GetRTSPURL(relayPath)
+
+	// Start the input relay with consumer counting
+	localURL, err := irm.StartInputRelay(inputName, inputURL, localRelayURL, irm.inputTimeout)
+	if err != nil {
+		return "", fmt.Errorf("failed to start input relay for %s: %v", inputName, err)
+	}
+
+	// Wait for the RTSP stream to become ready (robust, with cleanup)
+	irm.Logger.Info("Waiting for RTSP stream to become ready", "relayPath", relayPath)
+	err = irm.rtspServer.WaitForStreamReady(relayPath, irm.inputTimeout)
+	if err != nil {
+		irm.Logger.Error("Failed to wait for RTSP stream to become ready", "inputName", inputName, "err", err)
+		if !irm.rtspServer.IsStreamReady(relayPath) {
+			irm.StopInputRelay(inputURL)
+			return "", fmt.Errorf("RTSP stream not ready: %v", err)
+		}
+		irm.Logger.Warn("Stream appears ready but wait failed, continuing anyway", "relayPath", relayPath)
+	}
+
+	return localURL, nil
+}
+
+// ReleaseStream implements StreamProvider.ReleaseStream
+func (irm *InputRelayManager) ReleaseStream(inputName string) {
+	irm.Logger.Info("ReleaseStream called", "inputName", inputName)
+
+	inputURL, exists := irm.GetInputURLByName(inputName)
+	if !exists {
+		irm.Logger.Warn("ReleaseStream: input name not found", "inputName", inputName)
+		return
+	}
+
+	stopped := irm.StopInputRelay(inputURL)
+	if stopped {
+		irm.Logger.Info("Input relay stopped by consumer", "inputName", inputName)
+	} else {
+		irm.Logger.Debug("Input relay refcount decremented but not stopped", "inputName", inputName)
 	}
 }
 
@@ -300,11 +499,6 @@ func (irm *InputRelayManager) RunInputRelay(relay *InputRelay) {
 	}
 }
 
-// SetRTSPServer sets the RTSP server instance for stream cleanup
-func (irm *InputRelayManager) SetRTSPServer(server *RTSPServerManager) {
-	irm.rtspServer = server
-}
-
 // GetInputNameForURL returns the input name for a given input URL
 func (irm *InputRelayManager) GetInputNameForURL(inputURL string) string {
 	irm.mu.Lock()
@@ -330,6 +524,7 @@ func (irm *InputRelayManager) FindLocalURLByInputName(inputName string) (string,
 
 // DeleteInput completely removes an input relay and all associated outputs
 func (irm *InputRelayManager) DeleteInput(inputURL string) error {
+
 	irm.Logger.Info("Deleting input", "inputURL", inputURL)
 	irm.mu.Lock()
 	relay, exists := irm.Relays[inputURL]
@@ -339,6 +534,15 @@ func (irm *InputRelayManager) DeleteInput(inputURL string) error {
 		return fmt.Errorf("input relay not found: %s", inputURL)
 	}
 	relay.mu.Lock()
+	// Double-check refcount to prevent race condition where input was resurrected
+	if relay.RefCount > 0 {
+		relay.mu.Unlock()
+		irm.mu.Unlock()
+		irm.Logger.Info("DeleteInput aborted: input resurrected", "inputURL", inputURL, "refCount", relay.RefCount)
+		return nil
+	}
+	irm.Logger.Info("DeleteInput proceeding", "inputURL", inputURL, "refCount", relay.RefCount)
+
 	proc := relay.Proc
 	relay.Proc = nil
 	relay.Status = InputStopped
@@ -379,4 +583,18 @@ func (irm *InputRelayManager) GetRelayStatus(inputURL string) (InputRelayStatus,
 	relay.mu.Lock()
 	defer relay.mu.Unlock()
 	return relay.Status, relay.RefCount, true
+}
+
+// GetRunningInputRelays returns a list of currently running input relays
+// This returns pointers to the relays. Callers must be careful with concurrency
+// or use the snapshot methods.
+func (irm *InputRelayManager) GetRunningInputRelays() []*InputRelay {
+	irm.mu.RLock()
+	defer irm.mu.RUnlock()
+
+	relays := make([]*InputRelay, 0, len(irm.Relays))
+	for _, relay := range irm.Relays {
+		relays = append(relays, relay)
+	}
+	return relays
 }

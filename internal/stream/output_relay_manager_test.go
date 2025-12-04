@@ -63,21 +63,45 @@ func TestOutputRelayManager_FailureCallback(t *testing.T) {
 	t.Parallel()
 	log := logger.NewLogger()
 	orm := NewOutputRelayManager(log)
+
+	// Create a mock handler
 	var called int32
-	orm.SetFailureCallback(func(inputURL, outputURL string) {
-		atomic.AddInt32(&called, 1)
-	})
+	handler := &mockConsumerCleanupHandler{
+		onDone: func(inputURL, consumerID string, err error) error {
+			atomic.AddInt32(&called, 1)
+			return nil
+		},
+	}
+	orm.SetCleanupHandler(handler)
+
+	inputURL := "rtsp://localhost/relay/fail"
 	config := OutputRelayConfig{
 		OutputURL:      "rtmp://fail.example.com/live",
 		OutputName:     "failout",
-		InputURL:       "rtsp://localhost/relay/fail",
+		InputURL:       inputURL,
 		LocalURL:       "rtsp://localhost/relay/fail",
 		Timeout:        1 * time.Second,
 		PlatformPreset: "",
 		FFmpegOptions:  map[string]string{},
 		FFmpegArgs:     []string{"-invalidflag"}, // Use invalid flag to force failure
 	}
-	_ = orm.StartOutputRelay(config)
+	err := orm.StartOutputRelay(config)
+	if err != nil {
+		t.Fatalf("Failed to start relay: %v", err)
+	}
+
+	// Set up consumer in the relay to trigger OnFailure
+	orm.mu.Lock()
+	relay := orm.Relays[config.OutputURL]
+	if relay != nil {
+		// Create a mock consumer
+		consumer := NewOutputRelayConsumer(relay, orm, inputURL)
+		relay.mu.Lock()
+		relay.consumer = consumer
+		relay.mu.Unlock()
+	}
+	orm.mu.Unlock()
+
 	// Wait for the process to fail and callback to be called
 	for i := 0; i < 10; i++ {
 		time.Sleep(100 * time.Millisecond)
@@ -86,8 +110,20 @@ func TestOutputRelayManager_FailureCallback(t *testing.T) {
 		}
 	}
 	if atomic.LoadInt32(&called) == 0 {
-		t.Errorf("expected failure callback to be called deterministically")
+		t.Errorf("expected consumer cleanup to be called deterministically")
 	}
+}
+
+// Mock implementation of ConsumerCleanupHandler for testing
+type mockConsumerCleanupHandler struct {
+	onDone func(inputURL, consumerID string, err error) error
+}
+
+func (m *mockConsumerCleanupHandler) OnConsumerDone(inputURL, consumerID string, err error) error {
+	if m.onDone != nil {
+		return m.onDone(inputURL, consumerID, err)
+	}
+	return nil
 }
 
 func TestOutputRelayManager_ConcurrentAPI(t *testing.T) {

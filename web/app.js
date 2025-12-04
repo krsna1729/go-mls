@@ -220,7 +220,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 const input = btn.getAttribute('data-input');
                 const inputName = btn.getAttribute('data-input-name') || '';
 
-                if (confirm(`Are you sure you want to delete input "${inputName}" and all its outputs? This action cannot be undone.`)) {
+                if (confirm(`Are you sure you want to delete input "${inputName}" and all its outputs, active recordings, and HLS sessions? This action cannot be undone.`)) {
                     API.deleteInput({ input_url: input, input_name: inputName })
                         .then(() => fetchStatus())
                         .catch(err => {
