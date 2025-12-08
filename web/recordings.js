@@ -24,7 +24,7 @@ document.addEventListener('DOMContentLoaded', function () {
     const allRecordingsSection = document.createElement('div');
     allRecordingsSection.innerHTML = `
         <h2>All Recordings</h2>
-        <input type="text" id="recordingSearchBox" placeholder="Search recordings by name, source, or date" style="width:60%;margin-bottom:1em;">
+        <input type="text" id="recordingSearchBox" placeholder="Search recordings by input name, URL, or date" style="width:60%;margin-bottom:1em;">
         <div id="allRecordingsList"></div>
     `;
     card.appendChild(allRecordingsSection); // <-- append to card, not recordingsTab

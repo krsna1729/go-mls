@@ -5,7 +5,7 @@ document.addEventListener('DOMContentLoaded', function () {
     relayControls.innerHTML = `
         <h2>Statistics</h2>
         <div id="serverStats"></div>
-        <h2>Add Relay Endpoint</h2>
+        <h2>Add Output</h2>
         <div class="md-input-row relay-input-grid" id="addRelayRow">
             <input type="text" id="inputName" placeholder="Input Name">
             <input type="text" id="inputUrl" placeholder="Input URL">
@@ -14,14 +14,14 @@ document.addEventListener('DOMContentLoaded', function () {
         </div>
         <div id="advancedOptionsContainer"></div>
         <div class="md-input-row">
-            <button id="startRelayBtn"><span class="material-icons">play_arrow</span>Start Relay</button>
+            <button id="startOutputBtn"><span class="material-icons">play_arrow</span>Start Output</button>
         </div>
         <div class="md-action-row">
             <button id="exportBtn" class="secondary"><span class="material-icons">file_download</span>Export</button>
             <input id="importFile" type="file" accept="application/json" style="display:none" />
             <button id="importBtn" class="secondary"><span class="material-icons">file_upload</span>Import</button>
         </div>
-        <h2>Active Relays</h2>
+        <h2>Active Streams</h2>
         <div class="md-input-row" id="searchRow"></div>
         <div id="relayTable"></div>`;
 
@@ -146,10 +146,10 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     });
 
-    // Move search input to appear under 'Active Relays' heading
+    // Move search input to appear under 'Active Streams' heading
     const searchRow = document.getElementById('searchRow');
     searchRow.innerHTML = `
-        <input type="text" id="searchBox" placeholder="Search sources or destinations by name or URL" style="width:60%;margin-bottom:1em;">
+        <input type="text" id="searchBox" placeholder="Search inputs or outputs by name or URL" style="width:60%;margin-bottom:1em;">
     `;
 
 
@@ -283,8 +283,8 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     }
 
-    // Attach handler for the top Start Relay button
-    document.getElementById('startRelayBtn').onclick = function () {
+    // Attach handler for the top Start Output button
+    document.getElementById('startOutputBtn').onclick = function () {
         const inputName = document.getElementById('inputName').value.trim();
         const inputUrl = document.getElementById('inputUrl').value.trim();
         const outputName = document.getElementById('outputName').value.trim();
@@ -362,7 +362,7 @@ document.addEventListener('DOMContentLoaded', function () {
         window.dispatchEvent(new Event('relayStatusUpdated'));
         const searchVal = document.getElementById('searchBox').value.trim();
         const filtered = Utils.filterData(data, searchVal);
-        let relayGroups = 0, totalEndpoints = 0, totalCpu = 0, totalMem = 0, totalBitrate = 0, health = 'Good';
+        let totalInputs = 0, totalOutputs = 0, totalCpu = 0, totalMem = 0, totalBitrate = 0, health = 'Good';
         let appCpu = '0.0%';
         let appMem = '0';
         if (filtered && filtered.server) {
@@ -370,7 +370,7 @@ document.addEventListener('DOMContentLoaded', function () {
             appMem = typeof filtered.server.mem === 'number' ? Utils.formatBytes(filtered.server.mem) : '0';
         }
         if (filtered && filtered.relays) {
-            relayGroups = filtered.relays.length;
+            totalInputs = filtered.relays.length;
             filtered.relays.forEach(relay => {
                 if (relay.input) {
                     if (typeof relay.input.cpu === 'number') totalCpu += relay.input.cpu;
@@ -379,7 +379,7 @@ document.addEventListener('DOMContentLoaded', function () {
                     if (relay.input.status === 'Error') health = 'Warning';
                 }
                 if (relay.outputs && Array.isArray(relay.outputs)) {
-                    totalEndpoints += relay.outputs.length;
+                    totalOutputs += relay.outputs.length;
                     relay.outputs.forEach(out => {
                         if (typeof out.cpu === 'number') totalCpu += out.cpu;
                         if (typeof out.mem === 'number') totalMem += out.mem;
@@ -392,18 +392,18 @@ document.addEventListener('DOMContentLoaded', function () {
         let healthBadge = health === 'Good'
             ? '<span class="badge badge-healthy">Good</span>'
             : '<span class="badge badge-warning">Warning</span>';
-        let totalCpuStr = (relayGroups + totalEndpoints) ? totalCpu.toFixed(1) + '%' : '0';
-        let totalMemStr = (relayGroups + totalEndpoints) ? Utils.formatBytes(totalMem) : '0';
+        let totalCpuStr = (totalInputs + totalOutputs) ? totalCpu.toFixed(1) + '%' : '0';
+        let totalMemStr = (totalInputs + totalOutputs) ? Utils.formatBytes(totalMem) : '0';
         let serverHtml = `
   <div class="stats-card">
     <div class="stats-grid stats-grid-custom">
       <div class="stat-block">
-        <div class="stat-label">Relay Groups</div>
-        <div class="stat-value">${relayGroups}</div>
+        <div class="stat-label">Inputs</div>
+        <div class="stat-value">${totalInputs}</div>
       </div>
       <div class="stat-block">
-        <div class="stat-label">Endpoints</div>
-        <div class="stat-value">${totalEndpoints}</div>
+        <div class="stat-label">Outputs</div>
+        <div class="stat-value">${totalOutputs}</div>
       </div>
       <div class="stat-block stat-health">
         <div class="stat-label">Health</div>

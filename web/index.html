@@ -15,16 +15,16 @@
     </header>
     <main>
         <nav role="tablist" style="margin-bottom:1em; display:flex; gap:16px;" aria-label="Main navigation tabs">
-            <button id="tabRelays" class="tab-btn md-btn active" role="tab" 
-                    aria-selected="true" aria-controls="relaysTab">
-                Relays
+            <button id="tabStreams" class="tab-btn md-btn active" role="tab" 
+                    aria-selected="true" aria-controls="streamsTab">
+                Streams
             </button>
             <button id="tabRecordings" class="tab-btn md-btn" role="tab" 
                     aria-selected="false" aria-controls="recordingsTab">
                 Recordings
             </button>
         </nav>
-        <div id="relaysTab" tabindex="0" role="tabpanel" aria-labelledby="tabRelays">
+        <div id="streamsTab" tabindex="0" role="tabpanel" aria-labelledby="tabStreams">
             <div id="controls"></div>
         </div>
         <div id="recordingsTab" style="display:none" tabindex="0" role="tabpanel" aria-labelledby="tabRecordings"></div>
@@ -46,9 +46,9 @@
     <script src="/recordings.js"></script>
     <script>
     document.addEventListener('DOMContentLoaded', function () {
-        const tabRelays = document.getElementById('tabRelays');
+        const tabStreams = document.getElementById('tabStreams');
         const tabRecordings = document.getElementById('tabRecordings');
-        const relaysTab = document.getElementById('relaysTab');
+        const streamsTab = document.getElementById('streamsTab');
         const recordingsTab = document.getElementById('recordingsTab');
         
         function switchTab(activeTab, inactiveTab, activePanel, inactivePanel) {
@@ -68,16 +68,16 @@
             activePanel.focus();
         }
         
-        tabRelays.onclick = function () {
-            switchTab(tabRelays, tabRecordings, relaysTab, recordingsTab);
+        tabStreams.onclick = function () {
+            switchTab(tabStreams, tabRecordings, streamsTab, recordingsTab);
         };
         
         tabRecordings.onclick = function () {
-            switchTab(tabRecordings, tabRelays, recordingsTab, relaysTab);
+            switchTab(tabRecordings, tabStreams, recordingsTab, streamsTab);
         };
         
         // Keyboard navigation support
-        tabRelays.onkeydown = tabRecordings.onkeydown = function(e) {
+        tabStreams.onkeydown = tabRecordings.onkeydown = function(e) {
             if (e.key === 'Enter' || e.key === ' ') {
                 e.preventDefault();
                 this.click();
