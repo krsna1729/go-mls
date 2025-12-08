@@ -85,18 +85,15 @@ type HLSManager struct {
 	requestGroup singleflight.Group   // Synchronize session creation
 
 	// --- Immutable/config fields (set at construction) ---
-	Logger          *logger.Logger
-	hlsDir          string
-	streamProvider  StreamProvider // Replaces RelayManagerAPI
-	streamManager   *StreamManager // For consumer registration
-	failedCooldown  time.Duration  // Cooldown period for failed inputs
-	sessionTimeout  time.Duration  // Session timeout duration
-	cleanupInterval time.Duration  // Cleanup ticker interval
-	cleanupTicker   *time.Ticker
-	cleanupDone     chan struct{}
-	ctx             context.Context
-	cancel          context.CancelFunc
-	mu              sync.RWMutex // Protects sessions and failedInputs
+	Logger         *logger.Logger
+	streamProvider StreamProvider // Replaces RelayManagerAPI
+	streamManager  *StreamManager // For consumer registration
+	cleanupTicker  *time.Ticker
+	cleanupDone    chan struct{}
+	ctx            context.Context
+	cancel         context.CancelFunc
+	config         HLSManagerConfig // Store full config for access to tuning params
+	mu             sync.RWMutex     // Protects sessions and failedInputs
 }
 
 // HLSManagerConfig holds all configuration for HLSManager using time.Duration fields only
@@ -112,30 +109,30 @@ type HLSManagerConfig struct {
 	ViewerHeartbeatTimeout time.Duration
 	FFmpegStopTimeout      time.Duration
 	PlaylistBaseDir        string
+	SegmentDuration        time.Duration
+	PlaylistSize           int
+	FFmpegPreset           string
 }
 
 // NewHLSManager creates a new HLS manager
-func NewHLSManager(l *logger.Logger, hlsDir string, streamProvider StreamProvider, streamManager *StreamManager) *HLSManager {
+func NewHLSManager(l *logger.Logger, cfg HLSManagerConfig, streamProvider StreamProvider, streamManager *StreamManager) *HLSManager {
 	// Ensure HLS directory exists
-	if err := os.MkdirAll(hlsDir, 0755); err != nil {
-		l.Error("Failed to create HLS directory", "dir", hlsDir, "err", err)
+	if err := os.MkdirAll(cfg.PlaylistBaseDir, 0755); err != nil {
+		l.Error("Failed to create HLS directory", "dir", cfg.PlaylistBaseDir, "err", err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	hm := &HLSManager{
-		sessions:        make(map[string]*HLSSession),
-		failedInputs:    make(map[string]time.Time),
-		Logger:          l,
-		hlsDir:          hlsDir,
-		streamProvider:  streamProvider,
-		streamManager:   streamManager,
-		failedCooldown:  5 * time.Minute,  // Default cooldown
-		sessionTimeout:  30 * time.Second, // Default session timeout
-		cleanupInterval: 10 * time.Second, // Default cleanup interval
-		cleanupTicker:   time.NewTicker(10 * time.Second),
-		cleanupDone:     make(chan struct{}),
-		ctx:             ctx,
-		cancel:          cancel,
+		sessions:       make(map[string]*HLSSession),
+		failedInputs:   make(map[string]time.Time),
+		Logger:         l,
+		streamProvider: streamProvider,
+		streamManager:  streamManager,
+		cleanupTicker:  time.NewTicker(cfg.CleanupInterval),
+		cleanupDone:    make(chan struct{}),
+		ctx:            ctx,
+		cancel:         cancel,
+		config:         cfg,
 	}
 
 	// Start cleanup loop
@@ -255,7 +252,7 @@ func (m *HLSManager) GetOrStartSession(inputName, localURL string) (*HLSSession,
 // checkFailedCooldown checks if the input is in failed cooldown.
 func (m *HLSManager) checkFailedCooldown(inputName string) error {
 	if failTime, failed := m.failedInputs[inputName]; failed {
-		if time.Since(failTime) < m.failedCooldown {
+		if time.Since(failTime) < m.config.FailedCooldown {
 			m.Logger.Warn("Input in failed cooldown, refusing to start session", "inputName", inputName)
 			return errors.New("input unavailable (cooldown)")
 		}
@@ -300,7 +297,7 @@ func (hm *HLSManager) stopInputRelayIfNeeded(sess *HLSSession) {
 
 // createHLSTempDir creates a temporary directory for HLS segments.
 func (m *HLSManager) createHLSTempDir(inputName string) (string, error) {
-	dir, err := os.MkdirTemp(m.hlsDir, "hls_"+inputName+"_")
+	dir, err := os.MkdirTemp(m.config.PlaylistBaseDir, "hls_"+inputName+"_")
 	if err != nil {
 		m.Logger.Error("Failed to create temp dir", "inputName", inputName, "err", err)
 		return "", fmt.Errorf("failed to create temp dir: %w", err)
@@ -320,14 +317,14 @@ func (m *HLSManager) createAndStartFFmpegProcess(localURL, dir string) (FFmpegPr
 		"-fflags", "nobuffer",
 		"-i", localURL,
 		"-c:v", "libx264",
-		"-preset", "ultrafast",
+		"-preset", m.config.FFmpegPreset,
 		"-tune", "zerolatency",
 		"-c:a", "aac",
 		"-ac", "2",
 		"-ar", "44100",
 		"-f", "hls",
-		"-hls_time", "2",
-		"-hls_list_size", "6",
+		"-hls_time", strconv.FormatFloat(m.config.SegmentDuration.Seconds(), 'f', -1, 64),
+		"-hls_list_size", strconv.Itoa(m.config.PlaylistSize),
 		"-hls_flags", "delete_segments+append_list",
 		"-hls_segment_filename", segmentPattern,
 		"-y",
@@ -707,7 +704,7 @@ func (m *HLSManager) DeleteSession(inputName string) {
 
 // Enhanced cleanup with viewer heartbeat checking
 func (m *HLSManager) cleanupLoop(ctx context.Context) {
-	ticker := time.NewTicker(m.cleanupInterval)
+	ticker := time.NewTicker(m.config.CleanupInterval)
 	defer ticker.Stop()
 	for {
 		select {
@@ -753,9 +750,9 @@ func (m *HLSManager) cleanupLoop(ctx context.Context) {
 				// If viewers remain, session is cleaned up after 3x sessionTimeout (zombie session protection).
 				shouldCleanup := false
 				if numViewers == 0 {
-					shouldCleanup = now.Sub(lastAccess) > m.sessionTimeout
+					shouldCleanup = now.Sub(lastAccess) > m.config.SessionTimeout
 				} else {
-					shouldCleanup = now.Sub(lastAccess) > (m.sessionTimeout * 3)
+					shouldCleanup = now.Sub(lastAccess) > (m.config.SessionTimeout * 3)
 				}
 				if shouldCleanup {
 					sessionsToDelete = append(sessionsToDelete, name)

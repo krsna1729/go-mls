@@ -50,7 +50,21 @@ func NewContext(cfg *config.Config, log *logger.Logger) (*Context, error) {
 
 	// Initialize HLS manager
 	// Pass Logger, hlsDir, and InputRelays (from StreamManager) as StreamProvider
-	ctx.HLS = stream.NewHLSManager(log, cfg.HLS.PlaylistBaseDir, ctx.Stream.InputRelays, ctx.Stream)
+	hlsConfig := stream.HLSManagerConfig{
+		CleanupInterval:        time.Duration(cfg.HLS.CleanupInterval),
+		SessionTimeout:         time.Duration(cfg.HLS.SessionTimeout),
+		FailedCooldown:         time.Duration(cfg.HLS.FailedCooldown),
+		PlaylistReadyTimeout:   time.Duration(cfg.HLS.PlaylistReadyTimeout),
+		PlaylistPollInterval:   time.Duration(cfg.HLS.PlaylistPollInterval),
+		PlaylistPollAttempts:   cfg.HLS.PlaylistPollAttempts,
+		ViewerHeartbeatTimeout: time.Duration(cfg.HLS.ViewerHeartbeatTimeout),
+		FFmpegStopTimeout:      time.Duration(cfg.HLS.FFmpegStopTimeout),
+		PlaylistBaseDir:        cfg.HLS.PlaylistBaseDir,
+		SegmentDuration:        time.Duration(cfg.HLS.SegmentDuration),
+		PlaylistSize:           cfg.HLS.PlaylistSize,
+		FFmpegPreset:           cfg.HLS.FFmpegPreset,
+	}
+	ctx.HLS = stream.NewHLSManager(log, hlsConfig, ctx.Stream.InputRelays, ctx.Stream)
 
 	// Wire up cross-references in StreamManager
 	ctx.Stream.SetHLSManager(ctx.HLS)

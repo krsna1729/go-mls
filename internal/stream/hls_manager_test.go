@@ -31,7 +31,7 @@ func TestServeHLS_PlaylistAndSegment(t *testing.T) {
 		t.Fatalf("failed to write segment: %v", err)
 	}
 
-	mgr := NewHLSManager(newTestLogger(), os.TempDir(), &mockStreamProvider{}, nil)
+	mgr := NewHLSManager(newTestLogger(), minimalHLSManagerConfig(), &mockStreamProvider{}, nil)
 	inputName := "testinput"
 	sess := &HLSSession{
 		InputName: inputName,
@@ -80,7 +80,7 @@ func TestServeHLS_PlaylistAndSegment(t *testing.T) {
 func TestServeHLS_NotFoundRateLimit(t *testing.T) {
 	t.Parallel()
 	logr := logger.NewLoggerWithConfig("debug", "")
-	mgr := NewHLSManager(logr, os.TempDir(), nil, nil)
+	mgr := NewHLSManager(logr, minimalHLSManagerConfig(), nil, nil)
 	inputName := "missinginput"
 	file := "index.m3u8"
 
@@ -103,7 +103,7 @@ func TestServeHLS_NotFoundRateLimit(t *testing.T) {
 func TestHLSManager_ConcurrentAPI(t *testing.T) {
 	t.Parallel()
 	logr := logger.NewLogger()
-	mgr := NewHLSManager(logr, os.TempDir(), &mockStreamProvider{}, nil)
+	mgr := NewHLSManager(logr, minimalHLSManagerConfig(), &mockStreamProvider{}, nil)
 	// mgr.streamProvider = NewRelayManager(logr, dir, "")
 
 	num := 10
@@ -195,6 +195,9 @@ func minimalHLSManagerConfig() HLSManagerConfig {
 		ViewerHeartbeatTimeout: 10 * time.Second,
 		FFmpegStopTimeout:      2 * time.Second,
 		PlaylistBaseDir:        os.TempDir(),
+		SegmentDuration:        2 * time.Second,
+		PlaylistSize:           6,
+		FFmpegPreset:           "ultrafast",
 	}
 }
 
@@ -203,7 +206,7 @@ func newTestLogger() *logger.Logger {
 }
 
 func TestNewHLSManager_CreatesManager(t *testing.T) {
-	h := NewHLSManager(newTestLogger(), os.TempDir(), &mockStreamProvider{}, nil)
+	h := NewHLSManager(newTestLogger(), minimalHLSManagerConfig(), &mockStreamProvider{}, nil)
 	if h == nil {
 		t.Fatal("expected non-nil HLSManager")
 	}
@@ -213,7 +216,7 @@ func TestNewHLSManager_CreatesManager(t *testing.T) {
 }
 
 func TestHLSManager_GetOrStartSession_Basic(t *testing.T) {
-	h := NewHLSManager(newTestLogger(), os.TempDir(), &mockStreamProvider{}, nil)
+	h := NewHLSManager(newTestLogger(), minimalHLSManagerConfig(), &mockStreamProvider{}, nil)
 	inputName := "testinput"
 	localURL := "rtsp://localhost/relay/testinput"
 	sess, err := h.GetOrStartSession(inputName, localURL)
@@ -229,7 +232,7 @@ func TestHLSManager_GetOrStartSession_Basic(t *testing.T) {
 }
 
 func TestHLSManager_AddViewer_Update_Remove(t *testing.T) {
-	h := NewHLSManager(newTestLogger(), os.TempDir(), &mockStreamProvider{}, nil)
+	h := NewHLSManager(newTestLogger(), minimalHLSManagerConfig(), &mockStreamProvider{}, nil)
 	inputName := "testinput"
 	_, _ = h.GetOrStartSession(inputName, "rtsp://localhost/relay/testinput")
 
@@ -247,7 +250,7 @@ func TestHLSManager_AddViewer_Update_Remove(t *testing.T) {
 }
 
 func TestHLSManager_GetOrStartSession_FailedCooldown(t *testing.T) {
-	h := NewHLSManager(newTestLogger(), os.TempDir(), &mockStreamProvider{}, nil)
+	h := NewHLSManager(newTestLogger(), minimalHLSManagerConfig(), &mockStreamProvider{}, nil)
 	inputName := "testinput"
 	h.failedInputs[inputName] = time.Now()
 	_, err := h.GetOrStartSession(inputName, "rtsp://localhost/relay/testinput")
@@ -257,7 +260,7 @@ func TestHLSManager_GetOrStartSession_FailedCooldown(t *testing.T) {
 }
 
 func TestHLSManager_GetOrStartSession_InvalidInputName(t *testing.T) {
-	h := NewHLSManager(newTestLogger(), os.TempDir(), &mockStreamProvider{}, nil)
+	h := NewHLSManager(newTestLogger(), minimalHLSManagerConfig(), &mockStreamProvider{}, nil)
 	_, err := h.GetOrStartSession("../badinput", "rtsp://localhost/relay/badinput")
 	if err == nil || !strings.Contains(err.Error(), "invalid input name") {
 		t.Errorf("expected invalid input name error, got %v", err)
@@ -307,9 +310,9 @@ func (p *shutdownMockProc) OutputChannel() <-chan string   { return nil }
 
 func TestCheckFailedCooldownDeletesExpired(t *testing.T) {
 	mgr := &HLSManager{
-		failedInputs:   map[string]time.Time{"foo": time.Now().Add(-2 * time.Second)},
-		failedCooldown: 1 * time.Second,
-		Logger:         newTestLogger(),
+		failedInputs: map[string]time.Time{"foo": time.Now().Add(-2 * time.Second)},
+		config:       HLSManagerConfig{FailedCooldown: 1 * time.Second},
+		Logger:       newTestLogger(),
 	}
 	err := mgr.checkFailedCooldown("foo")
 	if err != nil {
@@ -322,7 +325,7 @@ func TestCheckFailedCooldownDeletesExpired(t *testing.T) {
 
 // --- Test for serveHLSCheckViewer coverage ---
 func TestServeHLSCheckViewer_AllBranches(t *testing.T) {
-	mgr := NewHLSManager(newTestLogger(), os.TempDir(), &mockStreamProvider{}, nil)
+	mgr := NewHLSManager(newTestLogger(), minimalHLSManagerConfig(), &mockStreamProvider{}, nil)
 	inputName := "testinput"
 
 	// 1. Invalid input name (should return 404 for index.m3u8)
@@ -394,7 +397,7 @@ func TestServeHLSCheckViewer_AllBranches(t *testing.T) {
 }
 
 func TestServeHLSCheckViewer_AllBranches_Coverage(t *testing.T) {
-	mgr := NewHLSManager(newTestLogger(), os.TempDir(), &mockStreamProvider{}, nil)
+	mgr := NewHLSManager(newTestLogger(), minimalHLSManagerConfig(), &mockStreamProvider{}, nil)
 	inputName := "testinput"
 	// No session: should return 410 if viewerID is present
 	w := httptest.NewRecorder()
@@ -444,6 +447,12 @@ func TestServeHLSCheckViewer_AllBranches_Coverage(t *testing.T) {
 // ensureSessionReady ensures the session for inputName exists and is marked Ready, and sets the session's ViewerManager.
 func ensureSessionReady(mgr *HLSManager, inputName string, vm *MapViewerManager) {
 	delete(mgr.sessions, inputName)
+	// Use minimal config for test session
+	testConfig := minimalHLSManagerConfig()
+	testConfig.PlaylistBaseDir = mgr.config.PlaylistBaseDir // Preserve the temp dir from the manager under test
+
+	// Create a temporary manager just to get the session logic, or manually construct session
+	// Since GetOrStartSession is a method on HLSManager, we just call it on the existing mgr
 	sess, _ := mgr.GetOrStartSession(inputName, "rtsp://localhost/relay/"+inputName)
 	sess.Ready = true
 	sess.ViewerManager = vm

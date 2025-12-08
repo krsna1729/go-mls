@@ -86,6 +86,9 @@ type HLSConfig struct {
 	ViewerHeartbeatTimeout Duration `json:"viewer_heartbeat_timeout"`
 	FFmpegStopTimeout      Duration `json:"ffmpeg_stop_timeout"`
 	PlaylistBaseDir        string   `json:"playlist_base_dir"`
+	SegmentDuration        Duration `json:"segment_duration"`
+	PlaylistSize           int      `json:"playlist_size"`
+	FFmpegPreset           string   `json:"ffmpeg_preset"`
 }
 
 // https://gist.github.com/ulexxander/a678baa2ae3454f9516a1cd7450ed6be
@@ -145,6 +148,9 @@ func DefaultConfig() *Config {
 			ViewerHeartbeatTimeout: Duration(30 * time.Second),
 			FFmpegStopTimeout:      Duration(2 * time.Second),
 			PlaylistBaseDir:        "/tmp",
+			SegmentDuration:        Duration(2 * time.Second),
+			PlaylistSize:           6,
+			FFmpegPreset:           "ultrafast",
 		},
 		FFmpeg: FFmpegConfig{
 			Path:     "ffmpeg",

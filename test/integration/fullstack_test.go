@@ -80,7 +80,21 @@ func setupFullStackTestEnv(t *testing.T) *fullStackTestEnv {
 	recordingMgr := stream.NewRecordingManager(log, tempDir, streamMgr.InputRelays, streamMgr)
 	t.Cleanup(func() { recordingMgr.Shutdown() })
 
-	hlsMgr := stream.NewHLSManager(log, "/tmp", streamMgr.InputRelays, streamMgr)
+	hlsConfig := stream.HLSManagerConfig{
+		CleanupInterval:        10 * time.Second,
+		SessionTimeout:         30 * time.Second,
+		FailedCooldown:         5 * time.Second,
+		PlaylistReadyTimeout:   2 * time.Second,
+		PlaylistPollInterval:   100 * time.Millisecond,
+		PlaylistPollAttempts:   3,
+		ViewerHeartbeatTimeout: 10 * time.Second,
+		FFmpegStopTimeout:      2 * time.Second,
+		PlaylistBaseDir:        "/tmp",
+		SegmentDuration:        2 * time.Second,
+		PlaylistSize:           6,
+		FFmpegPreset:           "ultrafast",
+	}
+	hlsMgr := stream.NewHLSManager(log, hlsConfig, streamMgr.InputRelays, streamMgr)
 	t.Cleanup(func() { hlsMgr.Shutdown() })
 
 	streamMgr.SetHLSManager(hlsMgr)
