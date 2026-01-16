@@ -340,7 +340,7 @@ document.addEventListener('DOMContentLoaded', function () {
             btn.onclick = function () {
                 const filename = btn.getAttribute('data-filename');
                 if (filename) {
-                    window.location = '/api/recording/download?filename=' + filename;
+                    window.location = '/api/v1/recording/download?filename=' + filename;
                 }
             };
         });
@@ -397,7 +397,7 @@ document.addEventListener('DOMContentLoaded', function () {
             if (btn.disabled) return;
             btn.onclick = function () {
                 const filename = btn.getAttribute('data-filename');
-                window.location = '/api/recording/download?filename=' + filename;
+                window.location = '/api/v1/recording/download?filename=' + filename;
             };
         });
         document.querySelectorAll('.deleteRecordingBtn').forEach(btn => {
@@ -425,7 +425,7 @@ document.addEventListener('DOMContentLoaded', function () {
     // --- Setup Server-Sent Events (SSE) ---
     function setupRecordingsSSE() {
         if (!!window.EventSource) {
-            const es = new EventSource('/api/recording/sse');
+            const es = new EventSource('/api/v1/recording/sse');
             es.onmessage = function (event) {
                 if (event.data === 'update') {
                     fetchAllRecordings();

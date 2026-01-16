@@ -1,0 +1,89 @@
+# GolangCI-Lint configuration for go-mls
+# See: https://golangci-lint.run/usage/configuration/
+
+run:
+  timeout: 5m
+  go: '1.24'
+  
+linters:
+  enable:
+    # Default linters
+    - errcheck
+    - gosimple
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    
+    # Additional recommended linters
+    - errorlint       # Check error wrapping
+    - gofumpt         # Stricter gofmt
+    - gocritic        # Comprehensive linter
+    - gosec           # Security checks
+    - misspell        # Spelling mistakes
+    - prealloc        # Suggest preallocations
+    - unconvert       # Remove unnecessary conversions
+    - unparam         # Unused function parameters
+    - whitespace      # Trailing whitespace
+
+  disable:
+    # These are too noisy for streaming code
+    - gochecknoglobals  # We have package-level vars
+    - funlen            # Some handlers are long
+    - gocognit          # FFmpeg command building is complex
+    - cyclop            # Same as above
+    - maintidx          # Same as above
+
+linters-settings:
+  errorlint:
+    # Check for wrapped errors using errors.Is/As
+    errorf: true
+    errorf-multi: true
+    asserts: true
+    comparison: true
+
+  gocritic:
+    enabled-tags:
+      - diagnostic
+      - style
+      - performance
+    disabled-checks:
+      - ifElseChain  # Sometimes clearer than switch
+      - commentedOutCode
+
+  gosec:
+    excludes:
+      - G104  # Unhandled errors on deferred Close()
+      - G307  # Same as above
+
+  govet:
+    enable-all: true
+    disable:
+      - fieldalignment  # Not worth the complexity
+
+  gofumpt:
+    extra-rules: true
+
+issues:
+  # Maximum issues per linter
+  max-issues-per-linter: 50
+  
+  # Maximum same issues per file
+  max-same-issues: 10
+
+  exclude-dirs:
+    - vendor
+    - testdata
+    - web
+
+  exclude-rules:
+    # Exclude some linters from running on tests
+    - path: _test\.go
+      linters:
+        - gosec
+        - unparam
+        - gocritic
+
+    # Allow string(int) conversions in tests
+    - path: _test\.go
+      text: "use strconv.Itoa instead of string"

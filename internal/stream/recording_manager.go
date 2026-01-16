@@ -146,12 +146,15 @@ func (rm *RecordingManager) startRecordingProcess(name, uniqueKey string) (strin
 		rm.mu.Unlock()
 		return "", nil, nil, err
 	}
+	Metrics.RelayStartTotal.WithLabelValues("recording").Inc()
+	Metrics.FFmpegProcessesActive.Inc()
 	// Ownership of procCancel is transferred to the lifecycle goroutine
 	return filePath, proc, procCancel, nil
 }
 
 // handleRecordingLifecycle runs the recording lifecycle goroutine.
 func (rm *RecordingManager) handleRecordingLifecycle(name, uniqueKey, sourceURL string, proc FFmpegProcess, procCancel context.CancelFunc, done chan struct{}) {
+	startTime := time.Now()
 	defer func() {
 		procCancel() // Ensure process context is canceled when lifecycle ends
 	}()
@@ -166,64 +169,114 @@ func (rm *RecordingManager) handleRecordingLifecycle(name, uniqueKey, sourceURL 
 		}
 	}()
 
+	// Metrics ticker for real-time updates
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	// Track last known file size for incremental metric updates
+	var lastFileSize int64
+
 	cmdDone := make(chan error, 1)
 	go func() { cmdDone <- proc.Wait() }()
-	select {
-	case err := <-cmdDone:
-		var filePath string
-		rm.mu.Lock()
-		if r, ok := rm.recordings[uniqueKey]; ok {
-			r.Active = false
-			r.StoppedAt = time.Now()
-			filePath = r.FilePath
-			if info, statErr := os.Stat(r.FilePath); statErr == nil {
-				r.FileSize = info.Size()
-				rm.Logger.Debug("Updated file size for finished recording", "name", name, "fileSize", r.FileSize)
-			} else {
-				rm.Logger.Warn("Could not get file size for finished recording", "name", name, "err", statErr)
+
+	for {
+		select {
+		case <-ticker.C:
+			rm.mu.RLock()
+			rec, ok := rm.recordings[uniqueKey]
+			rm.mu.RUnlock()
+			if ok && rec.Active && rec.FilePath != "" {
+				if info, err := os.Stat(rec.FilePath); err == nil {
+					currentSize := info.Size()
+					delta := currentSize - lastFileSize
+					if delta > 0 {
+						Metrics.RecordingBytesTotal.Add(float64(delta))
+						lastFileSize = currentSize
+					}
+				}
 			}
-		} else {
-			filePath = "(unknown)"
-		}
-		rm.mu.Unlock()
-		rm.sseBroker.NotifyAll("update")
-		if err != nil {
-			ffmpegOutput := proc.GetOutput()
-			rm.Logger.Debug("[DEBUG] handleRecordingLifecycle: ffmpegOutput length = %d", len(ffmpegOutput))
-			rm.Logger.Error("ffmpeg exited with error", "name", name, "filePath", filePath, "err", err, "output", ffmpegOutput)
-		} else {
-			rm.Logger.Info("Recording finished", "name", name, "filePath", filePath)
-		}
-	case <-done:
-		rm.Logger.Debug("StartRecording: recording goroutine done channel closed", "uniqueKey", uniqueKey)
-		if proc.GetPID() != 0 {
-			pid := proc.GetPID()
-			rm.Logger.Info("RecordingManager: Gracefully terminating ffmpeg process", "pid", pid, "name", name)
-			err := proc.Stop(context.Background(), 2*time.Second)
+
+		case err := <-cmdDone:
+			var filePath string
+			rm.mu.Lock()
+			if r, ok := rm.recordings[uniqueKey]; ok {
+				r.Active = false
+				r.StoppedAt = time.Now()
+				filePath = r.FilePath
+				if info, statErr := os.Stat(r.FilePath); statErr == nil {
+					r.FileSize = info.Size()
+					// Add final delta
+					delta := r.FileSize - lastFileSize
+					if delta > 0 {
+						Metrics.RecordingBytesTotal.Add(float64(delta))
+					}
+					rm.Logger.Debug("Updated file size for finished recording", "name", name, "fileSize", r.FileSize)
+				} else {
+					rm.Logger.Warn("Could not get file size for finished recording", "name", name, "err", statErr)
+				}
+			} else {
+				filePath = "(unknown)"
+			}
+			rm.mu.Unlock()
+			rm.sseBroker.NotifyAll("update")
 			if err != nil {
-				rm.Logger.Warn("Failed to stop ffmpeg process", "pid", pid, "err", err)
-			}
-		}
-		<-cmdDone
-		rm.mu.Lock()
-		if r, ok := rm.recordings[uniqueKey]; ok {
-			r.Active = false
-			r.StoppedAt = time.Now()
-			if info, statErr := os.Stat(r.FilePath); statErr == nil {
-				r.FileSize = info.Size()
-				rm.Logger.Debug("Updated file size for stopped recording", "name", name, "fileSize", r.FileSize)
+				ffmpegOutput := proc.GetOutput()
+				rm.Logger.Debug("[DEBUG] handleRecordingLifecycle: ffmpegOutput length = %d", len(ffmpegOutput))
+				rm.Logger.Error("ffmpeg exited with error", "name", name, "filePath", filePath, "err", err, "output", ffmpegOutput)
+				Metrics.FFmpegProcessErrorTotal.WithLabelValues("recording", "process_exit").Inc()
+				Metrics.RelayStopTotal.WithLabelValues("recording", "error").Inc()
 			} else {
-				rm.Logger.Warn("Could not get file size for stopped recording", "name", name, "err", statErr)
+				rm.Logger.Info("Recording finished", "name", name, "filePath", filePath)
+				Metrics.RelayStopTotal.WithLabelValues("recording", "finished").Inc()
 			}
+			goto CleanUp
+
+		case <-done:
+			rm.Logger.Debug("StartRecording: recording goroutine done channel closed", "uniqueKey", uniqueKey)
+			if proc.GetPID() != 0 {
+				pid := proc.GetPID()
+				rm.Logger.Info("RecordingManager: Gracefully terminating ffmpeg process", "pid", pid, "name", name)
+				err := proc.Stop(context.Background(), 2*time.Second)
+				if err != nil {
+					rm.Logger.Warn("Failed to stop ffmpeg process", "pid", pid, "err", err)
+				}
+			}
+			<-cmdDone
+			rm.mu.Lock()
+			if r, ok := rm.recordings[uniqueKey]; ok {
+				r.Active = false
+				r.StoppedAt = time.Now()
+				if info, statErr := os.Stat(r.FilePath); statErr == nil {
+					r.FileSize = info.Size()
+					// Add final delta
+					delta := r.FileSize - lastFileSize
+					if delta > 0 {
+						Metrics.RecordingBytesTotal.Add(float64(delta))
+					}
+					rm.Logger.Debug("Updated file size for stopped recording", "name", name, "fileSize", r.FileSize)
+				} else {
+					rm.Logger.Warn("Could not get file size for stopped recording", "name", name, "err", statErr)
+				}
+			}
+			rm.mu.Unlock()
+			rm.sseBroker.NotifyAll("update")
+			Metrics.RelayStopTotal.WithLabelValues("recording", "stop_request").Inc()
+			goto CleanUp
 		}
-		rm.mu.Unlock()
-		rm.sseBroker.NotifyAll("update")
 	}
+
+CleanUp:
 	// Cleanup
 	rm.mu.Lock()
 	delete(rm.processes, uniqueKey)
 	delete(rm.dones, uniqueKey)
+	// delete(rm.dones, uniqueKey) // Removed duplicate delete
 	rm.mu.Unlock()
+
+	Metrics.ActiveRecordings.Dec()
+	// Metrics.RecordingStopTotal.Inc() // Replaced by RelayStopTotal above
+	Metrics.FFmpegProcessesActive.Dec()
+	Metrics.FFmpegProcessDuration.WithLabelValues("recording").Observe(time.Since(startTime).Seconds())
 }
 
 func (rm *RecordingManager) StartRecording(ctx context.Context, name, sourceURL string) error {
@@ -244,6 +297,7 @@ func (rm *RecordingManager) StartRecording(ctx context.Context, name, sourceURL 
 	// Start the lifecycle manager
 	done := make(chan struct{})
 	rm.dones[uniqueKey] = done
+	Metrics.ActiveRecordings.Inc()
 	rm.mu.Unlock()
 	go rm.handleRecordingLifecycle(name, uniqueKey, sourceURL, proc, procCancel, done)
 

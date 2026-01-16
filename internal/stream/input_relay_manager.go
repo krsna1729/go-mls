@@ -206,6 +206,7 @@ func (irm *InputRelayManager) stopInputRelayAtZero(inputURL string) {
 		irm.Logger.Debug("Cleaning up RTSP stream for stopped input relay", "relayPath", relayPath)
 		irm.rtspServer.RemoveStream(relayPath)
 	}
+	Metrics.RelayStopTotal.WithLabelValues("input", "refcount_zero").Inc()
 }
 
 // SetRTSPServer sets the RTSP server instance
@@ -303,6 +304,7 @@ func (irm *InputRelayManager) StartInputRelay(inputName, inputURL, localURL stri
 			RefCount:  0,
 		}
 		irm.Relays[inputURL] = relay
+		Metrics.ActiveInputRelays.Inc()
 	}
 	relay.mu.Lock()
 	// If a relay already exists for this inputURL but with a different input name,
@@ -325,6 +327,7 @@ func (irm *InputRelayManager) StartInputRelay(inputName, inputURL, localURL stri
 		relay.mu.Unlock()
 		irm.mu.Unlock()
 		irm.Logger.Debug("Reusing existing relay", "inputURL", inputURL, "refcount", currentRefCount)
+		Metrics.RelayStartTotal.WithLabelValues("input_reuse").Inc()
 		return local, nil
 	}
 	relay.Status = InputStarting
@@ -354,6 +357,8 @@ func (irm *InputRelayManager) StartInputRelay(inputName, inputURL, localURL stri
 	relay.Status = InputRunning
 	relay.LastError = "" // Clear any previous error on successful start
 	irm.Logger.Info("Started ffmpeg process", "PID", proc.GetPID(), "inputURL", inputURL, "localURL", localURL, "refcount", currentRefCount)
+	Metrics.RelayStartTotal.WithLabelValues("input_new").Inc()
+	Metrics.FFmpegProcessesActive.Inc()
 	// Start process wait/monitor goroutine
 	go irm.RunInputRelay(relay)
 	local := relay.LocalURL
@@ -391,6 +396,7 @@ func (irm *InputRelayManager) StopInputRelay(inputURL string) bool {
 		proc = relay.Proc
 		relay.Proc = nil
 		relay.Status = InputStopped
+		Metrics.ActiveInputRelays.Dec()
 	}
 	inputName := relay.InputName
 	relay.mu.Unlock()
@@ -410,6 +416,9 @@ func (irm *InputRelayManager) StopInputRelay(inputURL string) bool {
 	}
 	// Do NOT delete relay from map here. Deletion is only performed by explicit user action (DeleteInput).
 	// This ensures relay state/history is preserved and avoids accidental resource loss.
+	if shouldStop {
+		Metrics.RelayStopTotal.WithLabelValues("input", "refcount_zero").Inc()
+	}
 	return shouldStop
 }
 
@@ -431,6 +440,7 @@ func (irm *InputRelayManager) ForceStopInputRelay(inputURL string) bool {
 	relay.RefCount = 0
 	relay.Proc = nil
 	relay.Status = InputStopped
+	Metrics.ActiveInputRelays.Dec()
 	inputName := relay.InputName
 	relay.mu.Unlock()
 	irm.mu.Unlock()
@@ -447,12 +457,14 @@ func (irm *InputRelayManager) ForceStopInputRelay(inputURL string) bool {
 		irm.Logger.Debug("Cleaning up RTSP stream for force-stopped input relay", "relayPath", relayPath)
 		irm.rtspServer.RemoveStream(relayPath)
 	}
+	Metrics.RelayStopTotal.WithLabelValues("input", "force").Inc()
 	return true
 }
 
 // RunInputRelay runs and monitors the input relay process
 func (irm *InputRelayManager) RunInputRelay(relay *InputRelay) {
 	irm.Logger.Info("Running input relay", "inputURL", relay.InputURL, "localURL", relay.LocalURL)
+	startTime := time.Now()
 	var proc FFmpegProcess
 	relay.mu.Lock()
 	proc = relay.Proc
@@ -483,6 +495,9 @@ func (irm *InputRelayManager) RunInputRelay(relay *InputRelay) {
 	relay.Proc = nil
 	relay.mu.Unlock()
 
+	Metrics.FFmpegProcessesActive.Dec()
+	Metrics.FFmpegProcessDuration.WithLabelValues("input").Observe(time.Since(startTime).Seconds())
+
 	if status == InputStopped {
 		if err != nil {
 			irm.Logger.Info("Input relay stopped", "inputURL", inputURL, "signal", err)
@@ -494,6 +509,8 @@ func (irm *InputRelayManager) RunInputRelay(relay *InputRelay) {
 	if err != nil {
 		irm.Logger.Error("Input relay process exited with error", "inputURL", inputURL, "PID", proc.GetPID(), "err", err)
 		irm.Logger.Error("[ffmpeg output] for %s:\n%s", inputURL, output)
+		Metrics.RelayErrorsTotal.WithLabelValues("input", "process_exit").Inc()
+		Metrics.FFmpegProcessErrorTotal.WithLabelValues("input", "error").Inc()
 	} else {
 		irm.Logger.Info("Input relay process completed successfully", "inputURL", inputURL, "PID", proc.GetPID())
 	}
@@ -567,6 +584,7 @@ func (irm *InputRelayManager) DeleteInput(inputURL string) error {
 		irm.rtspServer.RemoveStream(relayPath)
 	}
 	irm.Logger.Info("Input relay deleted successfully", "inputURL", inputURL)
+	Metrics.RelayStopTotal.WithLabelValues("input", "delete").Inc()
 	return nil
 }
 

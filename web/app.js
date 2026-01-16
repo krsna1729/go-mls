@@ -299,7 +299,7 @@ document.addEventListener('DOMContentLoaded', function () {
             bitrate: document.getElementById('bitrate').value.trim(),
             rotation: document.getElementById('rotation').value.trim()
         };
-        fetch('/api/relay/start', {
+        fetch('/api/v1/relay/start', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -331,7 +331,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
     // --- Import/Export button handlers ---
     document.getElementById('exportBtn').onclick = function () {
-        window.location = '/api/relay/export';
+        window.location = '/api/v1/relay/export';
     };
 
     document.getElementById('importBtn').onclick = function () {
@@ -874,7 +874,7 @@ document.addEventListener('DOMContentLoaded', function () {
             const inputName = video.dataset.inputName;
             if (viewerId && inputName) {
                 // Use sendBeacon for reliable cleanup on page unload
-                navigator.sendBeacon('/api/relay/hls/stop-viewer',
+                navigator.sendBeacon('/api/v1/relay/hls/stop-viewer',
                     JSON.stringify({
                         input_name: inputName,
                         viewer_id: viewerId

@@ -133,6 +133,7 @@ func (orm *OutputRelayManager) StartOutputRelay(config OutputRelayConfig) error 
 		FFmpegArgs:     config.FFmpegArgs,
 	}
 	orm.Relays[config.OutputURL] = relay
+	Metrics.ActiveOutputRelays.Inc()
 	orm.mu.Unlock()
 	// Start ffmpeg process
 	err = proc.Start(ctx)
@@ -149,6 +150,8 @@ func (orm *OutputRelayManager) StartOutputRelay(config OutputRelayConfig) error 
 		return err
 	}
 	orm.Logger.Info("Started ffmpeg process", "inputURL", config.InputURL, "localURL", config.LocalURL, "outputURL", config.OutputURL)
+	Metrics.RelayStartTotal.WithLabelValues("output").Inc()
+	Metrics.FFmpegProcessesActive.Inc()
 	go orm.RunOutputRelay(relay)
 	return nil
 }
@@ -169,6 +172,7 @@ func (orm *OutputRelayManager) cleanupOutputRelay(relay *OutputRelay, reason str
 	relay.cleanedUp = true
 	relay.Proc = nil
 	relay.Status = OutputStopped
+	Metrics.ActiveOutputRelays.Dec()
 	relay.mu.Unlock()
 
 	// Stop the process outside the lock
@@ -180,6 +184,7 @@ func (orm *OutputRelayManager) cleanupOutputRelay(relay *OutputRelay, reason str
 			stopErr = err
 		}
 	}
+	Metrics.RelayStopTotal.WithLabelValues("output", reason).Inc()
 
 	// Only call consumer cleanup if this is NOT a graceful shutdown and we have a consumer
 	relay.mu.Lock()
@@ -228,6 +233,7 @@ func (orm *OutputRelayManager) StopOutputRelay(outputURL string) error {
 // RunOutputRelay runs and monitors the output relay process
 func (orm *OutputRelayManager) RunOutputRelay(relay *OutputRelay) {
 	orm.Logger.Info("Running output relay", "localURL", relay.LocalURL, "outputURL", relay.OutputURL)
+	startTime := time.Now()
 	var proc FFmpegProcess
 	relay.mu.Lock()
 	proc = relay.Proc
@@ -252,13 +258,19 @@ func (orm *OutputRelayManager) RunOutputRelay(relay *OutputRelay) {
 			orm.Logger.Info("Output relay stopped (signal)", "outputURL", outputURL, "signal", err)
 		} else {
 			orm.Logger.Error("Output relay process exited with error", "outputURL", outputURL, "err", err)
+			Metrics.RelayErrorsTotal.WithLabelValues("output", "process_exit").Inc()
+			Metrics.FFmpegProcessErrorTotal.WithLabelValues("output", "error").Inc()
 		}
+		Metrics.FFmpegProcessesActive.Dec()
+		Metrics.FFmpegProcessDuration.WithLabelValues("output").Observe(time.Since(startTime).Seconds())
 		return
 	}
 	// No error: process exited cleanly
 	if !alreadyCleaned {
 		orm.cleanupOutputRelay(relay, "run-clean")
 	}
+	Metrics.FFmpegProcessesActive.Dec()
+	Metrics.FFmpegProcessDuration.WithLabelValues("output").Observe(time.Since(startTime).Seconds())
 	orm.Logger.Info("Output relay stopped cleanly", "outputURL", outputURL)
 }
 

@@ -106,6 +106,8 @@ services:
       resources:
         limits:
           memory: 128m
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   grafana:
     image: grafana/grafana:latest

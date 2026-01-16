@@ -60,11 +60,12 @@ func generateViewerID() string {
 
 type HLSSession struct {
 	// Immutable fields (set at creation, never change)
-	InputName  string
-	LocalURL   string
-	InputURL   string // The original input URL (e.g. file://... or rtsp://...)
-	Dir        string
-	IsConsumer bool // Whether this session is registered as an input relay consumer
+	InputName        string
+	LocalURL         string
+	InputURL         string // The original input URL (e.g. file://... or rtsp://...)
+	Dir              string
+	IsConsumer       bool      // Whether this session is registered as an input relay consumer
+	ProcessStartTime time.Time // When the FFmpeg process started
 
 	// --- Concurrency: mutable fields below are protected by Mu ---
 	ViewerIDs  map[string]time.Time // Track individual viewers with heartbeat
@@ -201,16 +202,20 @@ func (m *HLSManager) GetOrStartSession(inputName, localURL string) (*HLSSession,
 		}
 
 		sess := &HLSSession{
-			InputName:  inputName,
-			LocalURL:   actualLocalURL,
-			InputURL:   "", // Will be populated if possible
-			Dir:        dir,
-			IsConsumer: m.streamProvider != nil,
-			ViewerIDs:  make(map[string]time.Time),
-			LastAccess: time.Now(),
-			Proc:       proc,
-			Ready:      false,
+			InputName:        inputName,
+			LocalURL:         actualLocalURL,
+			InputURL:         "", // Will be populated if possible
+			Dir:              dir,
+			IsConsumer:       m.streamProvider != nil,
+			ProcessStartTime: time.Now(),
+			ViewerIDs:        make(map[string]time.Time),
+			LastAccess:       time.Now(),
+			Proc:             proc,
+			Ready:            false,
 		}
+		Metrics.ActiveHLSSessions.Inc()
+		Metrics.HLSSessionsTotal.Inc()
+		Metrics.FFmpegProcessesActive.Inc()
 
 		// Try to resolve InputURL from StreamProvider if it's an InputRelayManager
 		if irm, ok := m.streamProvider.(*InputRelayManager); ok {
@@ -456,6 +461,7 @@ func (m *HLSManager) AddViewer(inputName string) (string, error) {
 		return "", err
 	}
 	m.Logger.Info("AddViewer: added viewer", "viewerID", viewerID, "inputName", inputName)
+	Metrics.ActiveHLSViewers.Inc()
 	return viewerID, nil
 }
 
@@ -484,7 +490,11 @@ func (m *HLSManager) RemoveViewer(inputName, viewerID string) error {
 	if sess.ViewerManager == nil {
 		return errors.New("session ViewerManager not set")
 	}
-	return sess.ViewerManager.RemoveViewer(viewerID)
+	err := sess.ViewerManager.RemoveViewer(viewerID)
+	if err == nil {
+		Metrics.ActiveHLSViewers.Dec()
+	}
+	return err
 }
 
 // Shutdown gracefully stops the cleanup loop
@@ -698,6 +708,11 @@ func (m *HLSManager) DeleteSession(inputName string) {
 	// Remove session from map immediately so new viewers can't join
 	delete(m.sessions, inputName)
 	m.mu.Unlock()
+
+	Metrics.ActiveHLSSessions.Dec()
+	Metrics.FFmpegProcessesActive.Dec()
+	Metrics.FFmpegProcessDuration.WithLabelValues("hls").Observe(time.Since(sess.ProcessStartTime).Seconds())
+
 	os.RemoveAll(sess.Dir)
 	m.Logger.Info("Deleted HLS session and directory immediately", "inputName", inputName)
 }
@@ -736,6 +751,7 @@ func (m *HLSManager) cleanupLoop(ctx context.Context) {
 							m.Logger.Warn("Failed to remove stale viewer", "viewerID", viewerID, "inputName", name, "err", err)
 						} else {
 							m.Logger.Info("Removed stale viewer", "viewerID", viewerID, "inputName", name)
+							Metrics.ActiveHLSViewers.Dec()
 						}
 					}
 				}

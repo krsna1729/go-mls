@@ -28,32 +28,44 @@ func NewRouter(appCtx *app.Context) *Router {
 
 // RegisterRoutes registers all API routes with the given mux
 func (rt *Router) RegisterRoutes(mux *http.ServeMux) {
+	// Health and operational endpoints (no versioning needed)
+	mux.HandleFunc("/health", HealthHandler())
+	mux.HandleFunc("/ready", ReadinessHandler(rt.rtsp))
+	mux.HandleFunc("/version", VersionHandler())
+	mux.Handle("/metrics", stream.MetricsHandler())
+
+	// Helper to register both /api/v1/... and /api/... (backward compat)
+	registerAPI := func(path string, handler http.HandlerFunc) {
+		mux.Handle("/api/v1"+path, stream.MetricsMiddleware(handler))
+		mux.Handle("/api"+path, stream.MetricsMiddleware(handler)) // backward compatibility
+	}
+
 	// Relay routes (now Stream routes) - using canonical Api* handlers
-	mux.HandleFunc("/api/relay/start", stream.ApiStartOutputRelay(rt.stream))
-	mux.HandleFunc("/api/relay/stop", stream.ApiStopOutputRelay(rt.stream))
-	mux.HandleFunc("/api/relay/status", stream.ApiRelayStatus(rt.stream))
-	mux.HandleFunc("/api/relay/export", stream.ApiExportRelays(rt.stream))
-	mux.HandleFunc("/api/relay/import", stream.ApiImportRelays(rt.stream))
-	mux.HandleFunc("/api/relay/presets", stream.ApiRelayPresets())
-	mux.HandleFunc("/api/relay/delete-input", stream.ApiDeleteInput(rt.stream))
-	mux.HandleFunc("/api/relay/delete-output", stream.ApiDeleteOutput(rt.stream))
+	registerAPI("/relay/start", stream.ApiStartOutputRelay(rt.stream))
+	registerAPI("/relay/stop", stream.ApiStopOutputRelay(rt.stream))
+	registerAPI("/relay/status", stream.ApiRelayStatus(rt.stream))
+	registerAPI("/relay/export", stream.ApiExportRelays(rt.stream))
+	registerAPI("/relay/import", stream.ApiImportRelays(rt.stream))
+	registerAPI("/relay/presets", stream.ApiRelayPresets())
+	registerAPI("/relay/delete-input", stream.ApiDeleteInput(rt.stream))
+	registerAPI("/relay/delete-output", stream.ApiDeleteOutput(rt.stream))
 
 	// RTSP routes
-	mux.HandleFunc("/api/rtsp/status", stream.ApiRTSPStatus(rt.rtsp))
+	registerAPI("/rtsp/status", stream.ApiRTSPStatus(rt.rtsp))
 
 	// Recording routes
-	mux.HandleFunc("/api/recording/start", stream.ApiStartRecording(rt.recording))
-	mux.HandleFunc("/api/recording/stop", stream.ApiStopRecording(rt.recording))
-	mux.HandleFunc("/api/recording/list", stream.ApiListRecordings(rt.recording))
-	mux.HandleFunc("/api/recording/delete", stream.ApiDeleteRecording(rt.recording))
-	mux.HandleFunc("/api/recording/download", stream.ApiDownloadRecording(rt.recording))
-	mux.HandleFunc("/api/recording/sse", stream.ApiRecordingsSSE())
+	registerAPI("/recording/start", stream.ApiStartRecording(rt.recording))
+	registerAPI("/recording/stop", stream.ApiStopRecording(rt.recording))
+	registerAPI("/recording/list", stream.ApiListRecordings(rt.recording))
+	registerAPI("/recording/delete", stream.ApiDeleteRecording(rt.recording))
+	registerAPI("/recording/download", stream.ApiDownloadRecording(rt.recording))
+	registerAPI("/recording/sse", stream.ApiRecordingsSSE())
 
-	// HLS routes
+	// HLS routes (path prefix requires direct registration)
 	// Note: ApiWatchInputHLS and others still need StreamManager for input relay coordination
-	mux.HandleFunc("/api/relay/watch-input/hls/", stream.ApiWatchInputHLS(rt.hls, rt.stream))
-	mux.HandleFunc("/api/relay/hls/start-viewer", stream.ApiStartHLSViewer(rt.hls, rt.stream))
-	mux.HandleFunc("/api/relay/hls/stop-viewer", stream.ApiStopHLSViewer(rt.hls, rt.stream))
-	mux.HandleFunc("/api/relay/hls/heartbeat", stream.ApiHLSViewerHeartbeat(rt.hls))
-
+	mux.Handle("/api/v1/relay/watch-input/hls/", stream.MetricsMiddleware(stream.ApiWatchInputHLS(rt.hls, rt.stream)))
+	mux.Handle("/api/relay/watch-input/hls/", stream.MetricsMiddleware(stream.ApiWatchInputHLS(rt.hls, rt.stream)))
+	registerAPI("/relay/hls/start-viewer", stream.ApiStartHLSViewer(rt.hls, rt.stream))
+	registerAPI("/relay/hls/stop-viewer", stream.ApiStopHLSViewer(rt.hls, rt.stream))
+	registerAPI("/relay/hls/heartbeat", stream.ApiHLSViewerHeartbeat(rt.hls))
 }
