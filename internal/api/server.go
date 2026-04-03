@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"go-mls/internal/ingest"
 	"go-mls/internal/logger"
@@ -29,6 +30,7 @@ type Server struct {
 	ctx        context.Context
 
 	// Active workers tracking
+	mu          sync.RWMutex
 	restreamers map[string]*worker.Restreamer // keyed by stream_path/output_id
 	recorders   map[string]*worker.Recorder   // keyed by stream_path
 }
@@ -67,6 +69,10 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/stats", s.handleStats)
 	mux.HandleFunc("/system/export", s.handleExport)
 	mux.HandleFunc("/system/import", s.handleImport)
+
+	// HLS endpoints
+	mux.HandleFunc("/hls/start", s.handleHLSStart)
+	mux.HandleFunc("/hls/stop", s.handleHLSStop)
 
 	// HLS file serving
 	mux.Handle("/hls/", http.StripPrefix("/hls/", http.FileServer(http.Dir(filepath.Join(os.TempDir(), "hls")))))
@@ -126,6 +132,7 @@ func (s *Server) deleteInput(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.mu.Lock()
 	// Stop all outputs for this input first
 	for key, rs := range s.restreamers {
 		if strings.HasPrefix(key, streamPath+"/") {
@@ -140,6 +147,7 @@ func (s *Server) deleteInput(w http.ResponseWriter, r *http.Request) {
 		delete(s.recorders, streamPath)
 		s.store.RemoveRecording(streamPath)
 	}
+	s.mu.Unlock()
 
 	if err := s.ingest.UnregisterInput(streamPath); err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
@@ -220,7 +228,9 @@ func (s *Server) createOutput(w http.ResponseWriter, r *http.Request) {
 	}
 
 	key := req.StreamPath + "/" + req.OutputID
+	s.mu.Lock()
 	s.restreamers[key] = rs
+	s.mu.Unlock()
 
 	s.log.Info("Output started", "stream_path", req.StreamPath, "output_id", req.OutputID)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "output_id": req.OutputID})
@@ -235,10 +245,12 @@ func (s *Server) deleteOutput(w http.ResponseWriter, r *http.Request) {
 	}
 
 	key := streamPath + "/" + outputID
+	s.mu.Lock()
 	if rs, ok := s.restreamers[key]; ok {
 		rs.Stop()
 		delete(s.restreamers, key)
 	}
+	s.mu.Unlock()
 
 	if err := s.store.RemoveOutput(streamPath, outputID); err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
@@ -292,7 +304,9 @@ func (s *Server) startRecord(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.mu.Lock()
 	s.recorders[streamPath] = rec
+	s.mu.Unlock()
 
 	s.log.Info("Recording started", "stream_path", streamPath)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "stream_path": streamPath})
@@ -305,14 +319,19 @@ func (s *Server) stopRecord(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.mu.Lock()
 	rec, ok := s.recorders[streamPath]
+	if ok {
+		rec.Stop()
+		delete(s.recorders, streamPath)
+	}
+	s.mu.Unlock()
+
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no active recording"})
 		return
 	}
 
-	rec.Stop()
-	delete(s.recorders, streamPath)
 	s.store.RemoveRecording(streamPath)
 
 	s.log.Info("Recording stopped", "stream_path", streamPath)
@@ -437,6 +456,7 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Stop all current workers
+	s.mu.Lock()
 	for key, rs := range s.restreamers {
 		rs.Stop()
 		delete(s.restreamers, key)
@@ -445,6 +465,7 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 		rec.Stop()
 		delete(s.recorders, key)
 	}
+	s.mu.Unlock()
 
 	// Load the snapshot
 	s.store.LoadSnapshot(&snap)
@@ -457,6 +478,7 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Resume outputs
+	s.mu.Lock()
 	for _, out := range snap.Outputs {
 		rs, err := worker.StartRestreamer(s.ctx, s.store, s.log, out, s.rtmpPort)
 		if err != nil {
@@ -466,6 +488,7 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 		key := out.StreamPath + "/" + out.OutputID
 		s.restreamers[key] = rs
 	}
+	s.mu.Unlock()
 
 	s.log.Info("Configuration imported", "inputs", len(snap.Inputs), "outputs", len(snap.Outputs))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -473,6 +496,7 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 
 // Shutdown stops all active workers.
 func (s *Server) Shutdown() {
+	s.mu.Lock()
 	for key, rs := range s.restreamers {
 		rs.Stop()
 		delete(s.restreamers, key)
@@ -481,7 +505,69 @@ func (s *Server) Shutdown() {
 		rec.Stop()
 		delete(s.recorders, key)
 	}
+	s.mu.Unlock()
 	s.hlsMgr.Shutdown()
+}
+
+// --- /hls/start ---
+
+func (s *Server) handleHLSStart(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	streamPath := r.URL.Query().Get("stream")
+	if streamPath == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "stream query param required"})
+		return
+	}
+
+	playlistURL, err := s.hlsMgr.AddViewer(s.ctx, streamPath)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	viewerID := streamPath
+	s.log.Info("HLS viewer started", "stream_path", streamPath)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "stream_path": streamPath, "viewer_id": viewerID, "playlist_url": playlistURL})
+}
+
+// --- /hls/stop ---
+
+func (s *Server) handleHLSStop(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Stream   string `json:"stream"`
+		ViewerID string `json:"viewer_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		streamPath := r.URL.Query().Get("stream")
+		if streamPath == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "stream or body required"})
+			return
+		}
+		req.Stream = streamPath
+	}
+
+	if req.Stream == "" && req.ViewerID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "stream or viewer_id required"})
+		return
+	}
+
+	streamPath := req.Stream
+	if streamPath == "" {
+		streamPath = req.ViewerID
+	}
+
+	s.hlsMgr.RemoveViewer(streamPath)
+	s.log.Info("HLS viewer stopped", "stream_path", streamPath)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 // writeJSON writes a JSON response with the given status code.

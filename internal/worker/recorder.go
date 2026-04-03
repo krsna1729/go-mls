@@ -91,8 +91,8 @@ func (r *Recorder) Stop() {
 	}
 	if r.recording != nil {
 		r.recording.Status = state.RecordingStatusStopped
+		r.log.Info("Recording stopped", "filename", r.recording.Filename)
 	}
-	r.log.Info("Recording stopped", "filename", r.recording.Filename)
 }
 
 func (r *Recorder) Done() <-chan struct{} {

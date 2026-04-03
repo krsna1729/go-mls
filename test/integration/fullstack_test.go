@@ -2,6 +2,7 @@ package integration_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,16 +14,20 @@ import (
 	"testing"
 	"time"
 
+	"go-mls/internal/api"
+	"go-mls/internal/app"
+	"go-mls/internal/config"
 	"go-mls/internal/logger"
-	"go-mls/internal/stream"
 
 	"github.com/stretchr/testify/require"
 )
 
 type testEnv struct {
-	tempDir  string
-	pipeline *stream.Pipeline
-	ts       *httptest.Server
+	tempDir string
+	appCtx  *app.Context
+	server  *api.Server
+	ts      *httptest.Server
+	cfg     *config.Config
 }
 
 func (e *testEnv) doRequest(method, path string, body interface{}) (*http.Response, error) {
@@ -44,6 +49,15 @@ func (e *testEnv) doRequest(method, path string, body interface{}) (*http.Respon
 	return http.DefaultClient.Do(req)
 }
 
+func (e *testEnv) shutdown() {
+	if e.server != nil {
+		e.server.Shutdown()
+	}
+	if e.appCtx != nil {
+		e.appCtx.Shutdown()
+	}
+}
+
 func setupTestEnv(t *testing.T) *testEnv {
 	testFile := filepath.Join("..", "..", "testdata", "testsrc.mp4")
 	if _, err := os.Stat(testFile); os.IsNotExist(err) {
@@ -53,247 +67,167 @@ func setupTestEnv(t *testing.T) *testEnv {
 	tempDir := t.TempDir()
 	log := logger.NewLogger()
 
-	destPath := filepath.Join(tempDir, "testsrc.mp4")
-	srcData, err := os.ReadFile(testFile)
-	require.NoError(t, err, "Failed to read test file")
-	err = os.WriteFile(destPath, srcData, 0644)
-	require.NoError(t, err, "Failed to copy test file to temp dir")
+	cfg := &config.Config{
+		HTTP: config.HTTPConfig{
+			Host:         "127.0.0.1",
+			Port:         "0",
+			ReadTimeout:  config.Duration(30 * time.Second),
+			WriteTimeout: config.Duration(30 * time.Second),
+			IdleTimeout:  config.Duration(120 * time.Second),
+		},
+		Relay: config.RelayConfig{
+			InputTimeout:  config.Duration(30 * time.Second),
+			OutputTimeout: config.Duration(60 * time.Second),
+			RTMPHub: config.RTMPConfig{
+				Host: "127.0.0.1",
+				Port: 1935,
+			},
+		},
+		Recording: config.RecordingConfig{
+			Directory: tempDir,
+		},
+		Logging: config.LoggingConfig{
+			Level: "warn",
+		},
+		HLS: config.HLSConfig{
+			PlaylistBaseDir: tempDir,
+			FFmpegPreset:    "ultrafast",
+		},
+		FFmpeg: config.FFmpegConfig{
+			Path: "ffmpeg",
+		},
+	}
 
-	rtspServer := stream.NewRTSPServerManager(log, "127.0.0.1", 0)
-	err = rtspServer.Start()
-	require.NoError(t, err, "Failed to start RTSP server")
-	t.Cleanup(func() { rtspServer.Stop() })
+	appCtx, err := app.NewContext(cfg, log)
+	if err != nil {
+		t.Fatalf("Failed to create app context: %v", err)
+	}
 
-	pipeline := stream.NewPipeline(log, tempDir, 60*time.Second)
-	pipeline.SetRTSPServer(rtspServer)
-	t.Cleanup(func() { pipeline.Shutdown() })
+	if err := appCtx.Start(); err != nil {
+		t.Fatalf("Failed to start app context: %v", err)
+	}
+
+	server := api.NewServer(
+		appCtx.Store,
+		appCtx.Ingest,
+		appCtx.HLSMgr,
+		log,
+		tempDir,
+		1935,
+		"",
+		context.Background(),
+	)
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/relay/start", stream.ApiStartOutputRelay(pipeline))
-	mux.HandleFunc("/api/relay/stop", stream.ApiStopOutputRelay(pipeline))
-	mux.HandleFunc("/api/relay/status", stream.ApiRelayStatus(pipeline))
-	mux.HandleFunc("/api/recording/start", stream.ApiStartRecording(pipeline))
-	mux.HandleFunc("/api/recording/stop", stream.ApiStopRecording(pipeline))
-	mux.HandleFunc("/api/relay/hls/start-viewer", stream.ApiStartHLSViewer(pipeline))
-	mux.HandleFunc("/api/relay/hls/stop-viewer", stream.ApiStopHLSViewer(pipeline))
-	mux.HandleFunc("/api/relay/delete-input", stream.ApiDeleteInput(pipeline))
-
+	server.RegisterRoutes(mux)
 	ts := httptest.NewServer(mux)
-	t.Cleanup(func() { ts.Close() })
 
 	return &testEnv{
-		tempDir:  tempDir,
-		pipeline: pipeline,
-		ts:       ts,
+		tempDir: tempDir,
+		appCtx:  appCtx,
+		server:  server,
+		ts:      ts,
+		cfg:     cfg,
 	}
 }
 
-func execute(n int, concurrent bool, fn func(i int)) {
-	if concurrent {
-		var wg sync.WaitGroup
-		wg.Add(n)
-		for i := 0; i < n; i++ {
-			go func(idx int) {
-				defer wg.Done()
-				fn(idx)
-			}(i)
-		}
-		wg.Wait()
-	} else {
-		for i := 0; i < n; i++ {
-			fn(i)
-		}
-	}
-}
-
-func runFullStackLifecycle(t *testing.T, concurrent bool) {
+func TestInputsAPI(t *testing.T) {
 	env := setupTestEnv(t)
-	pipeline := env.pipeline
-	doRequest := env.doRequest
+	defer env.shutdown()
 
-	t.Logf("=== Testing Full Stack Lifecycle (Concurrent: %v) ===", concurrent)
-
-	inputURL := "file://testsrc.mp4"
-	inputName := "TestInput"
-
-	t.Log("Phase 1: Starting consumers")
-	_ = pipeline
-	execute(5, concurrent, func(i int) {
-		resp, err := doRequest("POST", "/api/relay/start", map[string]interface{}{
-			"input_name":  inputName,
-			"input_url":   inputURL,
-			"output_name": fmt.Sprintf("Output%d", i),
-			"output_url":  fmt.Sprintf("file://output%d.flv", i),
-		})
-		require.NoError(t, err, "Request should succeed")
-		require.Equal(t, http.StatusOK, resp.StatusCode, "Output %d should start", i)
-		resp.Body.Close()
-	})
-
-	t.Log("Step 2: Start recording")
-	resp, err := doRequest("POST", "/api/recording/start", map[string]interface{}{
-		"name":       "TestRec",
-		"input_name": inputName,
+	resp, err := env.doRequest("POST", "/inputs", map[string]interface{}{
+		"stream_path": "test-stream",
 	})
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	resp.Body.Close()
 
-	time.Sleep(500 * time.Millisecond)
-
-	t.Log("Step 3: Start HLS viewer")
-	resp, err = doRequest("POST", "/api/relay/hls/start-viewer", map[string]interface{}{
-		"input_name": inputName,
-	})
+	resp, err = env.doRequest("GET", "/inputs", nil)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 
-	var hlsResp map[string]interface{}
-	err = json.NewDecoder(resp.Body).Decode(&hlsResp)
+	var inputs []map[string]interface{}
+	err = json.NewDecoder(resp.Body).Decode(&inputs)
 	resp.Body.Close()
 	require.NoError(t, err)
-	viewerID, ok := hlsResp["viewer_id"].(string)
-	require.True(t, ok && viewerID != "", "viewer_id should be present")
+	require.Len(t, inputs, 1)
 
-	t.Log("Step 4: Verify status shows running streams")
-	resp, err = doRequest("GET", "/api/relay/status", nil)
-	require.NoError(t, err)
-	require.Equal(t, http.StatusOK, resp.StatusCode)
-
-	var status stream.StatusResponse
-	err = json.NewDecoder(resp.Body).Decode(&status)
-	resp.Body.Close()
-	require.NoError(t, err)
-	require.NotEmpty(t, status.Relays, "Should have relays")
-	require.NotEmpty(t, status.Relays[0].Outputs, "Should have outputs running")
-
-	t.Log("Phase 2: Stopping consumers")
-
-	t.Log("Step 5: Stop all outputs")
-	execute(5, concurrent, func(i int) {
-		resp, err := doRequest("POST", "/api/relay/stop", map[string]interface{}{
-			"output_name": fmt.Sprintf("Output%d", i),
-		})
-		require.NoError(t, err)
-		require.Equal(t, http.StatusOK, resp.StatusCode)
-		resp.Body.Close()
-	})
-
-	time.Sleep(500 * time.Millisecond)
-
-	t.Log("Step 6: Stop recording")
-	resp, err = doRequest("POST", "/api/recording/stop", map[string]interface{}{
-		"name": "TestRec",
-	})
+	resp, err = env.doRequest("DELETE", "/inputs?stream=test-stream", nil)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	resp.Body.Close()
-
-	t.Log("Step 7: Stop HLS viewer")
-	resp, err = doRequest("POST", "/api/relay/hls/stop-viewer", map[string]interface{}{
-		"input_name": inputName,
-		"viewer_id":  viewerID,
-	})
-	require.NoError(t, err)
-	require.Equal(t, http.StatusOK, resp.StatusCode)
-	resp.Body.Close()
-
-	t.Log("Step 8: Delete input")
-	resp, err = doRequest("POST", "/api/relay/delete-input", map[string]interface{}{
-		"input_name": inputName,
-	})
-	require.NoError(t, err)
-	require.Equal(t, http.StatusOK, resp.StatusCode)
-	resp.Body.Close()
-
-	time.Sleep(500 * time.Millisecond)
-
-	t.Log("Step 9: Verify status shows clean state")
-	resp, err = doRequest("GET", "/api/relay/status", nil)
-	require.NoError(t, err)
-	require.Equal(t, http.StatusOK, resp.StatusCode)
-
-	err = json.NewDecoder(resp.Body).Decode(&status)
-	resp.Body.Close()
-	require.NoError(t, err)
-
-	t.Log("=== SUCCESS: Full lifecycle completed ===")
-	_ = pipeline
 }
 
-func TestFullStack_MultiConsumerLifecycle(t *testing.T) {
-	runFullStackLifecycle(t, false)
-}
-
-func TestFullStack_ConcurrentConsumers(t *testing.T) {
-	runFullStackLifecycle(t, true)
-}
-
-func TestRelayStartStop(t *testing.T) {
+func TestOutputsAPI(t *testing.T) {
 	env := setupTestEnv(t)
-	defer env.pipeline.Shutdown()
+	defer env.shutdown()
 
-	resp, err := env.doRequest("POST", "/api/relay/start", map[string]interface{}{
-		"input_name":  "TestInput",
-		"input_url":   "file://testsrc.mp4",
-		"output_name": "TestOutput",
-		"output_url":  "file://output.flv",
+	resp, err := env.doRequest("POST", "/inputs", map[string]interface{}{
+		"stream_path": "test-stream",
+	})
+	require.NoError(t, err)
+	resp.Body.Close()
+
+	resp, err = env.doRequest("POST", "/outputs", map[string]interface{}{
+		"stream_path": "test-stream",
+		"output_id":   "youtube",
+		"remote_url":  "rtmp://youtube.com/live/stream-key",
 	})
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	resp.Body.Close()
 
-	resp, err = env.doRequest("GET", "/api/relay/status", nil)
+	resp, err = env.doRequest("GET", "/outputs?stream=test-stream", nil)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	resp.Body.Close()
 
-	resp, err = env.doRequest("POST", "/api/relay/stop", map[string]interface{}{
-		"output_name": "TestOutput",
-	})
+	resp, err = env.doRequest("DELETE", "/outputs?stream=test-stream&id=youtube", nil)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, resp.StatusCode)
+	resp.Body.Close()
+
+	resp, err = env.doRequest("DELETE", "/inputs?stream=test-stream", nil)
+	require.NoError(t, err)
 	resp.Body.Close()
 }
 
 func TestRecordingAPI(t *testing.T) {
 	env := setupTestEnv(t)
-	defer env.pipeline.Shutdown()
+	defer env.shutdown()
 
-	resp, err := env.doRequest("POST", "/api/recording/start", map[string]interface{}{
-		"name":       "TestRec",
-		"input_name": "TestInput",
-		"input_url":  "file://testsrc.mp4",
+	resp, err := env.doRequest("POST", "/inputs", map[string]interface{}{
+		"stream_path": "test-stream",
 	})
+	require.NoError(t, err)
+	resp.Body.Close()
+
+	resp, err = env.doRequest("POST", "/record?stream=test-stream", nil)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	resp.Body.Close()
 
-	resp, err = env.doRequest("POST", "/api/recording/stop", map[string]interface{}{
-		"name": "TestRec",
-	})
+	resp, err = env.doRequest("DELETE", "/record?stream=test-stream", nil)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, resp.StatusCode)
+	resp.Body.Close()
+
+	resp, err = env.doRequest("DELETE", "/inputs?stream=test-stream", nil)
+	require.NoError(t, err)
 	resp.Body.Close()
 }
 
-func TestHLSViewerAPI(t *testing.T) {
+func TestHLSAPI(t *testing.T) {
 	env := setupTestEnv(t)
-	defer env.pipeline.Shutdown()
+	defer env.shutdown()
 
-	resp, err := env.doRequest("POST", "/api/relay/start", map[string]interface{}{
-		"input_name":  "TestInput",
-		"input_url":   "file://testsrc.mp4",
-		"output_name": "TestOutput",
-		"output_url":  "file://test.flv",
+	resp, err := env.doRequest("POST", "/inputs", map[string]interface{}{
+		"stream_path": "test-stream",
 	})
 	require.NoError(t, err)
-	require.Equal(t, http.StatusOK, resp.StatusCode)
 	resp.Body.Close()
 
-	resp, err = env.doRequest("POST", "/api/relay/hls/start-viewer", map[string]interface{}{
-		"input_name": "TestInput",
-	})
+	resp, err = env.doRequest("POST", "/hls/start?stream=test-stream", nil)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 
@@ -304,11 +238,163 @@ func TestHLSViewerAPI(t *testing.T) {
 
 	viewerID := hlsResp["viewer_id"].(string)
 
-	resp, err = env.doRequest("POST", "/api/relay/hls/stop-viewer", map[string]interface{}{
-		"input_name": "TestInput",
-		"viewer_id":  viewerID,
+	resp, err = env.doRequest("POST", "/hls/stop", map[string]interface{}{
+		"stream":    "test-stream",
+		"viewer_id": viewerID,
 	})
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, resp.StatusCode)
+	resp.Body.Close()
+
+	resp, err = env.doRequest("DELETE", "/inputs?stream=test-stream", nil)
+	require.NoError(t, err)
+	resp.Body.Close()
+}
+
+func TestStatsAPI(t *testing.T) {
+	env := setupTestEnv(t)
+	defer env.shutdown()
+
+	resp, err := env.doRequest("GET", "/stats", nil)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var stats map[string]interface{}
+	err = json.NewDecoder(resp.Body).Decode(&stats)
+	resp.Body.Close()
+	require.NoError(t, err)
+	require.NotNil(t, stats["server"])
+	require.NotNil(t, stats["inputs"])
+	require.NotNil(t, stats["outputs"])
+}
+
+func TestFullStackLifecycle(t *testing.T) {
+	env := setupTestEnv(t)
+	defer env.shutdown()
+	streamPath := "test-stream"
+
+	t.Log("Creating input")
+	resp, err := env.doRequest("POST", "/inputs", map[string]interface{}{
+		"stream_path": streamPath,
+	})
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	resp.Body.Close()
+
+	t.Log("Creating outputs")
+	for i := 0; i < 3; i++ {
+		resp, err = env.doRequest("POST", "/outputs", map[string]interface{}{
+			"stream_path": streamPath,
+			"output_id":   fmt.Sprintf("out%d", i),
+			"remote_url":  fmt.Sprintf("file://%s/out%d.flv", env.tempDir, i),
+		})
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		resp.Body.Close()
+	}
+
+	time.Sleep(500 * time.Millisecond)
+
+	t.Log("Starting recording")
+	resp, err = env.doRequest("POST", "/record?stream="+streamPath, nil)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	resp.Body.Close()
+
+	t.Log("Starting HLS viewer")
+	resp, err = env.doRequest("POST", "/hls/start?stream="+streamPath, nil)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	resp.Body.Close()
+
+	t.Log("Verifying stats")
+	resp, err = env.doRequest("GET", "/stats", nil)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var stats map[string]interface{}
+	err = json.NewDecoder(resp.Body).Decode(&stats)
+	resp.Body.Close()
+	require.NoError(t, err)
+	require.NotEmpty(t, stats["inputs"])
+	require.NotEmpty(t, stats["outputs"])
+
+	t.Log("Stopping HLS")
+	resp, err = env.doRequest("POST", "/hls/stop", map[string]interface{}{
+		"stream":    streamPath,
+		"viewer_id": "auto",
+	})
+	require.NoError(t, err)
+	resp.Body.Close()
+
+	t.Log("Stopping recording")
+	resp, err = env.doRequest("DELETE", "/record?stream="+streamPath, nil)
+	require.NoError(t, err)
+	resp.Body.Close()
+
+	t.Log("Stopping outputs")
+	for i := 0; i < 3; i++ {
+		resp, err = env.doRequest("DELETE", fmt.Sprintf("/outputs?stream=%s&id=out%d", streamPath, i), nil)
+		require.NoError(t, err)
+		resp.Body.Close()
+	}
+
+	t.Log("Deleting input")
+	resp, err = env.doRequest("DELETE", "/inputs?stream="+streamPath, nil)
+	require.NoError(t, err)
+	resp.Body.Close()
+
+	t.Log("=== SUCCESS: Full lifecycle completed ===")
+}
+
+func TestConcurrentOutputs(t *testing.T) {
+	env := setupTestEnv(t)
+	defer env.shutdown()
+	streamPath := "test-stream"
+
+	resp, err := env.doRequest("POST", "/inputs", map[string]interface{}{
+		"stream_path": streamPath,
+	})
+	require.NoError(t, err)
+	resp.Body.Close()
+
+	var wg sync.WaitGroup
+	n := 5
+	wg.Add(n)
+
+	for i := 0; i < n; i++ {
+		go func(idx int) {
+			defer wg.Done()
+			resp, err := env.doRequest("POST", "/outputs", map[string]interface{}{
+				"stream_path": streamPath,
+				"output_id":   fmt.Sprintf("concurrent_%d", idx),
+				"remote_url":  fmt.Sprintf("file://%s/out%d.flv", env.tempDir, idx),
+			})
+			require.NoError(t, err)
+			require.Equal(t, http.StatusOK, resp.StatusCode)
+			resp.Body.Close()
+		}(i)
+	}
+
+	wg.Wait()
+
+	resp, err = env.doRequest("GET", "/outputs?stream="+streamPath, nil)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var outputs []map[string]interface{}
+	err = json.NewDecoder(resp.Body).Decode(&outputs)
+	resp.Body.Close()
+	require.NoError(t, err)
+	require.Len(t, outputs, n)
+
+	for i := 0; i < n; i++ {
+		resp, err = env.doRequest("DELETE", fmt.Sprintf("/outputs?stream=%s&id=concurrent_%d", streamPath, i), nil)
+		require.NoError(t, err)
+		resp.Body.Close()
+	}
+
+	resp, err = env.doRequest("DELETE", "/inputs?stream="+streamPath, nil)
+	require.NoError(t, err)
 	resp.Body.Close()
 }

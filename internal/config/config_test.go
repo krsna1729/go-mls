@@ -86,12 +86,12 @@ func TestConfigValidation(t *testing.T) {
 			errorMsg:    "output timeout must be greater than input timeout",
 		},
 		{
-			name: "Invalid RTSP port",
+			name: "Invalid RTMP hub port",
 			modifyFunc: func(c *Config) {
-				c.Relay.RTSPServer.Port = 0
+				c.Relay.RTMPHub.Port = 0
 			},
 			shouldError: true,
-			errorMsg:    "RTSP server port must be between 1 and 65535",
+			errorMsg:    "RTMP hub port must be between 1 and 65535",
 		},
 		{
 			name: "Empty recording directory",

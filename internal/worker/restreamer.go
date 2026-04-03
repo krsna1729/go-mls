@@ -68,7 +68,9 @@ func (r *Restreamer) Stop() {
 		r.ProcessWorker.proc.Stop()
 		r.store.UpdateOutputStatus(r.output.StreamPath, r.output.OutputID, state.OutputStatusStopped, "")
 	}
-	r.log.Info("Restreamer stopped", "output_id", r.output.OutputID)
+	if r.log != nil {
+		r.log.Info("Restreamer stopped", "output_id", r.output.OutputID)
+	}
 }
 
 func (r *Restreamer) Done() <-chan struct{} {

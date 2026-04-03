@@ -216,9 +216,9 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("output timeout must be greater than input timeout")
 	}
 
-	// Validate RTSP server configuration
-	if c.Relay.RTSPServer.Port <= 0 || c.Relay.RTSPServer.Port > 65535 {
-		return fmt.Errorf("RTSP server port must be between 1 and 65535")
+	// Validate RTMP hub configuration
+	if c.Relay.RTMPHub.Port <= 0 || c.Relay.RTMPHub.Port > 65535 {
+		return fmt.Errorf("RTMP hub port must be between 1 and 65535")
 	}
 
 	// Validate recording directory
