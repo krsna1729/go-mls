@@ -16,7 +16,7 @@ type Context struct {
 	Logger *logger.Logger
 	Config *config.Config
 	Store  *state.Store
-	Hub    *hub.Hub
+	Hub    hub.Hub
 	Ingest *ingest.Router
 	HLSMgr *worker.HLSManager
 }
@@ -32,17 +32,33 @@ func NewContext(cfg *config.Config, log *logger.Logger) (*Context, error) {
 		return nil, fmt.Errorf("invalid configuration: %w", err)
 	}
 
-	ctx.Hub = hub.NewHub(log, cfg.Relay.RTMPHub.Host, cfg.Relay.RTMPHub.Port)
+	hubType := hub.HubTypeRTMP
+	if cfg.Relay.HubType != "" {
+		hubType = hub.HubType(cfg.Relay.HubType)
+	}
+
+	var hubPort int
+	var hubHost string
+	if hubType == hub.HubTypeRTSP {
+		hubHost = cfg.Relay.RTSPServer.Host
+		hubPort = cfg.Relay.RTSPServer.Port
+	} else {
+		hubHost = cfg.Relay.RTMPHub.Host
+		hubPort = cfg.Relay.RTMPHub.Port
+	}
+
+	ctx.Hub = hub.NewHub(log, hubType, hubHost, hubPort)
 
 	ffmpegTimeout := time.Duration(cfg.Relay.OutputTimeout)
 	_ = ffmpegTimeout
 
 	ctx.Ingest = ingest.NewRouter(ctx.Store, log, ingest.Config{
 		FFMpegPath: cfg.FFmpeg.Path,
-		RTMPPort:   cfg.Relay.RTMPHub.Port,
+		RTMPPort:   hubPort,
 	})
 
-	ctx.Hub.SetHandlers(ctx.Ingest.OnPublish, ctx.Ingest.OnPublishEnd)
+	ctx.Hub.SetOnPublish(ctx.Ingest.OnPublish)
+	ctx.Hub.SetOnUnpublish(ctx.Ingest.OnPublishEnd)
 
 	hlsPreset := cfg.HLS.FFmpegPreset
 	if hlsPreset == "" {
@@ -54,7 +70,7 @@ func NewContext(cfg *config.Config, log *logger.Logger) (*Context, error) {
 		log,
 		cfg.HLS.PlaylistBaseDir,
 		hlsPreset,
-		cfg.Relay.RTMPHub.Port,
+		hubPort,
 	)
 
 	return ctx, nil

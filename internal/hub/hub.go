@@ -1,6 +1,5 @@
-// Package hub implements the RTMP Hub using bluenviron/gortmplib.
-// It handles RTMP handshakes, publisher/subscriber management, and
-// 1-to-N memory fan-out of audio/video data.
+// Package hub provides a unified interface for media ingestion hubs.
+// It supports both RTMP and RTSP protocols for receiving published streams.
 package hub
 
 import (
@@ -19,33 +18,60 @@ import (
 	"github.com/bluenviron/gortmplib/pkg/codecs"
 )
 
+// HubType represents the type of hub protocol.
+type HubType string
+
+const (
+	HubTypeRTMP = HubType("rtmp")
+	HubTypeRTSP = HubType("rtsp")
+)
+
+// Hub is the interface for media ingestion hubs.
+// It handles protocol-specific handshakes and manages publishers/subscribers.
+type Hub interface {
+	// Start begins listening for incoming connections.
+	Start() error
+
+	// Stop gracefully shuts down the hub.
+	Stop()
+
+	// Addr returns the listener address.
+	Addr() string
+
+	// SetOnPublish sets the callback for publish events.
+	SetOnPublish(handler func(streamPath, token string) error)
+
+	// SetOnUnpublish sets the callback for unpublish events.
+	SetOnUnpublish(handler func(streamPath string))
+}
+
 // stream represents an active published stream with its tracks and subscribers.
 type stream struct {
-	publisher *gortmplib.ServerConn
-	reader    *gortmplib.Reader
+	publisher interface{} // *gortmplib.ServerConn for RTMP
+	reader    interface{} // *gortmplib.Reader for RTMP
 	tracks    []*gortmplib.Track
 	writers   []*gortmplib.Writer
 	mu        sync.Mutex
 }
 
-// Hub manages RTMP connections and memory-based fan-out.
-type Hub struct {
+// RTMPHub manages RTMP connections and memory-based fan-out.
+type RTMPHub struct {
 	log         *logger.Logger
 	addr        string
 	listener    net.Listener
 	mu          sync.RWMutex
-	streams     map[string]*stream // path -> stream
+	streams     map[string]*stream
 	onPublish   func(streamPath, token string) error
 	onUnpublish func(streamPath string)
 	ctx         context.Context
 	cancel      context.CancelFunc
 }
 
-// NewHub creates a new RTMP Hub.
-func NewHub(log *logger.Logger, host string, port int) *Hub {
+// NewRTMPHub creates a new RTMP Hub.
+func NewRTMPHub(log *logger.Logger, host string, port int) *RTMPHub {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Hub{
-		log:     log.With("component", "hub"),
+	return &RTMPHub{
+		log:     log.With("component", "hub", "type", "rtmp"),
 		addr:    fmt.Sprintf("%s:%d", host, port),
 		streams: make(map[string]*stream),
 		ctx:     ctx,
@@ -53,14 +79,18 @@ func NewHub(log *logger.Logger, host string, port int) *Hub {
 	}
 }
 
-// SetHandlers sets callbacks for publish/unpublish events.
-func (h *Hub) SetHandlers(onPublish func(string, string) error, onUnpublish func(string)) {
-	h.onPublish = onPublish
-	h.onUnpublish = onUnpublish
+// SetOnPublish sets the callback for publish events.
+func (h *RTMPHub) SetOnPublish(handler func(string, string) error) {
+	h.onPublish = handler
+}
+
+// SetOnUnpublish sets the callback for unpublish events.
+func (h *RTMPHub) SetOnUnpublish(handler func(string)) {
+	h.onUnpublish = handler
 }
 
 // Start begins listening for RTMP connections.
-func (h *Hub) Start() error {
+func (h *RTMPHub) Start() error {
 	var err error
 	h.listener, err = net.Listen("tcp", h.addr)
 	if err != nil {
@@ -72,7 +102,7 @@ func (h *Hub) Start() error {
 	return nil
 }
 
-func (h *Hub) acceptLoop() {
+func (h *RTMPHub) acceptLoop() {
 	for {
 		conn, err := h.listener.Accept()
 		if err != nil {
@@ -89,7 +119,7 @@ func (h *Hub) acceptLoop() {
 }
 
 // handleConn processes a single RTMP connection through handshake and dispatch.
-func (h *Hub) handleConn(conn net.Conn) {
+func (h *RTMPHub) handleConn(conn net.Conn) {
 	defer conn.Close()
 
 	remoteAddr := conn.RemoteAddr().String()
@@ -111,7 +141,6 @@ func (h *Hub) handleConn(conn net.Conn) {
 		return
 	}
 
-	// Extract stream path and token from URL
 	streamPath, token := parseStreamURL(sc.URL)
 
 	if sc.Publish {
@@ -126,8 +155,7 @@ func (h *Hub) handleConn(conn net.Conn) {
 }
 
 // handlePublisher processes a publishing connection.
-func (h *Hub) handlePublisher(sc *gortmplib.ServerConn, conn net.Conn, streamPath, token string) error {
-	// Validate via ingest router (token gatekeeping)
+func (h *RTMPHub) handlePublisher(sc *gortmplib.ServerConn, conn net.Conn, streamPath, token string) error {
 	if h.onPublish != nil {
 		if err := h.onPublish(streamPath, token); err != nil {
 			return fmt.Errorf("publish rejected: %w", err)
@@ -143,7 +171,6 @@ func (h *Hub) handlePublisher(sc *gortmplib.ServerConn, conn net.Conn, streamPat
 		return fmt.Errorf("reader init: %w", err)
 	}
 
-	// Create stream entry
 	s := &stream{
 		publisher: sc,
 		reader:    r,
@@ -164,7 +191,6 @@ func (h *Hub) handlePublisher(sc *gortmplib.ServerConn, conn net.Conn, streamPat
 		"tracks", len(s.tracks),
 	)
 
-	// Setup data callbacks for fan-out to all subscribers
 	for _, track := range r.Tracks() {
 		track := track
 		switch track.Codec.(type) {
@@ -251,11 +277,9 @@ func (h *Hub) handlePublisher(sc *gortmplib.ServerConn, conn net.Conn, streamPat
 		}
 	}
 
-	// Cleanup on disconnect
 	defer func() {
 		h.mu.Lock()
 		if existing, ok := h.streams[streamPath]; ok && existing.publisher == sc {
-			// Close all subscriber connections
 			s.mu.Lock()
 			for _, w := range s.writers {
 				w.Conn.(*gortmplib.ServerConn).RW.(net.Conn).Close()
@@ -271,7 +295,6 @@ func (h *Hub) handlePublisher(sc *gortmplib.ServerConn, conn net.Conn, streamPat
 		h.log.Info("Publisher disconnected", "path", streamPath)
 	}()
 
-	// Read loop — blocks until publisher disconnects
 	for {
 		conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 		if err := r.Read(); err != nil {
@@ -281,7 +304,7 @@ func (h *Hub) handlePublisher(sc *gortmplib.ServerConn, conn net.Conn, streamPat
 }
 
 // handleSubscriber processes a reading/subscribing connection.
-func (h *Hub) handleSubscriber(sc *gortmplib.ServerConn, conn net.Conn, streamPath string) error {
+func (h *RTMPHub) handleSubscriber(sc *gortmplib.ServerConn, conn net.Conn, streamPath string) error {
 	h.mu.RLock()
 	s, exists := h.streams[streamPath]
 	h.mu.RUnlock()
@@ -300,7 +323,6 @@ func (h *Hub) handleSubscriber(sc *gortmplib.ServerConn, conn net.Conn, streamPa
 		return fmt.Errorf("writer init: %w", err)
 	}
 
-	// Add to subscriber list
 	s.mu.Lock()
 	s.writers = append(s.writers, w)
 	s.mu.Unlock()
@@ -316,7 +338,6 @@ func (h *Hub) handleSubscriber(sc *gortmplib.ServerConn, conn net.Conn, streamPa
 		h.log.Info("Subscriber disconnected", "path", streamPath, "remote", conn.RemoteAddr())
 	}()
 
-	// Block until connection closes — subscriber just reads to detect disconnect
 	conn.SetReadDeadline(time.Time{})
 	for {
 		buf := make([]byte, 1024)
@@ -328,23 +349,22 @@ func (h *Hub) handleSubscriber(sc *gortmplib.ServerConn, conn net.Conn, streamPa
 }
 
 // Stop gracefully shuts down the hub.
-func (h *Hub) Stop() {
+func (h *RTMPHub) Stop() {
 	h.cancel()
 	if h.listener != nil {
 		h.listener.Close()
 	}
-	// Close all publisher connections
 	h.mu.Lock()
 	for path, s := range h.streams {
-		s.publisher.RW.(net.Conn).Close()
+		s.publisher.(*gortmplib.ServerConn).RW.(net.Conn).Close()
 		delete(h.streams, path)
 	}
 	h.mu.Unlock()
 	h.log.Info("RTMP Hub stopped")
 }
 
-// Addr returns the listener address (useful for tests with port 0).
-func (h *Hub) Addr() string {
+// Addr returns the listener address.
+func (h *RTMPHub) Addr() string {
 	if h.listener != nil {
 		return h.listener.Addr().String()
 	}
@@ -352,13 +372,21 @@ func (h *Hub) Addr() string {
 }
 
 // parseStreamURL extracts the stream path and optional token from the RTMP URL.
-// e.g., rtmp://server/live/mycam?token=XYZ → path="live/mycam", token="XYZ"
 func parseStreamURL(u *url.URL) (streamPath, token string) {
 	if u == nil {
 		return "", ""
 	}
-	// Path typically starts with / and may include the app name
 	streamPath = strings.TrimPrefix(u.Path, "/")
 	token = u.Query().Get("token")
 	return streamPath, token
+}
+
+// NewHub creates a hub of the specified type.
+func NewHub(log *logger.Logger, hubType HubType, host string, port int) Hub {
+	switch hubType {
+	case HubTypeRTSP:
+		return NewRTSPHub(log, host, port)
+	default:
+		return NewRTMPHub(log, host, port)
+	}
 }

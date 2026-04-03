@@ -48,11 +48,12 @@ type HTTPConfig struct {
 	IdleTimeout  Duration `json:"idle_timeout"`
 }
 
-// RelayConfig contains relay timeouts and RTSP server config
+// RelayConfig contains relay timeouts and hub configuration
 // All durations use time.Duration with json:",string" tag for human-readable JSON
 type RelayConfig struct {
 	InputTimeout  Duration   `json:"input_timeout"`
 	OutputTimeout Duration   `json:"output_timeout"`
+	HubType       string     `json:"hub_type"` // "rtmp" or "rtsp", defaults to "rtmp"
 	RTSPServer    RTSPConfig `json:"rtsp_server"`
 	RTMPHub       RTMPConfig `json:"rtmp_hub"`
 }
