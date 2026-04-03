@@ -2,13 +2,15 @@
 
 Go-MLS is a Go-based service for live video relay, recording, and monitoring, with a web UI for control and observability. It is designed for multi-source, multi-destination streaming, with dynamic relay management and recording support.
 
+**Architecture**: Uses a single `Pipeline` struct to manage all streams—no interfaces, no callbacks, no global state.
+
 ## Features
 - Relay multiple input streams to multiple output destinations (RTMP/RTSP)
 - Dynamic add/remove/update of relays and endpoints via web UI/API
 - Real-time relay/server status and statistics (CPU, memory, bitrate)
 - Recording of any input stream to disk, with browser download and delete
 - Web-based UI for control, search, and monitoring
-- Prometheus metrics and Grafana dashboards for observability
+- HLS streaming for browser playback
 - All backend logic in Go, frontend is static HTML/JS/CSS
 
 ## Getting Started
@@ -87,5 +89,13 @@ Run with custom configuration:
 - View relay/server status and statistics
 
 ---
+
+## Documentation
+
+- [Architecture Overview](docs/architecture.md) - High-level architecture with diagrams
+- [API Reference](docs/api-reference.md) - Method signatures and HTTP endpoints
+- [Configuration](docs/configuration.md) - JSON config schema
+
+## Implementation
 
 For implementation details, see `main.go` and `internal/stream/`.

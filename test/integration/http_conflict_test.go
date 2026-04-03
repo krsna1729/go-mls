@@ -17,35 +17,29 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestHTTPStartRelayConflict verifies HTTP API returns error when same input_url is used with different names
 func TestHTTPStartRelayConflict(t *testing.T) {
-	// Skip if test file doesn't exist
 	testFile := filepath.Join("..", "..", "testdata", "testsrc.mp4")
 	if _, err := os.Stat(testFile); os.IsNotExist(err) {
 		t.Skipf("Skipping test: %s not found", testFile)
 	}
 
-	// Setup
 	tempDir := t.TempDir()
 	log := logger.NewLogger()
 
-	// Copy test file into tempDir
 	data, err := os.ReadFile(testFile)
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(tempDir, "testsrc.mp4"), data, 0644))
 
-	// RTSP server
 	rtspServer := stream.NewRTSPServerManager(log, "127.0.0.1", 0)
 	require.NoError(t, rtspServer.Start())
 	t.Cleanup(func() { rtspServer.Stop() })
 
-	// Stream manager
-	streamMgr := stream.NewStreamManager(log, tempDir, "error")
-	streamMgr.SetRTSPServer(rtspServer)
+	pipeline := stream.NewPipeline(log, tempDir, 60*time.Second)
+	pipeline.SetRTSPServer(rtspServer)
+	t.Cleanup(func() { pipeline.Shutdown() })
 
-	// HTTP mux
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/relay/start", stream.ApiStartOutputRelay(streamMgr))
+	mux.HandleFunc("/api/relay/start", stream.ApiStartOutputRelay(pipeline))
 
 	ts := httptest.NewServer(mux)
 	defer ts.Close()
@@ -75,7 +69,6 @@ func TestHTTPStartRelayConflict(t *testing.T) {
 
 	inputURL := "file://testsrc.mp4"
 
-	// First start with name A should succeed
 	resp, body, err := doRequest(map[string]interface{}{
 		"input_name":  "A",
 		"input_url":   inputURL,
@@ -85,7 +78,6 @@ func TestHTTPStartRelayConflict(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, resp.StatusCode, string(body))
 
-	// Second start with same input_url but different name B should fail
 	resp2, body2, err := doRequest(map[string]interface{}{
 		"input_name":  "B",
 		"input_url":   inputURL,

@@ -404,18 +404,16 @@ func (p *ffmpegProcess) Stop(ctx context.Context, timeout time.Duration) error {
 		log.Warn("SIGTERM failed, sending SIGKILL", "pid", p.pid, "error", err)
 		_ = p.process.Kill()
 	}
-	select {
-	case <-time.After(timeout):
-		log.Warn("ffmpeg process did not exit in time, killing", "pid", p.pid)
-		_ = p.process.Kill()
-		return nil
-	case <-p.waitCh:
-		log.Info("ffmpeg process stopped", "pid", p.pid)
-		return nil
-	case <-ctx.Done():
-		log.Warn("Stop context cancelled", "pid", p.pid)
-		return ctx.Err()
-	}
+	go func() {
+		<-time.After(timeout)
+		p.mu.Lock()
+		if p.process != nil {
+			log.Warn("ffmpeg process did not exit in time, killing", "pid", p.pid)
+			_ = p.process.Kill()
+		}
+		p.mu.Unlock()
+	}()
+	return nil
 }
 
 // GetOutput returns the captured output.

@@ -4,89 +4,143 @@ import (
 	"context"
 	"go-mls/internal/httputil"
 	"net/http"
+	"os"
+	"path/filepath"
 )
 
-// Recording API Handlers
-func ApiStartRecording(rm *RecordingManager) http.HandlerFunc {
+func ApiStartRecording(p *Pipeline) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
-			Name   string `json:"name"`
-			Source string `json:"source"`
+			Name      string `json:"name"`
+			InputName string `json:"input_name"`
+			InputURL  string `json:"input_url"`
+			Source    string `json:"source"`
 		}
+
 		if err := httputil.DecodeJSON(r, &req); err != nil {
 			httputil.WriteError(w, http.StatusBadRequest, "Invalid request")
 			return
 		}
-		if req.Name == "" || req.Source == "" {
-			httputil.WriteError(w, http.StatusBadRequest, "Name and source required")
+
+		if req.Name == "" {
+			httputil.WriteError(w, http.StatusBadRequest, "Name is required")
 			return
 		}
-		// Additional validation to prevent "undefined" values
-		if req.Name == "undefined" || req.Source == "undefined" {
-			httputil.WriteError(w, http.StatusBadRequest, "Invalid name or source: cannot be 'undefined'")
+
+		inputName := req.InputName
+		if inputName == "" {
+			inputName = req.Source
+		}
+
+		if inputName == "" {
+			httputil.WriteError(w, http.StatusBadRequest, "Input name is required")
 			return
 		}
-		// Diagnostic logging to trace handler execution
-		err := rm.StartRecording(context.Background(), req.Name, req.Source)
-		if err != nil {
+
+		inputURL := req.InputURL
+		if inputURL == "" {
+			inputURL = req.Source
+		}
+
+		ctx := context.Background()
+
+		if _, exists := p.GetInputURL(inputName); !exists {
+			if inputURL == "" {
+				httputil.WriteError(w, http.StatusBadRequest, "Input URL is required when input doesn't exist")
+				return
+			}
+			if err := p.StartInput(ctx, inputName, inputURL); err != nil {
+				p.Logger.Error("ApiStartRecording: failed to start input", "err", err)
+				httputil.WriteError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+		}
+
+		if err := p.StartRecording(ctx, req.Name, inputName); err != nil {
 			httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "recording started"})
+
+		httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "started"})
 	}
 }
 
-func ApiStopRecording(rm *RecordingManager) http.HandlerFunc {
+func ApiStopRecording(p *Pipeline) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
-			Name   string `json:"name"`
-			Source string `json:"source"`
+			Name string `json:"name"`
 		}
+
 		if err := httputil.DecodeJSON(r, &req); err != nil {
 			httputil.WriteError(w, http.StatusBadRequest, "Invalid request")
 			return
 		}
-		if req.Name == "" || req.Source == "" {
-			httputil.WriteError(w, http.StatusBadRequest, "Name and source required")
+
+		if req.Name == "" {
+			httputil.WriteError(w, http.StatusBadRequest, "Name is required")
 			return
 		}
-		// Additional validation to prevent "undefined" values
-		if req.Name == "undefined" || req.Source == "undefined" {
-			httputil.WriteError(w, http.StatusBadRequest, "Invalid name or source: cannot be 'undefined'")
-			return
-		}
-		if err := rm.StopRecording(req.Name, req.Source); err != nil {
+
+		if err := p.StopRecording(req.Name); err != nil {
 			httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "recording stopped"})
+
+		httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "stopped"})
 	}
 }
 
-func ApiListRecordings(rm *RecordingManager) http.HandlerFunc {
+func ApiListRecordings(p *Pipeline) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		recs := rm.ListRecordings()
-		httputil.WriteJSON(w, http.StatusOK, recs)
+		recordings := p.ListRecordings()
+		httputil.WriteJSON(w, http.StatusOK, recordings)
 	}
 }
 
-func ApiDeleteRecording(rm *RecordingManager) http.HandlerFunc {
+func ApiDeleteRecording(p *Pipeline) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Filename string `json:"filename"`
 		}
+
 		if err := httputil.DecodeJSON(r, &req); err != nil {
 			httputil.WriteError(w, http.StatusBadRequest, "Invalid request")
 			return
 		}
+
 		if req.Filename == "" {
-			httputil.WriteError(w, http.StatusBadRequest, "Filename required")
+			httputil.WriteError(w, http.StatusBadRequest, "Filename is required")
 			return
 		}
-		if err := rm.DeleteRecordingByFilename(req.Filename); err != nil {
+
+		if err := p.DeleteRecording(req.Filename); err != nil {
 			httputil.WriteError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "recording deleted"})
+
+		httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 	}
+}
+
+func ApiDownloadRecording(p *Pipeline) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		filename := r.URL.Query().Get("filename")
+		if filename == "" {
+			http.Error(w, "Filename is required", http.StatusBadRequest)
+			return
+		}
+
+		filePath := filepath.Join(p.GetRecDir(), filename)
+		if _, err := os.Stat(filePath); os.IsNotExist(err) {
+			http.NotFound(w, r)
+			return
+		}
+
+		w.Header().Set("Content-Disposition", "attachment; filename="+filename)
+		http.ServeFile(w, r, filePath)
+	}
+}
+
+func ApiRecordingsSSE(p *Pipeline) http.HandlerFunc {
+	return p.SSE.Handler()
 }

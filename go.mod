@@ -1,22 +1,20 @@
 module go-mls
 
-go 1.24.0
-
-toolchain go1.24.2
+go 1.25.0
 
 require (
+	github.com/bluenviron/gortmplib v0.3.1
 	github.com/bluenviron/gortsplib/v4 v4.14.1
-	github.com/fsnotify/fsnotify v1.6.0
 	github.com/pion/rtp v1.8.16
 	github.com/shirou/gopsutil/v3 v3.24.5
-	github.com/stretchr/testify v1.10.0
-	golang.org/x/sync v0.18.0
-	golang.org/x/sys v0.33.0
+	github.com/stretchr/testify v1.11.1
 )
 
 require (
-	github.com/bluenviron/mediacommon/v2 v2.2.0 // indirect
+	github.com/abema/go-mp4 v1.5.0 // indirect
+	github.com/bluenviron/mediacommon/v2 v2.8.3 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
+	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/go-ole/go-ole v1.2.6 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/lufia/plan9stats v0.0.0-20211012122336-39d0f177ccd0 // indirect
@@ -30,5 +28,6 @@ require (
 	github.com/tklauser/numcpus v0.6.1 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	golang.org/x/net v0.40.0 // indirect
+	golang.org/x/sys v0.33.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

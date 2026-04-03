@@ -1,0 +1,145 @@
+// Package ingest implements the Smart Ingest Router.
+// It supports Native Pulling (RTMP/S), FFmpeg Pulling (RTSP/SRT/HLS),
+// and Passive Accepting (OBS push) with token-based gatekeeping.
+package ingest
+
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"go-mls/internal/logger"
+	"go-mls/internal/state"
+	"go-mls/internal/worker"
+)
+
+// Router manages ingestion of streams into the system.
+type Router struct {
+	store    *state.Store
+	log      *logger.Logger
+	ffmpeg   string // path to ffmpeg binary
+	rtmpPort int
+
+	// Map of stream_path -> active Puller for pull-mode inputs
+	pullers map[string]*worker.Puller
+}
+
+// Config holds router configuration.
+type Config struct {
+	FFMpegPath string
+	RTMPPort   int
+}
+
+// NewRouter creates a new ingest router.
+func NewRouter(store *state.Store, log *logger.Logger, cfg Config) *Router {
+	return &Router{
+		store:    store,
+		log:      log.With("component", "ingest"),
+		ffmpeg:   cfg.FFMpegPath,
+		rtmpPort: cfg.RTMPPort,
+		pullers:  make(map[string]*worker.Puller),
+	}
+}
+
+// RegisterInput registers an input and starts ingestion if it's a puller.
+// For acceptors (no remote_url), it just reserves the path and waits for a push.
+func (r *Router) RegisterInput(ctx context.Context, in *state.Input) error {
+	// Determine mode
+	if in.RemoteURL == "" {
+		in.Mode = state.InputModeAccept
+		in.Status = state.InputStatusStarting
+	} else {
+		in.Mode = state.InputModePull
+		in.Status = state.InputStatusStarting
+	}
+
+	if err := r.store.AddInput(in); err != nil {
+		return err
+	}
+
+	if in.Mode == state.InputModePull {
+		go r.startPuller(ctx, in)
+	} else {
+		r.log.Info("Acceptor registered, waiting for push", "stream_path", in.StreamPath)
+	}
+
+	return nil
+}
+
+// UnregisterInput stops any active puller and removes the input.
+func (r *Router) UnregisterInput(streamPath string) error {
+	if puller, ok := r.pullers[streamPath]; ok {
+		puller.Stop()
+		delete(r.pullers, streamPath)
+	}
+	return r.store.RemoveInput(streamPath)
+}
+
+// startPuller starts the appropriate puller based on the remote URL protocol.
+func (r *Router) startPuller(ctx context.Context, in *state.Input) {
+	url := in.RemoteURL
+
+	if isNativeRTMP(url) {
+		r.log.Info("Starting native RTMP pull", "stream_path", in.StreamPath, "url", url)
+		// For now, use FFmpeg for all pulls. Native RTMP pull can be implemented
+		// later using gortmplib directly.
+		r.startFFmpegPuller(ctx, in)
+	} else {
+		r.log.Info("Starting FFmpeg pull", "stream_path", in.StreamPath, "url", url)
+		r.startFFmpegPuller(ctx, in)
+	}
+}
+
+// startFFmpegPuller starts a worker.Puller for the given input.
+func (r *Router) startFFmpegPuller(ctx context.Context, in *state.Input) {
+	puller, err := worker.StartPuller(ctx, r.store, r.log, in, r.rtmpPort)
+	if err != nil {
+		r.log.Error("Failed to start puller", "stream_path", in.StreamPath, "error", err)
+		return
+	}
+
+	r.pullers[in.StreamPath] = puller
+
+	// Monitor for exit and clean up
+	go func() {
+		<-puller.Done()
+		delete(r.pullers, in.StreamPath)
+	}()
+}
+
+// ValidateToken checks if the provided token matches the registered ingest token.
+func (r *Router) ValidateToken(streamPath, token string) bool {
+	in, ok := r.store.GetInput(streamPath)
+	if !ok {
+		return false // Path not registered
+	}
+	if in.IngestToken == "" {
+		return true // No token required
+	}
+	return in.IngestToken == token
+}
+
+// OnPublish is called by the RTMP hub when a publisher connects.
+// It validates the path and token, then activates the input.
+func (r *Router) OnPublish(streamPath, token string) error {
+	in, ok := r.store.GetInput(streamPath)
+	if !ok {
+		return fmt.Errorf("stream path %q not registered", streamPath)
+	}
+	if in.IngestToken != "" && in.IngestToken != token {
+		return fmt.Errorf("invalid ingest token for %q", streamPath)
+	}
+	r.store.UpdateInputStatus(streamPath, state.InputStatusActive, "")
+	r.log.Info("Publisher connected", "stream_path", streamPath)
+	return nil
+}
+
+// OnPublishEnd is called when a publisher disconnects.
+func (r *Router) OnPublishEnd(streamPath string) {
+	r.store.UpdateInputStatus(streamPath, state.InputStatusStopped, "")
+	r.log.Info("Publisher disconnected", "stream_path", streamPath)
+}
+
+func isNativeRTMP(url string) bool {
+	return strings.HasPrefix(url, "rtmp://") || strings.HasPrefix(url, "rtmps://")
+}
