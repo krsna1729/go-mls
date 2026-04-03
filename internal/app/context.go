@@ -5,39 +5,64 @@ import (
 	"time"
 
 	"go-mls/internal/config"
+	"go-mls/internal/hub"
+	"go-mls/internal/ingest"
 	"go-mls/internal/logger"
-	"go-mls/internal/stream"
+	"go-mls/internal/state"
+	"go-mls/internal/worker"
 )
 
 type Context struct {
-	Logger   *logger.Logger
-	Config   *config.Config
-	Pipeline *stream.Pipeline
-	RTSP     *stream.RTSPServerManager
+	Logger *logger.Logger
+	Config *config.Config
+	Store  *state.Store
+	Hub    *hub.Hub
+	Ingest *ingest.Router
+	HLSMgr *worker.HLSManager
 }
 
 func NewContext(cfg *config.Config, log *logger.Logger) (*Context, error) {
 	ctx := &Context{
 		Logger: log,
 		Config: cfg,
+		Store:  state.NewStore(),
 	}
 
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid configuration: %w", err)
 	}
 
-	ctx.RTSP = stream.NewRTSPServerManager(log, cfg.Relay.RTSPServer.Host, cfg.Relay.RTSPServer.Port)
+	ctx.Hub = hub.NewHub(log, cfg.Relay.RTMPHub.Host, cfg.Relay.RTMPHub.Port)
 
 	ffmpegTimeout := time.Duration(cfg.Relay.OutputTimeout)
-	ctx.Pipeline = stream.NewPipeline(log, cfg.Recording.Directory, ffmpegTimeout)
-	ctx.Pipeline.SetRTSPServer(ctx.RTSP)
+	_ = ffmpegTimeout
+
+	ctx.Ingest = ingest.NewRouter(ctx.Store, log, ingest.Config{
+		FFMpegPath: cfg.FFmpeg.Path,
+		RTMPPort:   cfg.Relay.RTMPHub.Port,
+	})
+
+	ctx.Hub.SetHandlers(ctx.Ingest.OnPublish, ctx.Ingest.OnPublishEnd)
+
+	hlsPreset := cfg.HLS.FFmpegPreset
+	if hlsPreset == "" {
+		hlsPreset = "ultrafast"
+	}
+
+	ctx.HLSMgr = worker.NewHLSManager(
+		ctx.Store,
+		log,
+		cfg.HLS.PlaylistBaseDir,
+		hlsPreset,
+		cfg.Relay.RTMPHub.Port,
+	)
 
 	return ctx, nil
 }
 
 func (c *Context) Start() error {
-	if err := c.RTSP.Start(); err != nil {
-		return fmt.Errorf("failed to start RTSP server: %w", err)
+	if err := c.Hub.Start(); err != nil {
+		return fmt.Errorf("failed to start RTMP hub: %w", err)
 	}
 
 	c.Logger.Info("Application context initialized successfully")
@@ -47,9 +72,9 @@ func (c *Context) Start() error {
 func (c *Context) Shutdown() {
 	c.Logger.Info("Shutting down application context...")
 
-	c.Pipeline.Shutdown()
+	c.HLSMgr.Shutdown()
 
-	c.RTSP.Stop()
+	c.Hub.Stop()
 
 	c.Logger.Info("Application context shutdown complete")
 }

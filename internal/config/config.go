@@ -54,10 +54,17 @@ type RelayConfig struct {
 	InputTimeout  Duration   `json:"input_timeout"`
 	OutputTimeout Duration   `json:"output_timeout"`
 	RTSPServer    RTSPConfig `json:"rtsp_server"`
+	RTMPHub       RTMPConfig `json:"rtmp_hub"`
 }
 
 // RTSPConfig contains RTSP server settings
 type RTSPConfig struct {
+	Host string `json:"host"`
+	Port int    `json:"port"`
+}
+
+// RTMPConfig contains RTMP hub settings
+type RTMPConfig struct {
 	Host string `json:"host"`
 	Port int    `json:"port"`
 }
@@ -128,6 +135,10 @@ func DefaultConfig() *Config {
 			RTSPServer: RTSPConfig{
 				Host: "127.0.0.1",
 				Port: 8554,
+			},
+			RTMPHub: RTMPConfig{
+				Host: "127.0.0.1",
+				Port: 1935,
 			},
 		},
 		Recording: RecordingConfig{

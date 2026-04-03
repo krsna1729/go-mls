@@ -76,8 +76,17 @@ func main() {
 		log.Fatal("Failed to start application", "err", err)
 	}
 
-	// Create API router
-	router := api.NewRouter(appCtx)
+	// Create API server with all components
+	server := api.NewServer(
+		appCtx.Store,
+		appCtx.Ingest,
+		appCtx.HLSMgr,
+		log,
+		cfg.Recording.Directory,
+		cfg.Relay.RTMPHub.Port,
+		"",
+		context.Background(),
+	)
 
 	// Use embedded static assets
 	staticFS, err := fs.Sub(webAssets, "web")
@@ -89,16 +98,18 @@ func main() {
 	http.Handle("/", fileServer)
 
 	// Register API routes
-	router.RegisterRoutes(http.DefaultServeMux)
+	mux := http.NewServeMux()
+	server.RegisterRoutes(mux)
 
 	// Create HTTP server with proper configuration
-	server := &http.Server{
+	httpServer := &http.Server{
 		Addr:              cfg.HTTP.Host + ":" + cfg.HTTP.Port,
 		ReadTimeout:       time.Duration(cfg.HTTP.ReadTimeout),
 		WriteTimeout:      time.Duration(cfg.HTTP.WriteTimeout),
 		IdleTimeout:       time.Duration(cfg.HTTP.IdleTimeout),
 		ReadHeaderTimeout: 5 * time.Second,
 		MaxHeaderBytes:    1 << 20, // 1 MB
+		Handler:           mux,
 	}
 
 	// Channel to listen for interrupt signal
@@ -109,7 +120,7 @@ func main() {
 	go func() {
 		log.Info("Go-MLS relay manager running", "host", cfg.HTTP.Host, "port", cfg.HTTP.Port)
 		log.Debug("main: server starting", "host", cfg.HTTP.Host, "port", cfg.HTTP.Port)
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Error("Server error", "err", err)
 		}
 	}()
@@ -124,7 +135,7 @@ func main() {
 
 	// Shutdown HTTP server
 	log.Info("Shutting down HTTP server...")
-	if err := server.Shutdown(shutdownCtx); err != nil {
+	if err := httpServer.Shutdown(shutdownCtx); err != nil {
 		log.Error("Server shutdown error", "err", err)
 	}
 
