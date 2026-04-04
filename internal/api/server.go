@@ -78,6 +78,20 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/hls/start", s.handleHLSStart)
 	mux.HandleFunc("/hls/stop", s.handleHLSStop)
 
+	// Legacy API adapters for frontend compatibility
+	mux.HandleFunc("/api/relay/status", s.handleRelayStatus)
+	mux.HandleFunc("/api/relay/start", s.handleRelayStart)
+	mux.HandleFunc("/api/relay/stop", s.handleRelayStop)
+	mux.HandleFunc("/api/relay/delete-input", s.handleRelayDeleteInput)
+	mux.HandleFunc("/api/relay/delete-output", s.handleRelayDeleteOutput)
+	mux.HandleFunc("/api/relay/presets", s.handleRelayPresets)
+	mux.HandleFunc("/api/relay/export", s.handleExport)
+	mux.HandleFunc("/api/relay/hls/start-viewer", s.handleHLSStartViewer)
+	mux.HandleFunc("/api/relay/hls/stop-viewer", s.handleHLSStopViewer)
+	mux.HandleFunc("/api/recording/list", s.handleRecordingList)
+	mux.HandleFunc("/api/recording/start", s.handleRecordingStart)
+	mux.HandleFunc("/api/recording/stop", s.handleRecordingStop)
+
 	// HLS file serving - serve from hls directory
 	if s.hlsDir != "" {
 		hlsFS := http.FileServer(http.Dir(s.hlsDir))
@@ -608,4 +622,298 @@ func (s *Server) Shutdown() {
 	}
 
 	s.log.Info("API Server shutdown complete")
+}
+
+// --- Legacy API Adapters for Frontend Compatibility ---
+
+type relayStatusResponse struct {
+	Server  serverStats         `json:"server"`
+	Relays  []relayGroup        `json:"relays"`
+	Presets map[string]struct{} `json:"presets,omitempty"`
+}
+
+type relayGroup struct {
+	Input   relayInput    `json:"input"`
+	Outputs []relayOutput `json:"outputs"`
+}
+
+type relayInput struct {
+	InputURL  string  `json:"input_url"`
+	InputName string  `json:"input_name"`
+	Status    string  `json:"status"`
+	CPU       float64 `json:"cpu,omitempty"`
+	Mem       float64 `json:"mem,omitempty"`
+	Speed     float64 `json:"speed,omitempty"`
+	Bitrate   float64 `json:"bitrate,omitempty"`
+	LastError string  `json:"last_error,omitempty"`
+}
+
+type relayOutput struct {
+	OutputURL  string  `json:"output_url"`
+	OutputName string  `json:"output_name"`
+	Status     string  `json:"status"`
+	CPU        float64 `json:"cpu,omitempty"`
+	Mem        float64 `json:"mem,omitempty"`
+	Bitrate    float64 `json:"bitrate,omitempty"`
+	LastError  string  `json:"last_error,omitempty"`
+}
+
+func (s *Server) handleRelayStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	resp := relayStatusResponse{
+		Server:  s.getSelfStats(),
+		Relays:  []relayGroup{},
+		Presets: map[string]struct{}{},
+	}
+
+	inputs := s.store.ListInputs()
+	outputs := s.store.ListOutputs()
+
+	for _, in := range inputs {
+		rg := relayGroup{
+			Input: relayInput{
+				InputURL:  in.RemoteURL,
+				InputName: in.StreamPath,
+				Status:    string(in.Status),
+			},
+			Outputs: []relayOutput{},
+		}
+
+		if in.PID > 0 {
+			if t, ok := s.store.GetTelemetry(in.PID); ok {
+				rg.Input.CPU = t.CPU
+				rg.Input.Mem = t.MemMB * 1024 * 1024
+				rg.Input.Speed = t.Speed
+				rg.Input.Bitrate = t.Bitrate / 1000
+			}
+		}
+
+		for _, out := range outputs {
+			if out.StreamPath == in.StreamPath {
+				ro := relayOutput{
+					OutputURL:  out.RemoteURL,
+					OutputName: out.OutputID,
+					Status:     string(out.Status),
+				}
+				if out.PID > 0 {
+					if t, ok := s.store.GetTelemetry(out.PID); ok {
+						ro.CPU = t.CPU
+						ro.Mem = t.MemMB * 1024 * 1024
+						ro.Bitrate = t.Bitrate / 1000
+					}
+				}
+				rg.Outputs = append(rg.Outputs, ro)
+			}
+		}
+
+		resp.Relays = append(resp.Relays, rg)
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) getSelfStats() serverStats {
+	stats := serverStats{}
+	p, err := process.NewProcess(int32(os.Getpid()))
+	if err != nil {
+		return stats
+	}
+	if cpu, err := p.CPUPercent(); err == nil {
+		stats.CPU = cpu
+	}
+	if mem, err := p.MemoryInfo(); err == nil {
+		stats.Mem = float64(mem.RSS) / (1024 * 1024)
+	}
+	return stats
+}
+
+type relayStartRequest struct {
+	InputURL   string `json:"input_url"`
+	InputName  string `json:"input_name"`
+	OutputURL  string `json:"output_url"`
+	OutputName string `json:"output_name"`
+}
+
+func (s *Server) handleRelayStart(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req relayStartRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+
+	if req.InputName != "" {
+		in := &state.Input{
+			StreamPath: req.InputName,
+			Mode:       state.InputModePull,
+			RemoteURL:  req.InputURL,
+		}
+		if err := s.store.AddInput(in); err != nil {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+			return
+		}
+	}
+
+	if req.OutputName != "" && req.OutputURL != "" && req.InputName != "" {
+		out := &state.Output{
+			StreamPath: req.InputName,
+			OutputID:   req.OutputName,
+			RemoteURL:  req.OutputURL,
+		}
+		if err := s.store.AddOutput(out); err != nil {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+			return
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleRelayStop(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleRelayDeleteInput(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		InputURL  string `json:"input_url"`
+		InputName string `json:"input_name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+
+	name := req.InputName
+	if name == "" {
+		name = req.InputURL
+	}
+
+	if err := s.store.RemoveInput(name); err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleRelayDeleteOutput(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		InputURL   string `json:"input_url"`
+		InputName  string `json:"input_name"`
+		OutputURL  string `json:"output_url"`
+		OutputName string `json:"output_name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+
+	if err := s.store.RemoveOutput(req.InputName, req.OutputName); err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleRelayPresets(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{})
+}
+
+func (s *Server) handleHLSStartViewer(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		InputName string `json:"input_name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+
+	viewerID, err := s.hlsMgr.AddViewer(r.Context(), req.InputName)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"viewer_id":    viewerID,
+		"playlist_url": "/hls/" + req.InputName + "/index.m3u8",
+	})
+}
+
+func (s *Server) handleHLSStopViewer(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		InputName string `json:"input_name"`
+		ViewerID  string `json:"viewer_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+
+	s.hlsMgr.RemoveViewer(req.InputName)
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleRecordingList(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	recordings := s.store.ListRecordings()
+	result := make([]map[string]interface{}, 0, len(recordings))
+	for _, rec := range recordings {
+		result = append(result, map[string]interface{}{
+			"name":   rec.StreamPath,
+			"source": rec.StreamPath,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) handleRecordingStart(w http.ResponseWriter, r *http.Request) {
+	s.handleRecord(w, r)
+}
+
+func (s *Server) handleRecordingStop(w http.ResponseWriter, r *http.Request) {
+	s.handleRecord(w, r)
 }
