@@ -468,6 +468,8 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		if out.PID > 0 {
 			if t, ok := s.store.GetTelemetry(out.PID); ok {
 				os.Telemetry = t
+			} else {
+				os.Telemetry = getProcessTelemetry(out.PID)
 			}
 		}
 		resp.Outputs = append(resp.Outputs, os)
@@ -492,6 +494,22 @@ func getSelfStats() serverStats {
 	}
 
 	return stats
+}
+
+// getProcessTelemetry returns real-time CPU/memory for a given PID
+func getProcessTelemetry(pid int) *state.Telemetry {
+	t := &state.Telemetry{}
+	p, err := process.NewProcess(int32(pid))
+	if err != nil {
+		return t
+	}
+	if cpu, err := p.CPUPercent(); err == nil {
+		t.CPU = cpu
+	}
+	if mem, err := p.MemoryInfo(); err == nil {
+		t.MemMB = float64(mem.RSS) / (1024 * 1024)
+	}
+	return t
 }
 
 // --- /system/export ---
