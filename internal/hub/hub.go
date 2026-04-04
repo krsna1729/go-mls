@@ -65,6 +65,7 @@ type RTMPHub struct {
 	onUnpublish func(streamPath string)
 	ctx         context.Context
 	cancel      context.CancelFunc
+	wg          sync.WaitGroup
 }
 
 // NewRTMPHub creates a new RTMP Hub.
@@ -98,11 +99,13 @@ func (h *RTMPHub) Start() error {
 	}
 	h.log.Info("RTMP Hub listening", "addr", h.listener.Addr().String())
 
+	h.wg.Add(1)
 	go h.acceptLoop()
 	return nil
 }
 
 func (h *RTMPHub) acceptLoop() {
+	defer h.wg.Done()
 	for {
 		conn, err := h.listener.Accept()
 		if err != nil {
@@ -114,12 +117,14 @@ func (h *RTMPHub) acceptLoop() {
 				continue
 			}
 		}
+		h.wg.Add(1)
 		go h.handleConn(conn)
 	}
 }
 
 // handleConn processes a single RTMP connection through handshake and dispatch.
 func (h *RTMPHub) handleConn(conn net.Conn) {
+	defer h.wg.Done()
 	defer conn.Close()
 
 	remoteAddr := conn.RemoteAddr().String()
@@ -360,6 +365,7 @@ func (h *RTMPHub) Stop() {
 		delete(h.streams, path)
 	}
 	h.mu.Unlock()
+	h.wg.Wait()
 	h.log.Info("RTMP Hub stopped")
 }
 

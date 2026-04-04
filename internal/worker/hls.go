@@ -50,7 +50,7 @@ func (m *HLSManager) AddViewer(ctx context.Context, streamPath string) (string, 
 		return filepath.Join(sess.playlistDir, "index.m3u8"), nil
 	}
 
-	playlistDir := filepath.Join(m.baseDir, "hls", streamPath)
+	playlistDir := filepath.Join(m.baseDir, streamPath)
 	if err := os.MkdirAll(playlistDir, 0755); err != nil {
 		return "", fmt.Errorf("create HLS dir: %w", err)
 	}

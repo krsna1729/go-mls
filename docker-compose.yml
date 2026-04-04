@@ -1,162 +1,100 @@
 services:
-  input-rtmp-1:
-    image: tiangolo/nginx-rtmp
-    container_name: input-rtmp-1
+  # ============================================================================
+  # go-mls: RTMP hub + HTTP API
+  # Ports driven by config.json: http.port=8080, rtmp_hub.port=1935
+  # ============================================================================
+  go-mls:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: go-mls
     ports:
-      - "1933:1935"
+      - "8080:8080"  # HTTP API (config.http.port)
+    volumes:
+      - ./config.json:/app/config.json:ro
+      - ./testdata:/testdata:ro
+      - ./recordings:/recordings
+      - ./hls:/hls
+    environment:
+      - GOLOG_LEVEL=info
     networks:
-      - rtmp-net
-    deploy:
-      resources:
-        limits:
-          memory: 32m
+      - media-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/stats"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 3s
 
-  input-rtmp-2:
-    image: tiangolo/nginx-rtmp
-    container_name: input-rtmp-2
-    ports:
-      - "1934:1935"
+  # ============================================================================
+  # source-http: Test video server for pull mode
+  # ============================================================================
+  source-http:
+    image: nginx:alpine
+    container_name: source-http
+    volumes:
+      - ./testdata:/usr/share/nginx/html:ro
     networks:
-      - rtmp-net
-    deploy:
-      resources:
-        limits:
-          memory: 32m
+      - media-net
 
-  output-rtmp-1:
-    image: tiangolo/nginx-rtmp
-    container_name: output-rtmp-1
-    ports:
-      - "1935:1935"
-    networks:
-      - rtmp-net
-    deploy:
-      resources:
-        limits:
-          memory: 32m
-
-  output-rtmp-2:
-    image: tiangolo/nginx-rtmp
-    container_name: output-rtmp-2
-    ports:
-      - "1936:1935"
-    networks:
-      - rtmp-net
-    deploy:
-      resources:
-        limits:
-          memory: 32m
-
-  output-rtmp-3:
-    image: tiangolo/nginx-rtmp
-    container_name: output-rtmp-3
-    ports:
-      - "1937:1935"
-    networks:
-      - rtmp-net
-    deploy:
-      resources:
-        limits:
-          memory: 32m
-
-  output-rtmp-4:
-    image: tiangolo/nginx-rtmp
-    container_name: output-rtmp-4
-    ports:
-      - "1938:1935"
-    networks:
-      - rtmp-net
-    deploy:
-      resources:
-        limits:
-          memory: 32m
-
-  ffmpeg-source:
-    image: linuxserver/ffmpeg
-    container_name: ffmpeg-source
-    depends_on:
-      - input-rtmp-1
-      - input-rtmp-2
+  # ============================================================================
+  # source-push: FFmpeg pushing to go-mls RTMP hub (port 1935)
+  # Auto-starts and registers input via API
+  # ============================================================================
+  source-push:
+    build:
+      context: .
+      dockerfile: source-push.Dockerfile
+    container_name: source-push
     volumes:
       - ./testdata:/testdata:ro
-    entrypoint: [
-      "sh", "-c",
-      "ffmpeg -stream_loop -1 -re -i /testdata/testsrc.mp4 -c:v copy -c:a copy -f flv rtmp://input-rtmp-1/live/stream & \
-       ffmpeg -stream_loop -1 -re -i /testdata/testsrc.mp4 -c:v copy -c:a copy -f flv rtmp://input-rtmp-2/live/stream && wait"
-    ]
+      - ./scripts/source-push.sh:/source-push.sh:ro
     networks:
-      - rtmp-net
-    deploy:
-      resources:
-        limits:
-          memory: 32m
-
-  prometheus:
-    image: prom/prometheus:latest
-    container_name: prometheus
-    volumes:
-      - ./provisioning/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-    ports:
-      - "9090:9090"
-    networks:
-      - rtmp-net
-    deploy:
-      resources:
-        limits:
-          memory: 128m
-
-  grafana:
-    image: grafana/grafana:latest
-    container_name: grafana
-    ports:
-      - "3000:3000"
-    environment:
-      - GF_SECURITY_ADMIN_PASSWORD=admin
-      - GF_AUTH_ANONYMOUS_ENABLED=true
-      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
-      - GF_USERS_ALLOW_SIGN_UP=false
-    volumes:
-      - ./provisioning/datasources:/etc/grafana/provisioning/datasources
-      - ./provisioning/dashboards:/etc/grafana/provisioning/dashboards
-      - ./provisioning/dashboards:/var/lib/grafana/dashboards
-    networks:
-      - rtmp-net
+      - media-net
+    entrypoint: ["/bin/sh", "/source-push.sh"]
     depends_on:
-      - prometheus
-    deploy:
-      resources:
-        limits:
-          memory: 128m
+      go-mls:
+        condition: service_healthy
+    restart: on-failure
+    healthcheck:
+      test: ["CMD", "pgrep", "-x", "ffmpeg"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
 
-  node-exporter:
-    image: prom/node-exporter:latest
-    container_name: node-exporter
+  # ============================================================================
+  # output-rtmp: Receives relayed streams (port 1935)
+  # ============================================================================
+  output-rtmp:
+    image: tiangolo/nginx-rtmp:latest
+    container_name: output-rtmp
     networks:
-      - rtmp-net
+      - media-net
     deploy:
       resources:
         limits:
-          memory: 32m
+          memory: 64m
 
-  cadvisor:
-    image: gcr.io/cadvisor/cadvisor:latest
-    container_name: cadvisor
-    ports:
-      - "8081:8080"
+  # ============================================================================
+  # test-runner: Comprehensive e2e tests using ffprobe for verification
+  # ============================================================================
+  test-runner:
+    build:
+      context: .
+      dockerfile: test-runner.Dockerfile
+    container_name: test-runner
+    networks:
+      - media-net
+    depends_on:
+      go-mls:
+        condition: service_healthy
     volumes:
-      - /:/rootfs:ro
-      - /var/run:/var/run:ro
-      - /sys:/sys:ro
-      - /var/lib/docker/:/var/lib/docker:ro
-    networks:
-      - rtmp-net
-    deploy:
-      resources:
-        limits:
-          memory: 128m
+      - ./test-results:/results
+      - ./testdata:/testdata:ro
+      - ./scripts/e2e-test.sh:/e2e-test.sh:ro
+    entrypoint: ["/bin/sh", "/e2e-test.sh"]
 
 networks:
-  rtmp-net:
+  media-net:
     driver: bridge

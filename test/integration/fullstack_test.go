@@ -113,6 +113,7 @@ func setupTestEnv(t *testing.T) *testEnv {
 		appCtx.HLSMgr,
 		log,
 		tempDir,
+		tempDir,
 		1935,
 		"",
 		context.Background(),

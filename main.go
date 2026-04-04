@@ -83,6 +83,7 @@ func main() {
 		appCtx.HLSMgr,
 		log,
 		cfg.Recording.Directory,
+		cfg.HLS.PlaylistBaseDir,
 		cfg.Relay.RTMPHub.Port,
 		"",
 		context.Background(),

@@ -204,6 +204,7 @@ func RunProcessWorker(name string, log *logger.Logger, factory ProcessFactory) (
 		case <-w.stopCh:
 			w.setState(WorkerStateStopping)
 			proc.Stop()
+			proc.Wait()
 		case <-proc.Done():
 			if err := proc.Err(); err != nil {
 				w.exitErr = err
@@ -211,6 +212,7 @@ func RunProcessWorker(name string, log *logger.Logger, factory ProcessFactory) (
 			}
 			w.setState(WorkerStateStopping)
 		}
+		// Explicit return ensures goroutine exits immediately after select completes
 	}()
 
 	return w, nil

@@ -7,8 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 
@@ -25,6 +23,7 @@ type Server struct {
 	hlsMgr     *worker.HLSManager
 	log        *logger.Logger
 	recDir     string
+	hlsDir     string
 	rtmpPort   int
 	configPath string
 	ctx        context.Context
@@ -42,6 +41,7 @@ func NewServer(
 	hlsMgr *worker.HLSManager,
 	log *logger.Logger,
 	recDir string,
+	hlsDir string,
 	rtmpPort int,
 	configPath string,
 	ctx context.Context,
@@ -52,6 +52,7 @@ func NewServer(
 		hlsMgr:      hlsMgr,
 		log:         log.With("component", "api"),
 		recDir:      recDir,
+		hlsDir:      hlsDir,
 		rtmpPort:    rtmpPort,
 		configPath:  configPath,
 		ctx:         ctx,
@@ -74,8 +75,11 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/hls/start", s.handleHLSStart)
 	mux.HandleFunc("/hls/stop", s.handleHLSStop)
 
-	// HLS file serving
-	mux.Handle("/hls/", http.StripPrefix("/hls/", http.FileServer(http.Dir(filepath.Join(os.TempDir(), "hls")))))
+	// HLS file serving - serve from hls directory
+	if s.hlsDir != "" {
+		hlsFS := http.FileServer(http.Dir(s.hlsDir))
+		mux.Handle("/hls/", http.StripPrefix("/hls/", hlsFS))
+	}
 }
 
 // --- /inputs ---

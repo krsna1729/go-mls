@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"fmt"
+	"runtime"
 	"testing"
 	"time"
 
@@ -150,6 +151,19 @@ func (m *mockProcess) Done() <-chan struct{} {
 }
 func (m *mockProcess) Err() error { return nil }
 
+type mockProcessWithDone struct {
+	blocked chan struct{}
+}
+
+func (m *mockProcessWithDone) PID() int { return 0 }
+func (m *mockProcessWithDone) Stop()    { close(m.blocked) }
+func (m *mockProcessWithDone) Wait() error {
+	<-m.blocked
+	return nil
+}
+func (m *mockProcessWithDone) Done() <-chan struct{} { return m.blocked }
+func (m *mockProcessWithDone) Err() error            { return nil }
+
 func TestNoopFFmpegProcess(t *testing.T) {
 	p := &NoopFFmpegProcess{}
 
@@ -201,4 +215,93 @@ func TestRunProcessWorkerWithError(t *testing.T) {
 func TestProcessCreator(t *testing.T) {
 	c := &DefaultProcessCreator{}
 	var _ ProcessCreator = c
+}
+
+func TestRunProcessWorker_GoroutineCleanup(t *testing.T) {
+	log := logger.NewLogger()
+
+	started := make(chan struct{})
+	done := make(chan struct{})
+
+	w, err := RunProcessWorker("test-cleanup", log, func(ctx context.Context) (Process, error) {
+		proc := &mockProcessWithDone{blocked: make(chan struct{})}
+		close(started)
+		<-done // Block until we signal
+		return proc, nil
+	})
+
+	assert.NoError(t, err)
+	<-started // Wait for factory to be called
+
+	// Record goroutine count before stop
+	initialGoroutines := runtime.NumGoroutine()
+
+	// Stop the worker
+	w.Stop()
+
+	// Signal the blocked process to exit
+	close(done)
+
+	// Wait for worker to complete
+	err = w.Wait()
+	assert.NoError(t, err)
+
+	// Give a small time window for cleanup
+	time.Sleep(100 * time.Millisecond)
+
+	// Verify goroutine count is back to initial (or close to it)
+	currentGoroutines := runtime.NumGoroutine()
+	diff := currentGoroutines - initialGoroutines
+	assert.True(t, diff <= 1, "goroutines leaked: initial=%d, current=%d, diff=%d", initialGoroutines, currentGoroutines, diff)
+}
+
+func TestRunProcessWorker_StopBeforeProcessStarts(t *testing.T) {
+	log := logger.NewLogger()
+
+	block := make(chan struct{})
+	unblock := make(chan struct{})
+
+	w, err := RunProcessWorker("test-stop-before", log, func(ctx context.Context) (Process, error) {
+		<-block // Block until we signal
+		proc := &mockProcessWithDone{blocked: make(chan struct{})}
+		select {
+		case <-unblock:
+			return proc, nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	})
+
+	assert.NoError(t, err)
+
+	// Stop before the factory has returned
+	w.Stop()
+	close(block)
+
+	// Signal the unblock
+	close(unblock)
+
+	// Wait for worker to complete
+	err = w.Wait()
+	assert.NoError(t, err)
+
+	// Verify state transitions to stopped (not error)
+	assert.Equal(t, WorkerStateStopped, w.State())
+}
+
+func TestProcessWorker_Shutdown(t *testing.T) {
+	log := logger.NewLogger()
+
+	w, err := RunProcessWorker("test-shutdown", log, func(ctx context.Context) (Process, error) {
+		proc := &mockProcessWithDone{blocked: make(chan struct{})}
+		return proc, nil
+	})
+
+	assert.NoError(t, err)
+
+	// Call Shutdown
+	w.Shutdown()
+
+	// Verify state is stopped
+	assert.Equal(t, WorkerStateStopped, w.State())
 }

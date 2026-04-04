@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"go-mls/internal/logger"
@@ -39,6 +40,11 @@ func RunAndMonitorFFmpeg(ctx context.Context, store *state.Store, log *logger.Lo
 	childCtx, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(childCtx, "ffmpeg", args...)
 	cmd.Stdout = nil // Not used
+
+	// Put ffmpeg in its own process group so SIGTERM doesn't propagate from parent
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Setpgid: true,
+	}
 
 	stderrPipe, err := cmd.StderrPipe()
 	if err != nil {
@@ -86,15 +92,40 @@ func (fp *FFmpegProcess) Err() error {
 }
 
 // Stop signals the process to stop gracefully.
-// It does NOT wait for completion - use Wait() for that.
-// This design avoids races with monitor goroutines that also read from done.
+// If the process doesn't exit within the timeout, it kills the entire process group.
 func (fp *FFmpegProcess) Stop() {
 	fp.cancel()
 	fp.log.Debug("Stop signal sent to ffmpeg")
+
+	// Wait a short time for graceful shutdown, then kill process group if needed
+	go func() {
+		select {
+		case <-fp.done:
+			return
+		case <-time.After(5 * time.Second):
+			// Graceful shutdown didn't work, kill the entire process group
+			fp.killProcessGroup()
+		}
+	}()
+}
+
+// killProcessGroup kills the entire process group to ensure ffmpeg and all
+// child processes are terminated.
+func (fp *FFmpegProcess) killProcessGroup() {
+	fp.mu.Lock()
+	defer fp.mu.Unlock()
+
+	if fp.cmd == nil || fp.cmd.Process == nil {
+		return
+	}
+
+	// Kill the entire process group (negative PID means process group)
+	pgid := fp.cmd.Process.Pid
+	fp.log.Debug("Killing process group", "pgid", pgid)
+	syscall.Kill(-pgid, syscall.SIGKILL)
 }
 
 // Wait blocks until the process has fully exited.
-// Call Stop() first to trigger graceful shutdown.
 func (fp *FFmpegProcess) Wait() error {
 	<-fp.done
 	fp.store.RemoveTelemetry(fp.pid)
