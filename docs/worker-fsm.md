@@ -149,17 +149,19 @@ stateDiagram-v2
     [*] --> Stopped
 
     Stopped --> Starting: Start()
+
     Starting --> Running: Process created
-    Starting --> Stopping: Factory fails
+    Starting --> Stopped: Factory fails/returns nil
 
-    Running --> Stopping: Stop() or Process exits
-
-    Stopping --> Stopped: complete()
-    Stopping --> Error: complete(err)
+    Running --> Stopped: Stop() + process exits
+    Running --> Error: Process exits with error
+    Running --> Stopped: Process exits cleanly
 
     Error --> [*]
     Stopped --> [*]: Shutdown
 ```
+
+Note: The `Stopping` state is an implementation detail and never observable. State transitions happen atomically via `complete()`.
 
 ## Shutdown Order
 

@@ -128,15 +128,6 @@ func (w *BaseWorker) complete(err error) {
 	close(w.doneCh)
 }
 
-func (w *BaseWorker) run(ctx context.Context, fn func(ctx context.Context) error) {
-	defer w.complete(w.exitErr)
-
-	if err := fn(ctx); err != nil {
-		w.exitErr = err
-		w.setState(WorkerStateStopping)
-	}
-}
-
 type ProcessWorker struct {
 	*BaseWorker
 	procMu sync.Mutex
@@ -191,13 +182,11 @@ func RunProcessWorker(name string, log *logger.Logger, factory ProcessFactory) (
 		proc, err := factory(context.Background())
 		if err != nil {
 			w.exitErr = err
-			w.setState(WorkerStateStopping)
 			w.log.Error("Failed to start process", "error", err)
 			return
 		}
 
 		if proc == nil {
-			w.setState(WorkerStateStopping)
 			return
 		}
 
@@ -208,7 +197,6 @@ func RunProcessWorker(name string, log *logger.Logger, factory ProcessFactory) (
 
 		select {
 		case <-w.stopCh:
-			w.setState(WorkerStateStopping)
 			proc.Stop()
 			if err := proc.Wait(); err != nil {
 				if !errors.Is(err, ErrProcessKilled) && !IsProcessKilled(err) {
@@ -225,9 +213,7 @@ func RunProcessWorker(name string, log *logger.Logger, factory ProcessFactory) (
 				}
 				w.log.Error("Process exited with error", "error", err)
 			}
-			w.setState(WorkerStateStopping)
 		}
-		// Explicit return ensures goroutine exits immediately after select completes
 	}()
 
 	return w, nil
@@ -253,13 +239,11 @@ func (w *ProcessWorker) StartWithFactory(factory ProcessFactory) (*ProcessWorker
 		proc, err := factory(context.Background())
 		if err != nil {
 			w.exitErr = err
-			w.setState(WorkerStateStopping)
 			w.log.Error("Failed to start process", "error", err)
 			return
 		}
 
 		if proc == nil {
-			w.setState(WorkerStateStopping)
 			return
 		}
 
@@ -270,7 +254,6 @@ func (w *ProcessWorker) StartWithFactory(factory ProcessFactory) (*ProcessWorker
 
 		select {
 		case <-w.stopCh:
-			w.setState(WorkerStateStopping)
 			proc.Stop()
 			if err := proc.Wait(); err != nil {
 				if !errors.Is(err, ErrProcessKilled) && !IsProcessKilled(err) {
@@ -287,7 +270,6 @@ func (w *ProcessWorker) StartWithFactory(factory ProcessFactory) (*ProcessWorker
 				}
 				w.log.Error("Process exited with error", "error", err)
 			}
-			w.setState(WorkerStateStopping)
 		}
 	}()
 
