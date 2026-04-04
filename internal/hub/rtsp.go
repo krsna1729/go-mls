@@ -26,6 +26,7 @@ type rtspHub struct {
 	log         *logger.Logger
 	addr        string
 	server      *gortsplib.Server
+	started     bool
 	mu          sync.RWMutex
 	streams     map[string]*rtspStream
 	onPublish   func(streamPath, token string) error
@@ -64,11 +65,21 @@ func (h *rtspHub) Start() error {
 		WriteTimeout: 5 * time.Second,
 	}
 
+	ready := make(chan error, 1)
 	go func() {
-		if err := h.server.Start(); err != nil {
-			h.log.Error("RTSP server error", "error", err)
-		}
+		ready <- h.server.Start()
 	}()
+
+	select {
+	case err := <-ready:
+		if err != nil {
+			h.started = false
+			return fmt.Errorf("RTSP server start: %w", err)
+		}
+		h.started = true
+	case <-time.After(2 * time.Second):
+		h.started = true
+	}
 
 	h.log.Info("RTSP Hub starting", "addr", h.addr)
 	return nil
@@ -76,13 +87,17 @@ func (h *rtspHub) Start() error {
 
 func (h *rtspHub) Stop() {
 	h.cancel()
-	if h.server != nil {
+	if h.started && h.server != nil {
 		h.server.Close()
 	}
+	h.started = false
 	h.log.Info("RTSP Hub stopped")
 }
 
 func (h *rtspHub) Addr() string {
+	if h.server != nil && h.server.RTSPAddress != "" {
+		return h.server.RTSPAddress
+	}
 	return h.addr
 }
 
