@@ -451,6 +451,8 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		if in.PID > 0 {
 			if t, ok := s.store.GetTelemetry(in.PID); ok {
 				is.Telemetry = t
+			} else {
+				is.Telemetry = getProcessTelemetry(in.PID)
 			}
 		}
 		resp.Inputs = append(resp.Inputs, is)
