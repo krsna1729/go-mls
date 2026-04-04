@@ -88,14 +88,16 @@ func main() {
 		log.Error("Failed to create sub FS for web assets", "err", err)
 		os.Exit(1)
 	}
+	// Register static file server for web UI (serves index.html for SPA routing)
 	fileServer := http.FileServer(http.FS(staticFS))
 	http.Handle("/", fileServer)
 
-	// Register API routes
+	// Register API routes on default mux
 	mux := http.NewServeMux()
 	server.RegisterRoutes(mux)
+	http.Handle("/api/", mux)
 
-	// Create HTTP server with proper configuration
+	// Create HTTP server using default mux
 	httpServer := &http.Server{
 		Addr:              cfg.HTTP.Host + ":" + cfg.HTTP.Port,
 		ReadTimeout:       time.Duration(cfg.HTTP.ReadTimeout),
@@ -103,7 +105,6 @@ func main() {
 		IdleTimeout:       time.Duration(cfg.HTTP.IdleTimeout),
 		ReadHeaderTimeout: 5 * time.Second,
 		MaxHeaderBytes:    1 << 20, // 1 MB
-		Handler:           mux,
 	}
 
 	// Channel to listen for interrupt signal
