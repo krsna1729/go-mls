@@ -89,7 +89,7 @@ func (c *Context) Shutdown() {
 	c.Logger.Info("Shutting down application context...")
 
 	c.HLSMgr.Shutdown()
-
+	c.Ingest.Shutdown()
 	c.Hub.Stop()
 
 	c.Logger.Info("Application context shutdown complete")

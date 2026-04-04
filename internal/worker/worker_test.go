@@ -46,11 +46,11 @@ func TestBaseWorker_Start(t *testing.T) {
 	log := logger.NewLogger()
 	w := NewBaseWorker("test", log)
 
-	err := w.start()
+	err := w.Start()
 	assert.NoError(t, err)
 	assert.Equal(t, WorkerStateStarting, w.State())
 
-	err = w.start()
+	err = w.Start()
 	assert.Error(t, err)
 }
 
@@ -58,7 +58,7 @@ func TestBaseWorker_Stop(t *testing.T) {
 	log := logger.NewLogger()
 	w := NewBaseWorker("test", log)
 
-	w.start()
+	w.Start()
 	w.Stop()
 
 	select {
@@ -73,7 +73,7 @@ func TestBaseWorker_Wait(t *testing.T) {
 	log := logger.NewLogger()
 	w := NewBaseWorker("test", log)
 
-	w.start()
+	w.Start()
 	w.complete(nil)
 
 	err := w.Wait()
@@ -85,7 +85,7 @@ func TestBaseWorker_CompleteWithError(t *testing.T) {
 	log := logger.NewLogger()
 	w := NewBaseWorker("test", log)
 
-	w.start()
+	w.Start()
 	w.complete(assert.AnError)
 
 	err := w.Wait()
@@ -97,7 +97,7 @@ func TestBaseWorker_Done(t *testing.T) {
 	log := logger.NewLogger()
 	w := NewBaseWorker("test", log)
 
-	w.start()
+	w.Start()
 	w.complete(nil)
 
 	select {

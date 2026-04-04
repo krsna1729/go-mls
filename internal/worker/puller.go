@@ -27,9 +27,10 @@ func StartPuller(ctx context.Context, store *state.Store, log *logger.Logger, st
 	}
 
 	p := &Puller{
-		store:    store,
-		stream:   stream,
-		rtmpPort: rtmpPort,
+		store:         store,
+		stream:        stream,
+		rtmpPort:      rtmpPort,
+		ProcessWorker: NewProcessWorker("puller:"+stream.StreamPath, log),
 	}
 
 	factory := func(ctx context.Context) (Process, error) {
@@ -40,11 +41,11 @@ func StartPuller(ctx context.Context, store *state.Store, log *logger.Logger, st
 		}
 		stream.PID = fp.PID()
 		store.UpdateInputStatus(stream.StreamPath, state.InputStatusActive, "")
-		p.ProcessWorker = NewProcessWorker("puller:"+stream.StreamPath, log).WithProcess(fp)
+		p.ProcessWorker = p.ProcessWorker.WithProcess(fp)
 		return fp, nil
 	}
 
-	_, err := RunProcessWorker("puller:"+stream.StreamPath, log, factory)
+	_, err := p.ProcessWorker.StartWithFactory(factory)
 	if err != nil {
 		return nil, err
 	}

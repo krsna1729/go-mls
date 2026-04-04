@@ -7,6 +7,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
+	"time"
 
 	"go-mls/internal/logger"
 	"go-mls/internal/state"
@@ -19,6 +21,7 @@ type Router struct {
 	log      *logger.Logger
 	ffmpeg   string // path to ffmpeg binary
 	rtmpPort int
+	mu       sync.RWMutex
 
 	// Map of stream_path -> active Puller for pull-mode inputs
 	pullers map[string]*worker.Puller
@@ -68,11 +71,35 @@ func (r *Router) RegisterInput(ctx context.Context, in *state.Input) error {
 
 // UnregisterInput stops any active puller and removes the input.
 func (r *Router) UnregisterInput(streamPath string) error {
+	r.mu.Lock()
 	if puller, ok := r.pullers[streamPath]; ok {
 		puller.Stop()
 		delete(r.pullers, streamPath)
 	}
+	r.mu.Unlock()
 	return r.store.RemoveInput(streamPath)
+}
+
+// Shutdown stops all active pullers and waits for them to complete.
+func (r *Router) Shutdown() {
+	r.mu.Lock()
+	pullers := r.pullers
+	r.pullers = make(map[string]*worker.Puller)
+	r.mu.Unlock()
+
+	for path, puller := range pullers {
+		r.log.Info("Stopping puller", "stream_path", path)
+		puller.Stop()
+	}
+
+	// Wait for all pullers to finish
+	for path, puller := range pullers {
+		select {
+		case <-puller.Done():
+		case <-time.After(10 * time.Second):
+			r.log.Warn("Puller did not stop within timeout", "stream_path", path)
+		}
+	}
 }
 
 // startPuller starts the appropriate puller based on the remote URL protocol.

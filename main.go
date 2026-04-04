@@ -25,9 +25,7 @@ var webAssets embed.FS
 
 func main() {
 	var configFile string
-	var recordingsDir string
 	flag.StringVar(&configFile, "config", "config.json", "Configuration file path")
-	flag.StringVar(&recordingsDir, "recordings-dir", "", "Directory to store recordings (overrides config)")
 	flag.Parse()
 
 	// Create a temporary logger for config loading
@@ -38,11 +36,6 @@ func main() {
 	if err != nil {
 		tempLogger.Error("Failed to load configuration", "err", err)
 		os.Exit(1)
-	}
-
-	// Override recordings directory if provided via command line
-	if recordingsDir != "" {
-		cfg.Recording.Directory = recordingsDir
 	}
 
 	// Use config for logger
@@ -134,13 +127,18 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	// Shutdown HTTP server
+	// Shutdown HTTP server (stop accepting new requests)
 	log.Info("Shutting down HTTP server...")
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
 		log.Error("Server shutdown error", "err", err)
 	}
 
-	// Shutdown application context (HLS, recordings, relays, RTSP)
+	// Shutdown all workers (restreamers, recorders)
+	log.Info("Shutting down workers...")
+	server.Shutdown()
+
+	// Shutdown application context (HLS, ingest, hub)
+	log.Info("Shutting down application context...")
 	appCtx.Shutdown()
 
 	// Print resource usage statistics

@@ -31,6 +31,7 @@ type FFmpegProcess struct {
 	err    error
 	log    *logger.Logger
 	store  *state.Store
+	stderr io.Closer
 }
 
 // RunAndMonitorFFmpeg starts an FFmpeg process and continuously monitors it.
@@ -64,6 +65,7 @@ func RunAndMonitorFFmpeg(ctx context.Context, store *state.Store, log *logger.Lo
 		done:   make(chan struct{}),
 		log:    log.With("component", "ffmpeg", "pid", cmd.Process.Pid),
 		store:  store,
+		stderr: stderrPipe,
 	}
 
 	// Start telemetry goroutines
@@ -94,8 +96,19 @@ func (fp *FFmpegProcess) Err() error {
 // Stop signals the process to stop gracefully.
 // If the process doesn't exit within the timeout, it kills the entire process group.
 func (fp *FFmpegProcess) Stop() {
-	fp.cancel()
-	fp.log.Debug("Stop signal sent to ffmpeg")
+	fp.mu.Lock()
+	pid := fp.pid
+	stderr := fp.stderr
+	fp.mu.Unlock()
+
+	// Send SIGTERM to initiate graceful shutdown
+	fp.log.Debug("Sending SIGTERM to ffmpeg", "pid", pid)
+	syscall.Kill(pid, syscall.SIGTERM)
+
+	// Close stderr pipe to unblock parseStderr goroutine
+	if stderr != nil {
+		stderr.Close()
+	}
 
 	// Wait a short time for graceful shutdown, then kill process group if needed
 	go func() {

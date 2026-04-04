@@ -2,8 +2,6 @@
 
 Go-MLS is a Go-based service for live video relay, recording, and monitoring, with a web UI for control and observability. It is designed for multi-source, multi-destination streaming, with dynamic relay management and recording support.
 
-**Architecture**: Uses a single `Pipeline` struct to manage all streams—no interfaces, no callbacks, no global state.
-
 ## Features
 - Relay multiple input streams to multiple output destinations (RTMP/RTSP)
 - Dynamic add/remove/update of relays and endpoints via web UI/API
@@ -16,8 +14,9 @@ Go-MLS is a Go-based service for live video relay, recording, and monitoring, wi
 ## Getting Started
 
 ### Prerequisites
-- Go 1.18 or newer
+- Go 1.21 or newer
 - ffmpeg installed and available in your PATH
+- Docker and Docker Compose (for e2e tests)
 
 ### Build and Run
 ```bash
@@ -56,21 +55,18 @@ Create a `config.json` file (see `config.example.json` for reference):
     "file": ""
   },
   "ffmpeg": {
-    "path": "ffmpeg",                        // Path to ffmpeg binary used for all streaming/recording
-    "loglevel": "info"                       // ffmpeg loglevel (e.g. info, warning, error)
+    "path": "ffmpeg",
+    "loglevel": "info"
   },
   "hls": {
-    "cleanup_interval": "2m",               // How often to clean up old HLS temp dirs
-    "session_timeout": "5m",                // How long to keep an HLS session alive without viewers
-    "viewer_heartbeat_timeout": "30s",      // Viewer considered disconnected after this
-    "playlist_ready_timeout": "30s",        // Max time to wait for playlist to appear (fsnotify+poll)
-    "playlist_base_dir": "/tmp"             // Base directory for HLS playlist temp dirs (default: /tmp)
+    "cleanup_interval": "2m",
+    "session_timeout": "5m",
+    "viewer_heartbeat_timeout": "30s",
+    "playlist_ready_timeout": "30s",
+    "playlist_base_dir": "/tmp"
   }
 }
 ```
-Advanced HLS options (rarely need to change, see code for defaults):
-
-`failed_cooldown, not_found_log_interval, playlist_poll_interval, playlist_poll_attempts, ffmpeg_stop_timeout`
 
 Run with custom configuration:
 ```bash
@@ -90,12 +86,52 @@ Run with custom configuration:
 
 ---
 
+## Testing
+
+### Unit Tests
+```bash
+go test ./...
+```
+
+### Unit Tests with FFmpeg Tests
+```bash
+go test -short=false ./internal/worker/...
+```
+
+### End-to-End Tests (Docker Compose)
+```bash
+# Start all services
+docker compose up -d
+
+# Watch test progress
+docker compose logs -f test-runner
+
+# Check test results
+docker compose logs test-runner | tail -20
+
+# Verify recordings
+ls -la recordings/*stream_*.mp4
+
+# Verify HLS files
+curl http://localhost:8080/hls/pull-stream/index.m3u8 | head -10
+
+# Tear down
+docker compose down -v
+```
+
+The e2e tests verify:
+- Pull ingest (RTMP/HTTP source)
+- Push ingest (FFmpeg push)
+- Simultaneous operation with 2 inputs
+- Multiple outputs per input (2 outputs each)
+- Recording to disk
+- HLS playlist generation
+- Clean shutdown without goroutine leaks
+
+---
+
 ## Documentation
 
 - [Architecture Overview](docs/architecture.md) - High-level architecture with diagrams
 - [API Reference](docs/api-reference.md) - Method signatures and HTTP endpoints
 - [Configuration](docs/configuration.md) - JSON config schema
-
-## Implementation
-
-For implementation details, see `main.go` and `internal/stream/`.

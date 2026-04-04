@@ -39,8 +39,9 @@ func StartRestreamer(ctx context.Context, store *state.Store, log *logger.Logger
 	args = append(args, "-f", "flv", remoteURL)
 
 	r := &Restreamer{
-		store:  store,
-		output: out,
+		store:         store,
+		output:        out,
+		ProcessWorker: NewProcessWorker("restreamer:"+out.OutputID, log),
 	}
 
 	factory := func(ctx context.Context) (Process, error) {
@@ -51,11 +52,11 @@ func StartRestreamer(ctx context.Context, store *state.Store, log *logger.Logger
 		}
 		out.PID = fp.PID()
 		store.UpdateOutputStatus(out.StreamPath, out.OutputID, state.OutputStatusRunning, "")
-		r.ProcessWorker = NewProcessWorker("restreamer:"+out.OutputID, log).WithProcess(fp)
+		r.ProcessWorker = r.ProcessWorker.WithProcess(fp)
 		return fp, nil
 	}
 
-	_, err := RunProcessWorker("restreamer:"+out.OutputID, log, factory)
+	_, err := r.ProcessWorker.StartWithFactory(factory)
 	if err != nil {
 		return nil, err
 	}

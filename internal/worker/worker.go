@@ -103,7 +103,7 @@ func (w *BaseWorker) setState(s WorkerState) {
 	w.log.Debug("State transition", "worker", w.name, "state", s)
 }
 
-func (w *BaseWorker) start() error {
+func (w *BaseWorker) Start() error {
 	w.mu.Lock()
 	if w.state != WorkerStateStopped {
 		w.mu.Unlock()
@@ -174,7 +174,7 @@ type ProcessFactory func(ctx context.Context) (Process, error)
 func RunProcessWorker(name string, log *logger.Logger, factory ProcessFactory) (*ProcessWorker, error) {
 	w := NewProcessWorker(name, log)
 
-	if err := w.start(); err != nil {
+	if err := w.Start(); err != nil {
 		return nil, err
 	}
 
@@ -231,4 +231,58 @@ func RunProcessWorker(name string, log *logger.Logger, factory ProcessFactory) (
 func (w *ProcessWorker) Shutdown() {
 	w.Stop()
 	w.goroutineWG.Wait()
+}
+
+func (w *ProcessWorker) StartWithFactory(factory ProcessFactory) (*ProcessWorker, error) {
+	if err := w.Start(); err != nil {
+		return nil, err
+	}
+
+	w.goroutineWG.Add(1)
+	go func() {
+		defer func() {
+			w.goroutineWG.Done()
+			w.complete(w.exitErr)
+		}()
+
+		proc, err := factory(context.Background())
+		if err != nil {
+			w.exitErr = err
+			w.setState(WorkerStateStopping)
+			w.log.Error("Failed to start process", "error", err)
+			return
+		}
+
+		if proc == nil {
+			w.setState(WorkerStateStopping)
+			return
+		}
+
+		w.proc = proc
+		w.setState(WorkerStateRunning)
+
+		select {
+		case <-w.stopCh:
+			w.setState(WorkerStateStopping)
+			proc.Stop()
+			if err := proc.Wait(); err != nil {
+				if !errors.Is(err, ErrProcessKilled) && !IsProcessKilled(err) {
+					w.exitErr = fmt.Errorf("%w: %v", ErrProcessFailed, err)
+					w.log.Error("Process exited with error", "error", err)
+				}
+			}
+		case <-proc.Done():
+			if err := proc.Err(); err != nil {
+				if IsProcessKilled(err) {
+					w.exitErr = fmt.Errorf("%w: %v", ErrProcessKilled, err)
+				} else {
+					w.exitErr = fmt.Errorf("%w: %v", ErrProcessFailed, err)
+				}
+				w.log.Error("Process exited with error", "error", err)
+			}
+			w.setState(WorkerStateStopping)
+		}
+	}()
+
+	return w, nil
 }

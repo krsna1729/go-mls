@@ -498,21 +498,6 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-// Shutdown stops all active workers.
-func (s *Server) Shutdown() {
-	s.mu.Lock()
-	for key, rs := range s.restreamers {
-		rs.Stop()
-		delete(s.restreamers, key)
-	}
-	for key, rec := range s.recorders {
-		rec.Stop()
-		delete(s.recorders, key)
-	}
-	s.mu.Unlock()
-	s.hlsMgr.Shutdown()
-}
-
 // --- /hls/start ---
 
 func (s *Server) handleHLSStart(w http.ResponseWriter, r *http.Request) {
@@ -579,4 +564,28 @@ func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)
+}
+
+// Shutdown stops all active workers (restreamers, recorders).
+func (s *Server) Shutdown() {
+	s.log.Info("API Server shutting down...")
+
+	s.mu.Lock()
+	restreamers := s.restreamers
+	s.restreamers = make(map[string]*worker.Restreamer)
+	recorders := s.recorders
+	s.recorders = make(map[string]*worker.Recorder)
+	s.mu.Unlock()
+
+	for key, r := range restreamers {
+		s.log.Info("Stopping restreamer", "key", key)
+		r.Stop()
+	}
+
+	for key, r := range recorders {
+		s.log.Info("Stopping recorder", "key", key)
+		r.Stop()
+	}
+
+	s.log.Info("API Server shutdown complete")
 }

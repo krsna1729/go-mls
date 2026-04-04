@@ -1,4 +1,6 @@
 recordings/
+hls/
+test-results/
 bin/
 .vscode/
 .github/copilot-instructions.md
