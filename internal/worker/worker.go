@@ -139,7 +139,8 @@ func (w *BaseWorker) run(ctx context.Context, fn func(ctx context.Context) error
 
 type ProcessWorker struct {
 	*BaseWorker
-	proc Process
+	procMu sync.Mutex
+	proc   Process
 }
 
 func NewProcessWorker(name string, log *logger.Logger) *ProcessWorker {
@@ -154,9 +155,11 @@ func (w *ProcessWorker) WithProcess(proc Process) *ProcessWorker {
 }
 
 func (w *ProcessWorker) Stop() {
+	w.procMu.Lock()
 	if w.proc != nil {
 		w.proc.Stop()
 	}
+	w.procMu.Unlock()
 	w.BaseWorker.Stop()
 }
 
@@ -198,7 +201,9 @@ func RunProcessWorker(name string, log *logger.Logger, factory ProcessFactory) (
 			return
 		}
 
+		w.procMu.Lock()
 		w.proc = proc
+		w.procMu.Unlock()
 		w.setState(WorkerStateRunning)
 
 		select {
@@ -258,7 +263,9 @@ func (w *ProcessWorker) StartWithFactory(factory ProcessFactory) (*ProcessWorker
 			return
 		}
 
+		w.procMu.Lock()
 		w.proc = proc
+		w.procMu.Unlock()
 		w.setState(WorkerStateRunning)
 
 		select {

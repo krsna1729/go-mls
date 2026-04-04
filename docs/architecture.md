@@ -11,6 +11,7 @@ Go-MLS is a streaming media gateway that:
 - Accepts input streams via configurable hub (RTMP or RTSP)
 - Distributes to multiple outputs, recordings, and HLS viewers
 - Uses worker-based architecture with FFmpeg processes
+- Provides HTTP API for management
 
 ---
 
@@ -19,37 +20,97 @@ Go-MLS is a streaming media gateway that:
 ```mermaid
 flowchart TB
     subgraph main["main.go"]
-        A["Entry Point"]
+        A["Entry Point<br/>(Signal handling, graceful shutdown)"]
     end
     
     subgraph app["app.Context"]
         B["Hub<br/>(RTMP or RTSP)"]
-        C["Ingest Router"]
-        D["HLSManager"]
-        E["State Store"]
+        C["Ingest Router<br/>(Pull/Push management)"]
+        D["HLSManager<br/>(HLS generation)"]
+        E["State Store<br/>(In-memory state)"]
+    end
+    
+    subgraph api["api.Server"]
+        F["HTTP API<br/>(REST endpoints)"]
     end
     
     subgraph hub["Hub Interface"]
-        F["RTMPHub"]
-        G["RTSPHub"]
+        G["RTMPHub"]
+        H["RTSPHub"]
     end
     
     subgraph workers["Worker Package"]
-        H["Puller"]
-        I["Restreamer"]
-        J["Recorder"]
-        K["HLSGenerator"]
+        I["Puller"]
+        J["Restreamer"]
+        K["Recorder"]
     end
     
+    A --> F
     A --> B
+    A --> app
+    F --> C
+    F --> E
+    C --> I
+    C --> E
     B --> F
     B --> G
-    C --> H
-    H --> B
-    B --> I
+    B --> H
+    I --> B
     B --> J
     B --> K
+    D --> E
 ```
+
+---
+
+## Shutdown Sequence (Critical Path)
+
+Graceful shutdown follows a strict order to ensure no goroutine leaks:
+
+```mermaid
+sequenceDiagram
+    participant OS as "OS Signal<br/>(SIGTERM/SIGINT)"
+    participant Main as "main()"
+    participant HTTPServer as "HTTP Server"
+    participant Server as "api.Server<br/>(Workers)"
+    participant App as "app.Context<br/>(Hub, Ingest)"
+    participant HLS as "HLSManager"
+    participant Ingest as "Ingest Router"
+    participant Hub as "Hub"
+    
+    OS->>Main: Signal received
+    Main->>Main: Create 30s timeout context
+    
+    Note over Main,HTTPServer: Phase 1: Stop accepting new requests
+    Main->>HTTPServer: Shutdown(timeout)
+    HTTPServer-->>Main: Done (no new requests)
+    
+    Note over Main,Server: Phase 2: Stop all workers
+    Main->>Server: Shutdown()
+    Server->>J: Stop() for each Restreamer
+    Server->>K: Stop() for each Recorder
+    Server-->>Main: Done (wait for completion)
+    
+    Note over Main,App: Phase 3: Stop application
+    Main->>App: Shutdown()
+    App->>HLS: Shutdown()
+    App->>Ingest: Shutdown()
+    Ingest->>I: Stop() for each Puller
+    Ingest-->>App: Done (wait for completion)
+    App->>Hub: Stop()
+    Hub-->>App: Done
+    
+    Note over Main: Phase 4: Resource check
+    Main->>Main: Report goroutine usage
+```
+
+### Shutdown Guarantees
+
+1. **HTTP Server** stops accepting new requests first
+2. **Workers** (Restreamers, Recorders) are stopped and waited
+3. **Pullers** are stopped and waited
+4. **Hub** connections are closed
+5. **Final check** reports any remaining goroutines
 
 ---
 
@@ -82,43 +143,48 @@ flowchart LR
 
 ## Worker Architecture
 
-Workers manage FFmpeg child processes:
+Workers manage FFmpeg child processes with proper lifecycle management:
 
 ```mermaid
 flowchart TB
-    subgraph ingest["Ingest"]
-        A["RTMP/RTSP Publisher"] --> B["Hub"]
-        B --> C["Ingest Router"]
+    subgraph ingest["Input Sources"]
+        A1["RTMP Publisher<br/>(OBS)"]
+        A2["HTTP/RTSP Pull<br/>(URL)"]
+    end
+    
+    subgraph hub["Hub"]
+        B["Hub<br/>(RTMP/RTSP)"]
     end
     
     subgraph workers["Workers"]
-        C --> D["Puller"]
-        D --> E["RTMP Push to Hub"]
-        
-        subgraph consumers["Consumers"]
-            F["Restreamer"]
-            G["Recorder"]
-            H["HLSManager"]
-        end
+        C1["Puller<br/>Pulls from remote<br/>Pushes to hub"]
+        C2["Restreamer<br/>Hub to remote RTMP"]
+        C3["Recorder<br/>Hub to MP4"]
+        C4["HLSGenerator<br/>Hub to HLS"]
     end
     
-    E --> F
-    E --> G
-    E --> H
+    A1 -->|Push| B
+    A2 -->|StartPuller| C1
+    C1 -->|Push| B
+    B --> C2
+    B --> C3
+    B --> C4
 ```
 
 ### Worker Types
 
-| Worker | Purpose | Output |
-|--------|---------|--------|
-| `Puller` | Pull from remote → push to local RTMP hub | `rtmp://localhost:1935/{stream}` |
-| `Restreamer` | Take from hub → push to remote RTMP | RTMP destinations |
-| `Recorder` | Take from hub → record to MP4 | `.mp4` files |
-| `HLSManager` | Take from hub → generate HLS | `.m3u8` + `.ts` |
+| Worker | Purpose | Managed By |
+|--------|---------|------------|
+| `Puller` | Pull from remote URL → push to local RTMP hub | Ingest Router |
+| `Restreamer` | Take from hub → push to remote RTMP | API Server |
+| `Recorder` | Take from hub → record to MP4 | API Server |
+| `HLSManager` | Take from hub → generate HLS segments | API Server |
 
 ---
 
 ## State Management
+
+### State Store Structure
 
 ```mermaid
 flowchart TB
@@ -147,26 +213,6 @@ flowchart TB
 
 ---
 
-## Shutdown Sequence
-
-```mermaid
-sequenceDiagram
-    participant Main
-    participant Context as "app.Context"
-    participant HLS as "HLSManager"
-    participant Hub
-    participant Workers
-    
-    Main->>Context: Shutdown()
-    Context->>HLS: Shutdown()
-    HLS-->>Context: Done
-    Context->>Hub: Stop()
-    Hub-->>Context: Done
-    Context-->>Main: Complete
-```
-
----
-
 ## File Structure
 
 ### internal/hub/ - Media Ingestion Hub
@@ -179,37 +225,40 @@ internal/hub/
 ### internal/worker/ - FFmpeg Process Management
 ```
 internal/worker/
-├── ffmpeg.go       # RunAndMonitorFFmpeg (core wrapper)
-├── ffmpeg_factory.go # Process interface
-├── worker.go       # BaseWorker, ProcessWorker, WorkerState
-├── puller.go       # Puller - pulls from remote, pushes to hub
-├── restreamer.go   # Restreamer - hub to remote RTMP
-├── recorder.go     # Recorder - hub to MP4
-└── hls.go         # HLSManager - hub to HLS
+├── errors.go       # Typed errors (ErrProcessFailed, ErrProcessKilled)
+├── ffmpeg.go      # RunAndMonitorFFmpeg (core wrapper)
+├── ffmpeg_factory.go # Process interface + creator
+├── ffmpeg_test.go  # FFmpeg process tests
+├── hls.go         # HLSManager, HLSSession
+├── puller.go      # Puller - pulls from remote, pushes to hub
+├── recorder.go    # Recorder - hub to MP4
+├── restreamer.go # Restreamer - hub to remote RTMP
+└── worker.go      # BaseWorker, ProcessWorker, WorkerState, WorkerStateMachine
 ```
 
 ### internal/ingest/ - Stream Ingestion
 ```
 internal/ingest/
-└── router.go      # Smart Ingest Router
+└── router.go      # Smart Ingest Router (pullers + acceptors)
 ```
 
 ### internal/state/ - State Management
 ```
 internal/state/
-└── state.go      # Thread-safe in-memory store
+├── state.go       # Thread-safe in-memory store
+└── types.go       # State types (Input, Output, Recording, HLSSession)
 ```
 
 ### internal/api/ - HTTP Control Plane
 ```
 internal/api/
-└── server.go      # HTTP API server
+└── server.go     # HTTP API server with all endpoints
 ```
 
 ### internal/app/ - Application Context
 ```
 internal/app/
-└── context.go     # Creates hub, ingest, workers, state
+└── context.go    # Creates hub, ingest, workers, state
 ```
 
 ---
@@ -228,9 +277,16 @@ Centralized state store for inputs, outputs, recordings, and HLS sessions enable
 ### 4. No Callbacks in Critical Paths
 Token validation and publish handlers are synchronous to ensure correctness.
 
+### 5. Process Group Isolation
+FFmpeg processes run in their own process group to prevent SIGTERM propagation from parent.
+
+### 6. Graceful Shutdown with Timeout
+Workers receive SIGTERM first (5s timeout), then SIGKILL if needed.
+
 ---
 
 ## Related Documentation
 
+- [Worker FSM Design](worker-fsm.md) - Detailed state machine diagrams
 - [API Reference](api-reference.md) - HTTP endpoints
 - [Configuration](configuration.md) - JSON config schema
