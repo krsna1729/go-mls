@@ -18,7 +18,21 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -o go-mls .
 
 # ============================================================================
-# Runtime stage (go-mls)
+# Source push stage (FFmpeg pushing to RTMP)
+# ============================================================================
+FROM jrottenberg/ffmpeg:4.4-alpine AS source-push
+
+RUN apk add --no-cache curl bash
+
+# ============================================================================
+# Test runner stage
+# ============================================================================
+FROM jrottenberg/ffmpeg:4.4-alpine AS test-runner
+
+RUN apk add --no-cache curl bash
+
+# ============================================================================
+# Runtime stage (go-mls) - MUST be last as it's the default target
 # ============================================================================
 FROM alpine:3.19 AS runtime
 
@@ -41,17 +55,3 @@ HEALTHCHECK --interval=10s --timeout=5s --start-period=5s --retries=3 \
 
 ENTRYPOINT ["./go-mls"]
 CMD ["-config", "config.json"]
-
-# ============================================================================
-# Source push stage (FFmpeg pushing to RTMP)
-# ============================================================================
-FROM jrottenberg/ffmpeg:4.4-alpine AS source-push
-
-RUN apk add --no-cache curl bash
-
-# ============================================================================
-# Test runner stage
-# ============================================================================
-FROM jrottenberg/ffmpeg:4.4-alpine AS test-runner
-
-RUN apk add --no-cache curl bash
