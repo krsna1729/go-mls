@@ -5,17 +5,26 @@ document.addEventListener('DOMContentLoaded', function () {
     relayControls.innerHTML = `
         <h2>Statistics</h2>
         <div id="serverStats"></div>
-        <h2>Add Output</h2>
-        <div class="md-input-row relay-input-grid" id="addRelayRow">
-            <input type="text" id="inputName" placeholder="Input Name">
-            <input type="text" id="inputUrl" placeholder="Input URL">
-            <input type="text" id="outputName" placeholder="Output Name">
-            <input type="text" id="outputUrl" placeholder="Output URL">
+        
+        <h2>Add Input</h2>
+        <div class="md-input-row" id="addInputRow" style="display:flex; flex-wrap:wrap; gap:12px; align-items:center;">
+            <input type="text" id="inputName" placeholder="Input Name" style="flex:1; min-width:150px;">
+            <input type="text" id="inputUrl" placeholder="Input URL (to pull only)" style="flex:2; min-width:250px;">
+            <button id="startInputBtn"><span class="material-icons">play_arrow</span>Start Input</button>
         </div>
-        <div id="advancedOptionsContainer"></div>
-        <div class="md-input-row">
+        
+        <h2>Add Output</h2>
+        <div class="md-input-row" id="addOutputRow" style="display:flex; flex-wrap:wrap; gap:12px; align-items:center;">
+            <select id="inputSelect" style="flex:1; min-width:150px;">
+                <option value="">Select Input</option>
+            </select>
+            <input type="text" id="outputName" placeholder="Output Name" style="flex:1; min-width:120px;">
+            <input type="text" id="outputUrl" placeholder="Output URL" style="flex:2; min-width:200px;">
             <button id="startOutputBtn"><span class="material-icons">play_arrow</span>Start Output</button>
         </div>
+        
+        <div id="advancedOptionsContainer"></div>
+        
         <div class="md-action-row">
             <button id="exportBtn" class="secondary"><span class="material-icons">file_download</span>Export</button>
             <input id="importFile" type="file" accept="application/json" style="display:none" />
@@ -33,10 +42,12 @@ document.addEventListener('DOMContentLoaded', function () {
     function populatePresetDropdown(presets) {
         const presetSelect = document.getElementById('platformPreset');
         presetSelect.innerHTML = '<option value="">None (Default)</option>';
-        Object.keys(presets).forEach(name => {
-            presetSelect.innerHTML += `<option value="${name}">${name}</option>`;
+        const presetsMap = {};
+        presets.forEach(p => {
+            presetSelect.innerHTML += `<option value="${p.name}">${p.name}</option>`;
+            presetsMap[p.name] = p.options;
         });
-        loadedPresets = presets;
+        loadedPresets = presetsMap;
     }
     API.getPresets().then(populatePresetDropdown);
 
@@ -283,34 +294,79 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     }
 
-    // Attach handler for the top Start Output button
-    document.getElementById('startOutputBtn').onclick = function () {
+    // Attach handler for Start Input button
+    document.getElementById('startInputBtn').onclick = function () {
         const inputName = document.getElementById('inputName').value.trim();
         const inputUrl = document.getElementById('inputUrl').value.trim();
+
+        if (!inputName) {
+            alert('Input Name is required');
+            return;
+        }
+
+        API.startInput({
+            input_name: inputName,
+            input_url: inputUrl
+        }).then(() => {
+            document.getElementById('inputName').value = '';
+            document.getElementById('inputUrl').value = '';
+            fetchStatus();
+        }).catch(err => {
+            console.error('Start input error:', err);
+            alert('Failed to start input: ' + (err.message || err));
+        });
+    };
+
+    // Attach handler for Start Output button
+    document.getElementById('startOutputBtn').onclick = function () {
+        const inputName = selectedInput || document.getElementById('inputSelect').value;
         const outputName = document.getElementById('outputName').value.trim();
         const outputUrl = document.getElementById('outputUrl').value.trim();
         const platformPreset = document.getElementById('platformPreset').value || '';
-        // Advanced options
-        const ffmpegOptions = {
-            video_codec: document.getElementById('videoCodec').value.trim(),
-            audio_codec: document.getElementById('audioCodec').value.trim(),
-            resolution: document.getElementById('resolution').value.trim(),
-            framerate: document.getElementById('framerate').value.trim(),
-            bitrate: document.getElementById('bitrate').value.trim(),
-            rotation: document.getElementById('rotation').value.trim()
-        };
-        fetch('/api/relay/start', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                input_url: inputUrl,
-                output_url: outputUrl,
-                input_name: inputName,
-                output_name: outputName,
-                platform_preset: platformPreset,
-                ffmpeg_options: ffmpegOptions
-            })
-        }).then(() => { fetchStatus(); });
+        const videoCodec = document.getElementById('videoCodec').value.trim();
+        const audioCodec = document.getElementById('audioCodec').value.trim();
+        const resolution = document.getElementById('resolution').value.trim();
+        const framerate = document.getElementById('framerate').value.trim();
+        const bitrate = document.getElementById('bitrate').value.trim();
+        const rotation = document.getElementById('rotation').value.trim();
+
+        if (!inputName) {
+            alert('Please select an input from the dropdown');
+            return;
+        }
+        if (!outputUrl) {
+            alert('Output URL is required');
+            return;
+        }
+
+        API.startOutput({
+            input_name: inputName,
+            output_name: outputName,
+            output_url: outputUrl,
+            preset: platformPreset,
+            video_codec: videoCodec,
+            audio_codec: audioCodec,
+            resolution: resolution,
+            framerate: framerate,
+            bitrate: bitrate,
+            rotation: rotation
+        }).then(() => {
+            // Clear only output fields, keep input selected for adding more outputs
+            document.getElementById('outputName').value = '';
+            document.getElementById('outputUrl').value = '';
+            // Reset preset and advanced options
+            document.getElementById('platformPreset').value = '';
+            document.getElementById('videoCodec').value = '';
+            document.getElementById('audioCodec').value = '';
+            document.getElementById('resolution').value = '';
+            document.getElementById('framerate').value = '';
+            document.getElementById('bitrate').value = '';
+            document.getElementById('rotation').value = '';
+            fetchStatus();
+        }).catch(err => {
+            console.error('Start output error:', err);
+            alert('Failed to start output: ' + (err.message || err));
+        });
     };
 
     // Update table Start buttons to only send minimal info
@@ -331,7 +387,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
     // --- Import/Export button handlers ---
     document.getElementById('exportBtn').onclick = function () {
-        window.location = '/api/relay/export';
+        window.location = '/system/export';
     };
 
     document.getElementById('importBtn').onclick = function () {
@@ -356,10 +412,50 @@ document.addEventListener('DOMContentLoaded', function () {
         API.getStatus().then(data => updateUI(data));
     }
 
+    // --- Input Dropdown ---
+    let selectedInput = '';
+
+    function updateInputSelect(data) {
+        const select = document.getElementById('inputSelect');
+        const currentValue = selectedInput;
+        
+        // Build new options (sorted alphanumeric by input name)
+        let optionsHtml = '<option value="">Select Input</option>';
+        if (data && data.relays) {
+            // Sort relays by input name
+            const sortedRelays = [...data.relays].sort((a, b) => 
+                (a.input?.input_name || '').localeCompare(b.input?.input_name || '')
+            );
+            sortedRelays.forEach(relay => {
+                if (relay.input && relay.input.input_name) {
+                    const label = relay.input.input_name + (relay.input.input_url ? ' (' + relay.input.input_url + ')' : '');
+                    optionsHtml += `<option value="${relay.input.input_name}">${label}</option>`;
+                }
+            });
+        }
+        select.innerHTML = optionsHtml;
+        
+        // Restore selection if still valid
+        if (currentValue && select.querySelector(`option[value="${currentValue}"]`)) {
+            select.value = currentValue;
+        } else {
+            selectedInput = '';
+        }
+    }
+
+    // Track select changes
+    document.getElementById('inputSelect').addEventListener('change', function() {
+        selectedInput = this.value;
+    });
+
     function updateUI(data) {
         // Expect data: { server: {cpu, mem}, relays: [...] }
         window.latestRelayStatus = data;
         window.dispatchEvent(new Event('relayStatusUpdated'));
+        
+        // Update input dropdown
+        updateInputSelect(data);
+        
         const searchVal = document.getElementById('searchBox').value.trim();
         const filtered = Utils.filterData(data, searchVal);
         let totalInputs = 0, totalOutputs = 0, totalCpu = 0, totalMem = 0, totalBitrate = 0, health = 'Good';
@@ -874,9 +970,9 @@ document.addEventListener('DOMContentLoaded', function () {
             const inputName = video.dataset.inputName;
             if (viewerId && inputName) {
                 // Use sendBeacon for reliable cleanup on page unload
-                navigator.sendBeacon('/api/relay/hls/stop-viewer',
+                navigator.sendBeacon('/hls/stop',
                     JSON.stringify({
-                        input_name: inputName,
+                        stream: inputName,
                         viewer_id: viewerId
                     })
                 );

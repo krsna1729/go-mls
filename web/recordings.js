@@ -340,7 +340,7 @@ document.addEventListener('DOMContentLoaded', function () {
             btn.onclick = function () {
                 const filename = btn.getAttribute('data-filename');
                 if (filename) {
-                    window.location = '/api/recording/download?filename=' + filename;
+                    window.location = '/recordings/' + filename;
                 }
             };
         });
@@ -397,7 +397,7 @@ document.addEventListener('DOMContentLoaded', function () {
             if (btn.disabled) return;
             btn.onclick = function () {
                 const filename = btn.getAttribute('data-filename');
-                window.location = '/api/recording/download?filename=' + filename;
+                window.location = '/recordings/' + filename;
             };
         });
         document.querySelectorAll('.deleteRecordingBtn').forEach(btn => {
@@ -422,16 +422,11 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     }
 
-    // --- Setup Server-Sent Events (SSE) ---
-    function setupRecordingsSSE() {
-        if (!!window.EventSource) {
-            const es = new EventSource('/api/recording/sse');
-            es.onmessage = function (event) {
-                if (event.data === 'update') {
-                    fetchAllRecordings();
-                }
-            };
-        }
+    // --- Setup Polling for Recording Updates ---
+    let recordingsPollingInterval = null;
+    function setupRecordingsPolling() {
+        if (recordingsPollingInterval) clearInterval(recordingsPollingInterval);
+        recordingsPollingInterval = setInterval(fetchAllRecordings, 5000);
     }
-    setupRecordingsSSE();
+    setupRecordingsPolling();
 });

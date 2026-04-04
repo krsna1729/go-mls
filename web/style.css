@@ -45,6 +45,26 @@ input[type="text"]:focus {
     background: #fff;
 }
 
+select {
+    font-family: inherit;
+    font-size: 1em;
+    padding: 10px 14px;
+    margin: 0.5em 0.5em 1em 0;
+    border: none;
+    border-radius: 4px;
+    background: #f1f3f4;
+    box-shadow: 0 1px 2px rgba(60, 60, 60, 0.03);
+    outline: none;
+    transition: box-shadow 0.2s;
+    min-width: 120px;
+    cursor: pointer;
+}
+
+select:focus {
+    box-shadow: 0 0 0 2px #1976d2;
+    background: #fff;
+}
+
 button {
     font-family: inherit;
     font-size: 1em;
