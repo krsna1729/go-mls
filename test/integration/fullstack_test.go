@@ -28,6 +28,7 @@ type testEnv struct {
 	server  *api.Server
 	ts      *httptest.Server
 	cfg     *config.Config
+	hubType string
 }
 
 func (e *testEnv) doRequest(method, path string, body interface{}) (*http.Response, error) {
@@ -129,6 +130,90 @@ func setupTestEnv(t *testing.T) *testEnv {
 		server:  server,
 		ts:      ts,
 		cfg:     cfg,
+		hubType: "rtmp",
+	}
+}
+
+func setupRTSPTestEnv(t *testing.T) *testEnv {
+	testFile := filepath.Join("..", "..", "testdata", "testsrc.mp4")
+	if _, err := os.Stat(testFile); os.IsNotExist(err) {
+		t.Skipf("Skipping integration test: %s not found", testFile)
+	}
+
+	tempDir := t.TempDir()
+	log := logger.NewLogger()
+
+	cfg := &config.Config{
+		HTTP: config.HTTPConfig{
+			Host:         "127.0.0.1",
+			Port:         "0",
+			ReadTimeout:  config.Duration(30 * time.Second),
+			WriteTimeout: config.Duration(30 * time.Second),
+			IdleTimeout:  config.Duration(120 * time.Second),
+		},
+		Relay: config.RelayConfig{
+			InputTimeout:  config.Duration(30 * time.Second),
+			OutputTimeout: config.Duration(60 * time.Second),
+			HubType:       "rtsp",
+			RTMPHub: config.RTMPConfig{
+				Host: "127.0.0.1",
+				Port: 1935,
+			},
+			RTSPServer: config.RTSPConfig{
+				Host: "127.0.0.1",
+				Port: 0,
+			},
+		},
+		Recording: config.RecordingConfig{
+			Directory: tempDir,
+		},
+		Logging: config.LoggingConfig{
+			Level: "warn",
+		},
+		HLS: config.HLSConfig{
+			PlaylistBaseDir: tempDir,
+			FFmpegPreset:    "ultrafast",
+		},
+		FFmpeg: config.FFmpegConfig{
+			Path: "ffmpeg",
+		},
+	}
+
+	appCtx, err := app.NewContext(cfg, log)
+	if err != nil {
+		t.Fatalf("Failed to create app context: %v", err)
+	}
+
+	if err := appCtx.Start(); err != nil {
+		t.Fatalf("Failed to start app context: %v", err)
+	}
+
+	rtspAddr := appCtx.Hub.Addr()
+	t.Logf("RTSP Hub listening at: %s", rtspAddr)
+
+	server := api.NewServer(
+		appCtx.Store,
+		appCtx.Ingest,
+		appCtx.HLSMgr,
+		log,
+		tempDir,
+		tempDir,
+		0,
+		rtspAddr,
+		context.Background(),
+	)
+
+	mux := http.NewServeMux()
+	server.RegisterRoutes(mux)
+	ts := httptest.NewServer(mux)
+
+	return &testEnv{
+		tempDir: tempDir,
+		appCtx:  appCtx,
+		server:  server,
+		ts:      ts,
+		cfg:     cfg,
+		hubType: "rtsp",
 	}
 }
 
@@ -398,4 +483,165 @@ func TestConcurrentOutputs(t *testing.T) {
 	resp, err = env.doRequest("DELETE", "/inputs?stream="+streamPath, nil)
 	require.NoError(t, err)
 	resp.Body.Close()
+}
+
+func TestRTSPInputsAPI(t *testing.T) {
+	env := setupRTSPTestEnv(t)
+	defer env.shutdown()
+
+	require.Equal(t, "rtsp", env.hubType)
+
+	resp, err := env.doRequest("POST", "/inputs", map[string]interface{}{
+		"stream_path": "test-rtsp-stream",
+	})
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	resp.Body.Close()
+
+	resp, err = env.doRequest("GET", "/inputs", nil)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var inputs []map[string]interface{}
+	err = json.NewDecoder(resp.Body).Decode(&inputs)
+	resp.Body.Close()
+	require.NoError(t, err)
+	require.Len(t, inputs, 1)
+
+	resp, err = env.doRequest("DELETE", "/inputs?stream=test-rtsp-stream", nil)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	resp.Body.Close()
+}
+
+func TestRTSPOutputsAPI(t *testing.T) {
+	env := setupRTSPTestEnv(t)
+	defer env.shutdown()
+
+	require.Equal(t, "rtsp", env.hubType)
+
+	resp, err := env.doRequest("POST", "/inputs", map[string]interface{}{
+		"stream_path": "test-rtsp-stream",
+	})
+	require.NoError(t, err)
+	resp.Body.Close()
+
+	resp, err = env.doRequest("POST", "/outputs", map[string]interface{}{
+		"stream_path": "test-rtsp-stream",
+		"output_id":   "rtsp-output",
+		"remote_url":  fmt.Sprintf("rtsp://127.0.0.1:8554/stream"),
+	})
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	resp.Body.Close()
+
+	resp, err = env.doRequest("GET", "/outputs?stream=test-rtsp-stream", nil)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	resp.Body.Close()
+
+	resp, err = env.doRequest("DELETE", "/outputs?stream=test-rtsp-stream&id=rtsp-output", nil)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	resp.Body.Close()
+
+	resp, err = env.doRequest("DELETE", "/inputs?stream=test-rtsp-stream", nil)
+	require.NoError(t, err)
+	resp.Body.Close()
+}
+
+func TestRTSPStatsAPI(t *testing.T) {
+	env := setupRTSPTestEnv(t)
+	defer env.shutdown()
+
+	require.Equal(t, "rtsp", env.hubType)
+
+	resp, err := env.doRequest("GET", "/stats", nil)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var stats map[string]interface{}
+	err = json.NewDecoder(resp.Body).Decode(&stats)
+	resp.Body.Close()
+	require.NoError(t, err)
+	require.NotNil(t, stats["server"])
+	require.NotNil(t, stats["inputs"])
+	require.NotNil(t, stats["outputs"])
+}
+
+func TestRTSPFullStackLifecycle(t *testing.T) {
+	env := setupRTSPTestEnv(t)
+	defer env.shutdown()
+
+	require.Equal(t, "rtsp", env.hubType)
+	streamPath := "test-rtsp-stream"
+
+	t.Log("Creating RTSP input")
+	resp, err := env.doRequest("POST", "/inputs", map[string]interface{}{
+		"stream_path": streamPath,
+	})
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	resp.Body.Close()
+
+	t.Log("Creating RTSP output")
+	resp, err = env.doRequest("POST", "/outputs", map[string]interface{}{
+		"stream_path": streamPath,
+		"output_id":   "rtsp-out",
+		"remote_url":  fmt.Sprintf("rtsp://127.0.0.1:8554/output"),
+	})
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	resp.Body.Close()
+
+	time.Sleep(500 * time.Millisecond)
+
+	t.Log("Starting recording")
+	resp, err = env.doRequest("POST", "/record?stream="+streamPath, nil)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	resp.Body.Close()
+
+	t.Log("Starting HLS viewer")
+	resp, err = env.doRequest("POST", "/hls/start?stream="+streamPath, nil)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	resp.Body.Close()
+
+	t.Log("Verifying stats")
+	resp, err = env.doRequest("GET", "/stats", nil)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var stats map[string]interface{}
+	err = json.NewDecoder(resp.Body).Decode(&stats)
+	resp.Body.Close()
+	require.NoError(t, err)
+	require.NotEmpty(t, stats["inputs"])
+	require.NotEmpty(t, stats["outputs"])
+
+	t.Log("Stopping HLS")
+	resp, err = env.doRequest("POST", "/hls/stop", map[string]interface{}{
+		"stream":    streamPath,
+		"viewer_id": "auto",
+	})
+	require.NoError(t, err)
+	resp.Body.Close()
+
+	t.Log("Stopping recording")
+	resp, err = env.doRequest("DELETE", "/record?stream="+streamPath, nil)
+	require.NoError(t, err)
+	resp.Body.Close()
+
+	t.Log("Stopping outputs")
+	resp, err = env.doRequest("DELETE", "/outputs?stream="+streamPath+"&id=rtsp-out", nil)
+	require.NoError(t, err)
+	resp.Body.Close()
+
+	t.Log("Deleting input")
+	resp, err = env.doRequest("DELETE", "/inputs?stream="+streamPath, nil)
+	require.NoError(t, err)
+	resp.Body.Close()
+
+	t.Log("=== SUCCESS: RTSP full lifecycle completed ===")
 }

@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"fmt"
+	"net"
 	"strings"
 	"sync"
 	"time"
@@ -25,6 +26,7 @@ type rtspStream struct {
 type rtspHub struct {
 	log         *logger.Logger
 	addr        string
+	boundAddr   string
 	server      *gortsplib.Server
 	started     bool
 	mu          sync.RWMutex
@@ -63,6 +65,14 @@ func (h *rtspHub) Start() error {
 		RTSPAddress:  h.addr,
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 5 * time.Second,
+		Listen: func(network, address string) (net.Listener, error) {
+			ln, err := net.Listen(network, address)
+			if err != nil {
+				return ln, err
+			}
+			h.boundAddr = ln.Addr().String()
+			return ln, nil
+		},
 	}
 
 	ready := make(chan error, 1)
@@ -81,7 +91,7 @@ func (h *rtspHub) Start() error {
 		h.started = true
 	}
 
-	h.log.Info("RTSP Hub starting", "addr", h.addr)
+	h.log.Info("RTSP Hub listening", "addr", h.Addr())
 	return nil
 }
 
@@ -95,8 +105,8 @@ func (h *rtspHub) Stop() {
 }
 
 func (h *rtspHub) Addr() string {
-	if h.server != nil && h.server.RTSPAddress != "" {
-		return h.server.RTSPAddress
+	if h.boundAddr != "" {
+		return h.boundAddr
 	}
 	return h.addr
 }
