@@ -7,7 +7,7 @@ Go-MLS is configured via a JSON file (default: `config.json`).
 The configuration is divided into several sections:
 
 - **http**: HTTP API server settings.
-- **relay**: Core relay logic and RTSP server settings.
+- **relay**: Hub configuration (RTMP/RTSP), timeouts.
 - **recording**: Recording settings.
 - **hls**: HLS streaming settings.
 - **ffmpeg**: FFmpeg process settings.
@@ -31,8 +31,13 @@ Examples: `"30s"`, `"5m"`, `"1h"`, `"500ms"`.
   "relay": {
     "input_timeout": "30s",
     "output_timeout": "60s",
+    "hub_type": "rtmp",
+    "rtmp_hub": {
+      "host": "0.0.0.0",
+      "port": 1935
+    },
     "rtsp_server": {
-      "host": "127.0.0.1",
+      "host": "0.0.0.0",
       "port": 8554
     }
   },
@@ -61,6 +66,34 @@ Examples: `"30s"`, `"5m"`, `"1h"`, `"500ms"`.
   "logging": {
     "level": "info",
     "file": ""
+  }
+}
+```
+
+## Hub Configuration
+
+### RTMP Hub (Default)
+For OBS, streaming software, or any RTMP-compatible encoder:
+
+```json
+"relay": {
+  "hub_type": "rtmp",
+  "rtmp_hub": {
+    "host": "0.0.0.0",
+    "port": 1935
+  }
+}
+```
+
+### RTSP Hub
+For IP cameras, NVRs, or RTSP-compatible sources:
+
+```json
+"relay": {
+  "hub_type": "rtsp",
+  "rtsp_server": {
+    "host": "0.0.0.0",
+    "port": 8554
   }
 }
 ```

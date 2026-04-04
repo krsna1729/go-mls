@@ -8,12 +8,9 @@
 ## Executive Summary
 
 Go-MLS is a streaming media gateway that:
-- Accepts input streams (RTSP, RTMP, HTTP, File)
-- Converts them to local RTSP via FFmpeg
+- Accepts input streams via configurable hub (RTMP or RTSP)
 - Distributes to multiple outputs, recordings, and HLS viewers
-- Uses reference counting to optimize resource usage
-
-The architecture uses a single **Pipeline** struct that manages all streams with direct method calls—no interfaces, no callbacks, no global state.
+- Uses worker-based architecture with FFmpeg processes
 
 ---
 
@@ -26,276 +23,127 @@ flowchart TB
     end
     
     subgraph app["app.Context"]
-        B["Pipeline"]
-        C["RTSPServerManager"]
+        B["Hub<br/>(RTMP or RTSP)"]
+        C["Ingest Router"]
+        D["HLSManager"]
+        E["State Store"]
     end
     
-    subgraph pipeline["Pipeline"]
-        D["inputs<br/>map[name]*PipelineStream"]
-        E["outputs<br/>map[name]*PipelineStream"]
-        F["recordings<br/>map[key]*PipelineRecording"]
-        G["hlsSessions<br/>map[name]*PipelineHLSSession"]
+    subgraph hub["Hub Interface"]
+        F["RTMPHub"]
+        G["RTSPHub"]
     end
     
-    subgraph external["Injected Dependencies"]
-        H["FFmpegFactory<br/>(interface)"]
-        I["SSEBroker<br/>(concrete)"]
-    end
-    
-    subgraph rtsp["RTSP Server"]
-        J["gortsplib.Server"]
+    subgraph workers["Worker Package"]
+        H["Puller"]
+        I["Restreamer"]
+        J["Recorder"]
+        K["HLSGenerator"]
     end
     
     A --> B
-    A --> C
-    B --> D
-    B --> E
     B --> F
     B --> G
-    B --> H
+    C --> H
+    H --> B
     B --> I
-    C --> J
+    B --> J
+    B --> K
 ```
 
 ---
 
-## Dependency Injection
+## Hub Architecture
+
+The hub is configurable via `relay.hub_type`:
+
+| Hub Type | Protocol | Use Case |
+|----------|----------|----------|
+| `rtmp` | RTMP | OBS, streaming software |
+| `rtsp` | RTSP | IP cameras, NVRs |
 
 ```mermaid
 flowchart LR
-    subgraph init["Initialization"]
-        direction TB
-        A["config.Load()"] --> B["app.NewContext()"]
-        B --> C["stream.NewPipeline()"]
-        C --> D["pipeline.SetRTSPServer()"]
+    subgraph config["Configuration"]
+        A["hub_type: rtmp"] 
+        B["hub_type: rtsp"]
     end
     
-    subgraph handlers["HTTP Handlers"]
-        direction TB
-        E["api/router.go"] --> F["stream.ApiStartOutputRelay(pipeline)"]
-        F --> G["pipeline.StartOutput()"]
+    subgraph hubs["Hub Implementations"]
+        C["RTMPHub<br/>gortmplib-based"]
+        D["RTSPHub<br/>gortsplib-based"]
     end
+    
+    A --> C
+    B --> D
 ```
 
 ---
 
-## Start Output Relay Flow
+## Worker Architecture
 
-```mermaid
-sequenceDiagram
-    participant Client
-    participant API as "relay_api.go"
-    participant Pipeline
-    participant FFmpeg as "FFmpegFactory"
-    participant RTSP as "RTSPServer"
-    
-    Client->>API: POST /api/relay/start<br/>{input_name, output_name, ...}
-    
-    API->>Pipeline: StartInput(ctx, inputName, inputURL)
-    Note over Pipeline: Check if input URL already running
-    
-    alt Input not running
-        Pipeline->>RTSP: GetRTSPURL(relayPath)
-        RTSP-->>Pipeline: rtsp://localhost:8554/relay/{name}
-        Pipeline->>FFmpeg: NewInputProcess(src, dst)
-        FFmpeg-->>Pipeline: FFmpegProcess
-        Pipeline->>FFmpeg: Start()
-        Pipeline->>RTSP: WaitForStreamReady()
-    end
-    
-    API->>Pipeline: StartOutput(ctx, outputName, inputName, destURL, opts)
-    
-    alt Output not running
-        Pipeline->>FFmpeg: NewOutputProcess(src, dst, opts)
-        FFmpeg-->>Pipeline: FFmpegProcess
-        Pipeline->>FFmpeg: Start()
-    end
-    
-    Pipeline-->>Client: 200 OK<br/>{status: "started"}
-```
-
----
-
-## Input Lifecycle (Reference Counting)
-
-```mermaid
-stateDiagram-v2
-    [*] --> NotRunning: No consumers
-    
-    state NotRunning {
-        [*] --> InputRequested: Consumer wants input
-        InputRequested --> Starting: FFmpeg process spawns
-        Starting --> Running: RTSP stream ready
-        Running --> Starting: Restart on failure
-    }
-    
-    state Running {
-        [*] --> Active: RefCount > 0
-        Active --> Active: AddConsumer<br/>RefCount++
-        Active --> Active: RemoveConsumer<br/>RefCount--
-        Active --> Stopping: RefCount == 0
-        Stopping --> [*]: FFmpeg stops
-    }
-    
-    Running --> [*]: DeleteInput API
-```
-
-### Refcount Operations
-
-| Operation | RefCount Change | Trigger |
-|-----------|----------------|---------|
-| StartOutput | +1 | Output relay starts |
-| StopOutput | -1 | Output relay stops |
-| StartRecording | +1 | Recording starts |
-| StopRecording | -1 | Recording stops |
-| StartHLSViewer | +1 | First viewer joins |
-| StopHLSViewer | -1 | Last viewer leaves |
-
----
-
-## Recording Flow
+Workers manage FFmpeg child processes:
 
 ```mermaid
 flowchart TB
-    subgraph start["Start Recording"]
-        A["POST /api/recording/start"] --> B["Get input URL"]
-        B --> C{"Input exists?"}
-        C -->|No| D["StartInput()"]
-        C -->|Yes| E["Use existing input"]
-        D --> F["StartRecording()"]
-        E --> F
-        F --> G["Increment input RefCount"]
-        G --> H["Create FFmpeg process"]
-        H --> I["rtsp:// → .mp4"]
-        I --> J["Return 200"]
+    subgraph ingest["Ingest"]
+        A["RTMP/RTSP Publisher"] --> B["Hub"]
+        B --> C["Ingest Router"]
     end
     
-    subgraph stop["Stop Recording"]
-        K["POST /api/recording/stop"] --> L["Stop FFmpeg"]
-        L --> M["Decrement RefCount"]
-        M --> N["Auto-stop input if RefCount==0"]
+    subgraph workers["Workers"]
+        C --> D["Puller"]
+        D --> E["RTMP Push to Hub"]
+        
+        subgraph consumers["Consumers"]
+            F["Restreamer"]
+            G["Recorder"]
+            H["HLSManager"]
+        end
     end
+    
+    E --> F
+    E --> G
+    E --> H
 ```
+
+### Worker Types
+
+| Worker | Purpose | Output |
+|--------|---------|--------|
+| `Puller` | Pull from remote → push to local RTMP hub | `rtmp://localhost:1935/{stream}` |
+| `Restreamer` | Take from hub → push to remote RTMP | RTMP destinations |
+| `Recorder` | Take from hub → record to MP4 | `.mp4` files |
+| `HLSManager` | Take from hub → generate HLS | `.m3u8` + `.ts` |
 
 ---
 
-## HLS Viewer Flow
+## State Management
 
 ```mermaid
 flowchart TB
-    subgraph session["HLS Session Lifecycle"]
-        A["POST /api/relay/hls/start-viewer"] --> B{"Session exists?"}
-        B -->|No| C["Create PipelineHLSSession"]
-        B -->|Yes| D["Use existing session"]
-        C --> E["Generate viewer_id"]
-        D --> E
-        E --> F["Add viewer to session"]
-        F --> G["Return {viewer_id, playlist_url}"]
-    end
-    
-    subgraph watch["Watch HLS Stream"]
-        H["GET /api/relay/watch-input/hls/{name}/index.m3u8"] --> I{"Session ready?"}
-        I -->|No| J["Return 503"]
-        I -->|Yes| K["Serve .m3u8"]
-        K --> L["Serve .ts segments"]
-    end
-    
-    subgraph cleanup["Viewer Cleanup"]
-        M["POST /api/relay/hls/stop-viewer"] --> N["Remove viewer_id"]
-        N --> O{"Any viewers left?"}
-        O -->|No| P["Delete HLS session"]
-        O -->|Yes| Q["Keep session"]
+    subgraph state["State Store"]
+        A["Inputs<br/>map[streamPath]*Input"]
+        B["Outputs<br/>map[streamPath]map[outputID]*Output"]
+        C["Recordings<br/>map[streamPath]*Recording"]
+        D["HLSSessions<br/>map[streamPath]*HLSSession"]
     end
 ```
 
 ---
 
-## SSE Real-Time Updates
+## API Endpoints
 
-```mermaid
-flowchart LR
-    subgraph server["Server"]
-        A["Pipeline.SSE"] --> B["SSEBroker"]
-        B --> C["fsnotify watcher"]
-        C --> D["Broadcast JSON list"]
-    end
-    
-    subgraph clients["Clients"]
-        E["Browser<br/>/api/recording/sse"]
-        F["curl<br/>/api/recording/sse"]
-    end
-    
-    D --> E
-    D --> F
-    
-    subgraph events["File System Events"]
-        G["fsnotify.Write"]
-        H["fsnotify.Create"]
-        I["fsnotify.Remove"]
-    end
-    
-    G --> C
-    H --> C
-    I --> C
-```
-
-The SSE endpoint now watches the recordings directory using `fsnotify` and sends the full list of recordings as JSON whenever files are created, modified, or deleted.
-
----
-
-## FFmpeg Process Architecture
-
-```mermaid
-flowchart TB
-    subgraph factory["FFmpegFactory Interface"]
-        A["NewInputProcess()"]
-        B["NewOutputProcess()"]
-        C["NewHLSProcess()"]
-        D["NewRecordProcess()"]
-    end
-    
-    subgraph processes["FFmpegProcess Instances"]
-        E["Input Relay<br/>ffmpeg -re -i <src> -f rtsp <rtsp://>"]
-        F["Output Relay<br/>ffmpeg <opts> -i <rtsp://> -f flv <dest>"]
-        G["HLS Process<br/>ffmpeg <opts> -i <rtsp://> -f hls <dir>"]
-        H["Recording Process<br/>ffmpeg -i <rtsp://> -c copy <file>.mp4"]
-    end
-    
-    A --> E
-    B --> F
-    C --> G
-    D --> H
-```
-
----
-
-## RTSP Server Integration
-
-```mermaid
-flowchart TB
-    subgraph rtsp["RTSPServerManager"]
-        A["gortsplib.Server"]
-        B["streams map"]
-        C["streamReady channels"]
-    end
-    
-    subgraph registration["Stream Registration"]
-        D["AddStream(path)"] --> E["Create RTSP stream"]
-        E --> F["Signal streamReady"]
-        F --> G["Add to streams map"]
-    end
-    
-    subgraph removal["Stream Removal"]
-        H["RemoveStream(path)"] --> I["Close stream"]
-        I --> J["Remove from map"]
-    end
-    
-    D -.-> A
-    H -.-> A
-    A -.-> B
-    B -.-> G
-    B -.-> J
-```
+| Endpoint | Methods | Description |
+|----------|---------|-------------|
+| `/inputs` | GET, POST, DELETE | Manage input streams |
+| `/outputs` | GET, POST, DELETE | Manage output relays |
+| `/record` | POST, DELETE | Start/stop recording |
+| `/hls/start` | POST | Start HLS viewer |
+| `/hls/stop` | POST | Stop HLS viewer |
+| `/stats` | GET | Get system statistics |
+| `/system/export` | GET | Export configuration |
+| `/system/import` | POST | Import configuration |
 
 ---
 
@@ -305,116 +153,84 @@ flowchart TB
 sequenceDiagram
     participant Main
     participant Context as "app.Context"
-    participant Pipeline
-    participant FFmpeg as "FFmpeg Processes"
-    participant SSE as "SSEBroker"
-    participant RTSP as "RTSPServer"
+    participant HLS as "HLSManager"
+    participant Hub
+    participant Workers
     
     Main->>Context: Shutdown()
-    Context->>Pipeline: Shutdown()
-    Note over Pipeline: Lock mutex<br/>Stop all outputs<br/>Stop all HLS sessions
-    Pipeline->>SSE: Shutdown()
-    Pipeline->>FFmpeg: Stop(timeout)
-    Note over FFmpeg: SIGTERM → SIGKILL
-    Context->>RTSP: Stop()
-    RTSP-->>Context: Done
+    Context->>HLS: Shutdown()
+    HLS-->>Context: Done
+    Context->>Hub: Stop()
+    Hub-->>Context: Done
     Context-->>Main: Complete
 ```
 
 ---
 
-## Design Principles
-
-### 1. Single Responsibility
-The Pipeline manages all streams—inputs, outputs, recordings, HLS sessions—through a unified interface.
-
-### 2. Dependency Injection
-All dependencies (FFmpegFactory, RTSPServer) are injected via setters, enabling testing with mocks.
-
-### 3. No Callbacks
-Consumer lifecycle is managed directly via goroutines and mutexes—no interface callbacks.
-
-### 4. No Global State
-SSEBroker is stored in Pipeline, not as a global variable.
-
-### 5. Fail-Safe Defaults
-Reference counting ensures inputs are only stopped when all consumers are done.
-
----
-
 ## File Structure
 
-### internal/stream/ - Streaming Backend
+### internal/hub/ - Media Ingestion Hub
 ```
-internal/stream/
-├── pipeline.go         # Core Pipeline struct and methods
-├── stream.go          # PipelineStream, Relay, PipelineHLSSession, PipelineRecording types
-├── ffmpeg.go          # FFmpegFactory interface + default implementation
-├── ffmpeg_process.go  # FFmpegProcess interface + implementation
-├── rtsp_server.go     # RTSPServerManager (concrete, not interface)
-├── sse.go             # SSEBroker (concrete, not interface)
-├── relay_api.go       # Relay HTTP handlers
-├── recording_api.go   # Recording HTTP handlers
-├── hls_api.go        # HLS HTTP handlers
-├── preset_helper.go   # ApplyPresetAndOptions()
-└── presets.go        # Platform presets (YouTube, Facebook, etc.)
-```
-
-### internal/state/ - State Management
-```
-internal/state/
-└── state.go          # Thread-safe in-memory store for persistence
+internal/hub/
+├── hub.go    # Hub interface + RTMPHub
+└── rtsp.go   # RTSPHub implementation
 ```
 
 ### internal/worker/ - FFmpeg Process Management
 ```
 internal/worker/
 ├── ffmpeg.go       # RunAndMonitorFFmpeg (core wrapper)
-├── puller.go       # Puller - pulls from remote, pushes to local RTMP
-├── restreamer.go   # Restreamer - pushes local to remote RTMP
-├── recorder.go     # Recorder - records to MP4
-└── hls.go         # HLSManager - generates HLS
+├── ffmpeg_factory.go # Process interface
+├── worker.go       # BaseWorker, ProcessWorker, WorkerState
+├── puller.go       # Puller - pulls from remote, pushes to hub
+├── restreamer.go   # Restreamer - hub to remote RTMP
+├── recorder.go     # Recorder - hub to MP4
+└── hls.go         # HLSManager - hub to HLS
 ```
 
 ### internal/ingest/ - Stream Ingestion
 ```
 internal/ingest/
-└── router.go      # Smart Ingest Router - manages pullers, acceptors, tokens
+└── router.go      # Smart Ingest Router
+```
+
+### internal/state/ - State Management
+```
+internal/state/
+└── state.go      # Thread-safe in-memory store
 ```
 
 ### internal/api/ - HTTP Control Plane
 ```
 internal/api/
-└── server.go      # HTTP API server with all REST endpoints
+└── server.go      # HTTP API server
+```
+
+### internal/app/ - Application Context
+```
+internal/app/
+└── context.go     # Creates hub, ingest, workers, state
 ```
 
 ---
 
-## Worker Architecture
+## Design Principles
 
-Workers manage FFmpeg child processes with telemetry:
+### 1. Interface-Based Hub
+The `Hub` interface allows swapping between RTMP and RTSP protocols without changing worker code.
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                      worker.Puller                            │
-│  FFmpeg: -re -i <remote_url> -c copy -f flv <local_rtmp>   │
-│  Pulls from RTSP/SRT/HLS → Pushes to local RTMP hub         │
-└─────────────────────────────────────────────────────────────┘
-                              ↓
-                    rtmp://127.0.0.1:1935/{streamPath}
-                              ↓
-┌──────────────┬──────────────┬──────────────┐
-│ worker.       │ worker.      │ worker.       │
-│ Restreamer   │ Recorder     │ HLSManager   │
-│              │              │              │
-│ -f flv       │ -c copy      │ -f hls       │
-│ <remote_url> │ <file>.mp4   │ <dir>/       │
-└──────────────┴──────────────┴──────────────┘
-```
+### 2. Worker Lifecycle
+Workers follow the `Start()` → `Run()` → `Stop()` → `Wait()` pattern with proper goroutine management.
+
+### 3. State-Based Design
+Centralized state store for inputs, outputs, recordings, and HLS sessions enables persistence and export/import.
+
+### 4. No Callbacks in Critical Paths
+Token validation and publish handlers are synchronous to ensure correctness.
 
 ---
 
 ## Related Documentation
 
-- [API Reference](api-reference.md) - Method signatures and HTTP endpoints
+- [API Reference](api-reference.md) - HTTP endpoints
 - [Configuration](configuration.md) - JSON config schema
