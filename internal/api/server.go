@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 
@@ -14,6 +15,8 @@ import (
 	"go-mls/internal/logger"
 	"go-mls/internal/state"
 	"go-mls/internal/worker"
+
+	"github.com/shirou/gopsutil/v3/process"
 )
 
 // Server is the HTTP API server.
@@ -384,9 +387,8 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		Outputs: make([]outputStats, 0),
 	}
 
-	// Server-level stats (self process)
-	// NOTE: gopsutil self-usage can be added here
-	resp.Server = serverStats{}
+	// Server-level stats (self process CPU and memory)
+	resp.Server = getSelfStats()
 
 	// Input stats
 	for _, in := range s.store.ListInputs() {
@@ -423,6 +425,24 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// getSelfStats returns CPU and memory usage for the current process
+func getSelfStats() serverStats {
+	stats := serverStats{}
+	p, err := process.NewProcess(int32(os.Getpid()))
+	if err != nil {
+		return stats
+	}
+
+	if cpu, err := p.CPUPercent(); err == nil {
+		stats.CPU = cpu
+	}
+	if mem, err := p.MemoryInfo(); err == nil {
+		stats.Mem = float64(mem.RSS) / (1024 * 1024) // Convert to MB
+	}
+
+	return stats
 }
 
 // --- /system/export ---
