@@ -204,7 +204,7 @@ func TestOutputsAPI(t *testing.T) {
 
 			remoteURL := "rtmp://youtube.com/live/stream-key"
 			if hubType == "rtsp" {
-				remoteURL = fmt.Sprintf("rtsp://127.0.0.1:8554/stream")
+				remoteURL = "rtsp://127.0.0.1:8554/stream"
 			}
 
 			resp, err = env.doRequest("POST", "/outputs", map[string]interface{}{
@@ -295,6 +295,56 @@ func TestHLSAPI(t *testing.T) {
 
 			resp, err = env.doRequest("DELETE", "/inputs?stream=test-stream", nil)
 			require.NoError(t, err)
+			resp.Body.Close()
+		})
+	}
+}
+
+func TestHLSHeartbeatAPI(t *testing.T) {
+	for _, hubType := range []string{"rtmp", "rtsp"} {
+		t.Run(hubType, func(t *testing.T) {
+			env := setupTestEnv(t, hubType)
+			defer env.shutdown()
+
+			resp, err := env.doRequest("POST", "/inputs", map[string]interface{}{
+				"stream_path": "test-stream",
+			})
+			require.NoError(t, err)
+			resp.Body.Close()
+
+			resp, err = env.doRequest("POST", "/hls/start?stream=test-stream", nil)
+			require.NoError(t, err)
+			require.Equal(t, http.StatusOK, resp.StatusCode)
+
+			var hlsResp map[string]interface{}
+			err = json.NewDecoder(resp.Body).Decode(&hlsResp)
+			resp.Body.Close()
+			require.NoError(t, err)
+
+			viewerID := hlsResp["viewer_id"].(string)
+
+			resp, err = env.doRequest("POST", "/hls/heartbeat", map[string]interface{}{
+				"stream":    "test-stream",
+				"viewer_id": viewerID,
+			})
+			require.NoError(t, err)
+			require.Equal(t, http.StatusOK, resp.StatusCode)
+			resp.Body.Close()
+
+			resp, err = env.doRequest("POST", "/hls/stop", map[string]interface{}{
+				"stream":    "test-stream",
+				"viewer_id": viewerID,
+			})
+			require.NoError(t, err)
+			require.Equal(t, http.StatusOK, resp.StatusCode)
+			resp.Body.Close()
+
+			resp, err = env.doRequest("POST", "/hls/heartbeat", map[string]interface{}{
+				"stream":    "test-stream",
+				"viewer_id": viewerID,
+			})
+			require.NoError(t, err)
+			require.Equal(t, http.StatusGone, resp.StatusCode)
 			resp.Body.Close()
 		})
 	}
@@ -456,6 +506,47 @@ func TestConcurrentOutputs(t *testing.T) {
 
 			resp, err = env.doRequest("DELETE", "/inputs?stream="+streamPath, nil)
 			require.NoError(t, err)
+			resp.Body.Close()
+		})
+	}
+}
+
+func TestOutputStartStopRoutes(t *testing.T) {
+	for _, hubType := range []string{"rtmp", "rtsp"} {
+		t.Run(hubType, func(t *testing.T) {
+			env := setupTestEnv(t, hubType)
+			defer env.shutdown()
+
+			resp, err := env.doRequest("POST", "/inputs", map[string]interface{}{
+				"stream_path": "test-stream",
+			})
+			require.NoError(t, err)
+			require.Equal(t, http.StatusOK, resp.StatusCode)
+			resp.Body.Close()
+
+			resp, err = env.doRequest("POST", "/outputs", map[string]interface{}{
+				"stream_path": "test-stream",
+				"output_id":   "out1",
+				"remote_url":  fmt.Sprintf("file://%s/out1.flv", env.tempDir),
+			})
+			require.NoError(t, err)
+			require.Equal(t, http.StatusOK, resp.StatusCode)
+			resp.Body.Close()
+
+			resp, err = env.doRequest("POST", "/outputs/stop", map[string]interface{}{
+				"stream_path": "test-stream",
+				"output_id":   "out1",
+			})
+			require.NoError(t, err)
+			require.Equal(t, http.StatusOK, resp.StatusCode)
+			resp.Body.Close()
+
+			resp, err = env.doRequest("POST", "/outputs/start", map[string]interface{}{
+				"stream_path": "test-stream",
+				"output_id":   "out1",
+			})
+			require.NoError(t, err)
+			require.Equal(t, http.StatusOK, resp.StatusCode)
 			resp.Body.Close()
 		})
 	}

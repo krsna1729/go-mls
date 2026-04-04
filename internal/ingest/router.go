@@ -69,6 +69,28 @@ func (r *Router) RegisterInput(ctx context.Context, in *state.Input) error {
 	return nil
 }
 
+// EnsureInputActive restarts a pull-mode input if it is registered but not currently pulling.
+func (r *Router) EnsureInputActive(ctx context.Context, streamPath string) error {
+	in, ok := r.store.GetInput(streamPath)
+	if !ok {
+		return fmt.Errorf("input %q not found", streamPath)
+	}
+	if in.Mode != state.InputModePull {
+		return nil
+	}
+
+	r.mu.RLock()
+	_, running := r.pullers[streamPath]
+	r.mu.RUnlock()
+	if running {
+		return nil
+	}
+
+	r.store.UpdateInputStatus(streamPath, state.InputStatusStarting, "")
+	go r.startPuller(ctx, in)
+	return nil
+}
+
 // UnregisterInput stops any active puller and removes the input.
 func (r *Router) UnregisterInput(streamPath string) error {
 	r.mu.Lock()
@@ -125,12 +147,16 @@ func (r *Router) startFFmpegPuller(ctx context.Context, in *state.Input) {
 		return
 	}
 
+	r.mu.Lock()
 	r.pullers[in.StreamPath] = puller
+	r.mu.Unlock()
 
 	// Monitor for exit and clean up
 	go func() {
 		<-puller.Done()
+		r.mu.Lock()
 		delete(r.pullers, in.StreamPath)
+		r.mu.Unlock()
 	}()
 }
 
@@ -148,7 +174,7 @@ func (r *Router) ValidateToken(streamPath, token string) bool {
 
 // OnPublish is called by the RTMP hub when a publisher connects.
 // It validates the path and token, then activates the input.
-func (r *Router) OnPublish(streamPath, token string) error {
+func (r *Router) OnPublish(streamPath, token, remoteAddr string) error {
 	in, ok := r.store.GetInput(streamPath)
 	if !ok {
 		return fmt.Errorf("stream path %q not registered", streamPath)
@@ -156,8 +182,11 @@ func (r *Router) OnPublish(streamPath, token string) error {
 	if in.IngestToken != "" && in.IngestToken != token {
 		return fmt.Errorf("invalid ingest token for %q", streamPath)
 	}
+	if remoteAddr != "" {
+		r.store.UpdateInputRemoteAddr(streamPath, remoteAddr)
+	}
 	r.store.UpdateInputStatus(streamPath, state.InputStatusActive, "")
-	r.log.Info("Publisher connected", "stream_path", streamPath)
+	r.log.Info("Publisher connected", "stream_path", streamPath, "remote_addr", remoteAddr)
 	return nil
 }
 

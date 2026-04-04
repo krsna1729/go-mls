@@ -39,7 +39,7 @@ type Hub interface {
 	Addr() string
 
 	// SetOnPublish sets the callback for publish events.
-	SetOnPublish(handler func(streamPath, token string) error)
+	SetOnPublish(handler func(streamPath, token, remoteAddr string) error)
 
 	// SetOnUnpublish sets the callback for unpublish events.
 	SetOnUnpublish(handler func(streamPath string))
@@ -61,7 +61,7 @@ type RTMPHub struct {
 	listener    net.Listener
 	mu          sync.RWMutex
 	streams     map[string]*stream
-	onPublish   func(streamPath, token string) error
+	onPublish   func(streamPath, token, remoteAddr string) error
 	onUnpublish func(streamPath string)
 	ctx         context.Context
 	cancel      context.CancelFunc
@@ -81,7 +81,7 @@ func NewRTMPHub(log *logger.Logger, host string, port int) *RTMPHub {
 }
 
 // SetOnPublish sets the callback for publish events.
-func (h *RTMPHub) SetOnPublish(handler func(string, string) error) {
+func (h *RTMPHub) SetOnPublish(handler func(string, string, string) error) {
 	h.onPublish = handler
 }
 
@@ -149,7 +149,7 @@ func (h *RTMPHub) handleConn(conn net.Conn) {
 	streamPath, token := parseStreamURL(sc.URL)
 
 	if sc.Publish {
-		if err := h.handlePublisher(sc, conn, streamPath, token); err != nil {
+		if err := h.handlePublisher(sc, conn, streamPath, token, remoteAddr); err != nil {
 			h.log.Error("Publisher error", "path", streamPath, "remote", remoteAddr, "error", err)
 		}
 	} else {
@@ -160,9 +160,9 @@ func (h *RTMPHub) handleConn(conn net.Conn) {
 }
 
 // handlePublisher processes a publishing connection.
-func (h *RTMPHub) handlePublisher(sc *gortmplib.ServerConn, conn net.Conn, streamPath, token string) error {
+func (h *RTMPHub) handlePublisher(sc *gortmplib.ServerConn, conn net.Conn, streamPath, token, remoteAddr string) error {
 	if h.onPublish != nil {
-		if err := h.onPublish(streamPath, token); err != nil {
+		if err := h.onPublish(streamPath, token, remoteAddr); err != nil {
 			return fmt.Errorf("publish rejected: %w", err)
 		}
 	}

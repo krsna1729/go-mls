@@ -71,6 +71,7 @@ func NewContext(cfg *config.Config, log *logger.Logger) (*Context, error) {
 		cfg.HLS.PlaylistBaseDir,
 		hlsPreset,
 		hubPort,
+		time.Duration(cfg.HLS.ViewerHeartbeatTimeout),
 	)
 
 	return ctx, nil

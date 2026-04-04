@@ -90,18 +90,19 @@ document.addEventListener('DOMContentLoaded', function () {
 
         for (const relay of relays) {
             const input = relay.input;
-            if (!input || !input.input_name || !input.input_url) {
+            if (!input || !input.input_name) {
                 console.warn('Skipping relay with invalid input data:', relay);
                 continue;
             }
 
-            if (search && !input.input_name.toLowerCase().includes(search) && !input.input_url.toLowerCase().includes(search)) continue;
+            const displayUrl = input.input_url || '';
+            if (search && !input.input_name.toLowerCase().includes(search) && !displayUrl.toLowerCase().includes(search)) continue;
 
             // Find all recordings for this input, sorted by started_at descending
             let latestActive = null;
             let latestCompleted = null;
             if (Array.isArray(allRecordings)) {
-                const matches = allRecordings.filter(r => r.name === input.input_name && r.source === input.input_url)
+                const matches = allRecordings.filter(r => (r.stream_path || r.name) === input.input_name)
                     .sort((a, b) => new Date(b.started_at) - new Date(a.started_at));
                 latestActive = matches.find(r => r.active);
                 latestCompleted = matches.find(r => !r.active);
@@ -109,7 +110,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
             // Toggle button logic
             let toggleBtn = '';
-            const buttonKey = `${input.input_name}_${input.input_url}`;
+            const buttonKey = input.input_name;
 
             // Check if this button is in "starting" state
             if (startingButtons.has(buttonKey)) {
@@ -130,7 +131,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
             html += `<tr>
                 <td>${input.input_name}</td>
-                <td>${input.input_url}</td>
+                <td>${displayUrl || 'Push source'}</td>
                 <td>${input.status || 'Unknown'}${input.last_error ? `<br><span style='color:red'>${input.last_error}</span>` : ''}</td>
                 <td>
                     ${toggleBtn}
@@ -157,14 +158,14 @@ document.addEventListener('DOMContentLoaded', function () {
                 const url = btn.getAttribute('data-url');
 
                 // Add validation to prevent undefined values
-                if (!name || !url || name === 'undefined' || url === 'undefined') {
+                if (!name || name === 'undefined') {
                     console.error('Invalid recording data: name=' + name + ', url=' + url);
                     alert('Cannot start recording: Invalid input data');
                     return;
                 }
 
                 // Check for rapid successive requests (debouncing)
-                const requestKey = `${name}_${url}`;
+                const requestKey = name;
                 const now = Date.now();
                 const lastRequest = recordingRequestTimestamps.get(requestKey);
                 if (lastRequest && (now - lastRequest) < REQUEST_DEBOUNCE_MS) {
@@ -249,7 +250,7 @@ document.addEventListener('DOMContentLoaded', function () {
                             .then(recordings => {
                                 // Check if a recording with this name and source exists and is active
                                 const recordingExists = recordings.some(rec =>
-                                    rec.name === name && rec.source === url && rec.active
+                                    (rec.stream_path || rec.name) === name && rec.active
                                 );
 
                                 if (recordingExists) {
@@ -355,7 +356,7 @@ document.addEventListener('DOMContentLoaded', function () {
             .then(renderAllRecordings);
     }
 
-    function renderAllRecordings(list) {
+        function renderAllRecordings(list) {
         // Keep all recordings globally for input table
         if (typeof window.updateAllRecordingsList === 'function') {
             window.updateAllRecordingsList(list);
@@ -365,7 +366,8 @@ document.addEventListener('DOMContentLoaded', function () {
         const search = document.getElementById('recordingSearchBox').value.trim().toLowerCase();
         let html = '<table style="width:100%"><thead><tr><th>Filename</th><th>Started</th><th>Size</th><th>Status</th><th>Action</th></tr></thead><tbody>';
         for (const rec of list) {
-            if (search && !rec.filename.toLowerCase().includes(search) && !rec.name.toLowerCase().includes(search) && !new Date(rec.started_at).toLocaleString().toLowerCase().includes(search)) continue;
+            const streamPath = rec.stream_path || rec.name || '';
+            if (search && !rec.filename.toLowerCase().includes(search) && !streamPath.toLowerCase().includes(search) && !new Date(rec.started_at).toLocaleString().toLowerCase().includes(search)) continue;
             let sizeStr = rec.file_size ? Utils.formatBytes(rec.file_size) : '';
             let downloadBtn = '';
             let deleteBtn = '';
@@ -379,9 +381,9 @@ document.addEventListener('DOMContentLoaded', function () {
                 deleteBtn = `<button class=\"deleteRecordingBtn\" data-filename=\"${encodeURIComponent(rec.filename)}\"><span class=\"material-icons\">delete</span></button>`;
             }
             // Show source on hover if available
-            const titleAttr = rec.source ? `title="Source: ${rec.source}"` : '';
+            const titleAttr = streamPath ? `title="Stream: ${streamPath}"` : '';
             html += `<tr>
-                <td ${titleAttr}>${rec.filename || rec.name}</td>
+                <td ${titleAttr}>${rec.filename || streamPath}</td>
                 <td>${new Date(rec.started_at).toLocaleString()}</td>
                 <td>${sizeStr}</td>
                 <td>${rec.active ? '<span style=\"color:red;\">Active</span>' : 'Stopped'}</td>
@@ -422,11 +424,34 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     }
 
-    // --- Setup Polling for Recording Updates ---
+    // --- Setup SSE / Polling for Recording Updates ---
     let recordingsPollingInterval = null;
+    let recordingsEventSource = null;
+
     function setupRecordingsPolling() {
         if (recordingsPollingInterval) clearInterval(recordingsPollingInterval);
         recordingsPollingInterval = setInterval(fetchAllRecordings, 5000);
     }
-    setupRecordingsPolling();
+
+    function setupRecordingsSSE() {
+        if (!window.EventSource) {
+            setupRecordingsPolling();
+            return;
+        }
+
+        if (recordingsEventSource) {
+            recordingsEventSource.close();
+        }
+
+        recordingsEventSource = new EventSource('/recordings/sse');
+        recordingsEventSource.onmessage = function () {
+            fetchAllRecordings();
+        };
+        recordingsEventSource.onerror = function () {
+            if (!recordingsPollingInterval) {
+                setupRecordingsPolling();
+            }
+        };
+    }
+    setupRecordingsSSE();
 });

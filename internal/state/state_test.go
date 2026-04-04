@@ -355,9 +355,13 @@ func TestStore_SaveLoadRoundTrip(t *testing.T) {
 		Mode:        InputModePull,
 	})
 	s.AddOutput(&Output{
-		StreamPath: "live/stream",
-		OutputID:   "youtube",
-		RemoteURL:  "rtmp://youtube.com/live/key",
+		StreamPath:     "live/stream",
+		OutputID:       "youtube",
+		RemoteURL:      "rtmp://youtube.com/live/key",
+		PlatformPreset: "YouTube",
+		FFmpegOptions: map[string]string{
+			"video_codec": "libx264",
+		},
 	})
 
 	snap := s.TakeSnapshot()
@@ -366,6 +370,11 @@ func TestStore_SaveLoadRoundTrip(t *testing.T) {
 	inputs := s.ListInputs()
 	assert.Len(t, inputs, 1)
 	assert.Equal(t, "secret", inputs[0].IngestToken)
+
+	outputs := s.ListOutputs()
+	assert.Len(t, outputs, 1)
+	assert.Equal(t, "YouTube", outputs[0].PlatformPreset)
+	assert.Equal(t, "libx264", outputs[0].FFmpegOptions["video_codec"])
 }
 
 func TestInputMode_Constants(t *testing.T) {

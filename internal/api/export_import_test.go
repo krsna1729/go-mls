@@ -4,8 +4,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"go-mls/internal/state"
 )
@@ -52,6 +55,49 @@ func TestHandleExportFormat(t *testing.T) {
 		if relay.InputURL == "" || relay.InputName == "" {
 			t.Error("relay missing input_url or input_name")
 		}
+	}
+}
+
+func TestHandleExportPreservesAdvancedOutputConfig(t *testing.T) {
+	store := state.NewStore()
+	err := store.AddInput(&state.Input{StreamPath: "test1", RemoteURL: "rtmp://source1"})
+	if err != nil {
+		t.Fatalf("add input: %v", err)
+	}
+	err = store.AddOutput(&state.Output{
+		StreamPath:     "test1",
+		OutputID:       "out1",
+		RemoteURL:      "rtmp://dest1",
+		PlatformPreset: "YouTube",
+		FFmpegOptions: map[string]string{
+			"video_codec": "libx264",
+			"audio_codec": "aac",
+			"resolution":  "1920x1080",
+		},
+	})
+	if err != nil {
+		t.Fatalf("add output: %v", err)
+	}
+
+	s := &Server{store: store}
+	req := httptest.NewRequest(http.MethodGet, "/system/export", nil)
+	w := httptest.NewRecorder()
+	s.handleExport(w, req)
+
+	var relays []exportRelay
+	if err := json.Unmarshal(w.Body.Bytes(), &relays); err != nil {
+		t.Fatalf("failed to parse export: %v", err)
+	}
+	if len(relays) != 1 || len(relays[0].Outputs) != 1 {
+		t.Fatalf("unexpected export shape: %+v", relays)
+	}
+
+	out := relays[0].Outputs[0]
+	if out.PlatformPreset != "YouTube" {
+		t.Fatalf("expected preset to round-trip, got %q", out.PlatformPreset)
+	}
+	if out.FFmpegOptions["video_codec"] != "libx264" {
+		t.Fatalf("expected ffmpeg options to round-trip, got %+v", out.FFmpegOptions)
 	}
 }
 
@@ -157,5 +203,83 @@ func TestPresetToArgs(t *testing.T) {
 	}
 	if !foundAudioCodec {
 		t.Error("expected -c:a aac in audio args")
+	}
+}
+
+func TestHandleRecordingsListAndDelete(t *testing.T) {
+	recDir := t.TempDir()
+	activeRelPath := filepath.ToSlash(filepath.Join("live", "stream_2026-04-04_10-00-00.mp4"))
+	completedRelPath := filepath.ToSlash(filepath.Join("live", "stream_2026-04-03_09-00-00.mp4"))
+
+	err := os.MkdirAll(filepath.Join(recDir, "live"), 0755)
+	if err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	err = os.WriteFile(filepath.Join(recDir, filepath.FromSlash(activeRelPath)), []byte("active"), 0644)
+	if err != nil {
+		t.Fatalf("write active file: %v", err)
+	}
+	err = os.WriteFile(filepath.Join(recDir, filepath.FromSlash(completedRelPath)), []byte("done"), 0644)
+	if err != nil {
+		t.Fatalf("write completed file: %v", err)
+	}
+
+	store := state.NewStore()
+	err = store.AddRecording(&state.Recording{
+		StreamPath: "live/stream",
+		Filename:   activeRelPath,
+		StartedAt:  time.Date(2026, 4, 4, 10, 0, 0, 0, time.UTC),
+		Status:     state.RecordingStatusActive,
+	})
+	if err != nil {
+		t.Fatalf("add active recording: %v", err)
+	}
+
+	s := &Server{store: store, recDir: recDir}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/recordings", nil)
+	listResp := httptest.NewRecorder()
+	s.handleRecordings(listResp, listReq)
+	if listResp.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", listResp.Code)
+	}
+
+	var recordings []recordingEntry
+	if err := json.Unmarshal(listResp.Body.Bytes(), &recordings); err != nil {
+		t.Fatalf("failed to parse recordings response: %v", err)
+	}
+	if len(recordings) != 2 {
+		t.Fatalf("expected 2 recordings, got %d", len(recordings))
+	}
+
+	var activeFound, completedFound bool
+	for _, rec := range recordings {
+		switch rec.Filename {
+		case activeRelPath:
+			activeFound = rec.Active && rec.StreamPath == "live/stream"
+		case completedRelPath:
+			completedFound = !rec.Active && rec.StreamPath == "live/stream"
+		}
+	}
+	if !activeFound || !completedFound {
+		t.Fatalf("unexpected recordings payload: %+v", recordings)
+	}
+
+	deleteActiveReq := httptest.NewRequest(http.MethodDelete, "/recordings?filename="+activeRelPath, nil)
+	deleteActiveResp := httptest.NewRecorder()
+	s.handleRecordings(deleteActiveResp, deleteActiveReq)
+	if deleteActiveResp.Code != http.StatusConflict {
+		t.Fatalf("expected active delete to be rejected, got %d", deleteActiveResp.Code)
+	}
+
+	deleteCompletedReq := httptest.NewRequest(http.MethodDelete, "/recordings?filename="+completedRelPath, nil)
+	deleteCompletedResp := httptest.NewRecorder()
+	s.handleRecordings(deleteCompletedResp, deleteCompletedReq)
+	if deleteCompletedResp.Code != http.StatusOK {
+		t.Fatalf("expected completed delete to succeed, got %d", deleteCompletedResp.Code)
+	}
+
+	if _, err := os.Stat(filepath.Join(recDir, filepath.FromSlash(completedRelPath))); !os.IsNotExist(err) {
+		t.Fatalf("expected completed recording to be removed, stat err=%v", err)
 	}
 }

@@ -31,7 +31,7 @@ type rtspHub struct {
 	started     bool
 	mu          sync.RWMutex
 	streams     map[string]*rtspStream
-	onPublish   func(streamPath, token string) error
+	onPublish   func(streamPath, token, remoteAddr string) error
 	onUnpublish func(streamPath string)
 	ctx         context.Context
 	cancel      context.CancelFunc
@@ -51,7 +51,7 @@ func NewRTSPHub(log *logger.Logger, host string, port int) *rtspHub {
 	}
 }
 
-func (h *rtspHub) SetOnPublish(handler func(string, string) error) {
+func (h *rtspHub) SetOnPublish(handler func(string, string, string) error) {
 	h.onPublish = handler
 }
 
@@ -128,7 +128,7 @@ func (h *rtspHub) OnAnnounce(ctx *gortsplib.ServerHandlerOnAnnounceCtx) (*base.R
 	pathName := strings.TrimPrefix(ctx.Path, "/")
 
 	if h.onPublish != nil {
-		if err := h.onPublish(pathName, ""); err != nil {
+		if err := h.onPublish(pathName, "", ""); err != nil {
 			return &base.Response{StatusCode: base.StatusUnauthorized}, err
 		}
 	}

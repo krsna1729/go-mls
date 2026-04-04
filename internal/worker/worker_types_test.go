@@ -2,6 +2,7 @@ package worker
 
 import (
 	"testing"
+	"time"
 
 	"go-mls/internal/logger"
 	"go-mls/internal/state"
@@ -39,7 +40,7 @@ func TestHLSManager_Struct(t *testing.T) {
 	log := logger.NewLogger()
 	store := state.NewStore()
 
-	mgr := NewHLSManager(store, log, "/tmp/hls", "ultrafast", 1935)
+	mgr := NewHLSManager(store, log, "/tmp/hls", "ultrafast", 1935, 30*time.Second)
 
 	assert.Equal(t, store, mgr.store)
 	assert.NotNil(t, mgr.log)
@@ -53,7 +54,7 @@ func TestHLSManager_Sessions(t *testing.T) {
 	log := logger.NewLogger()
 	store := state.NewStore()
 
-	mgr := NewHLSManager(store, log, "/tmp/hls", "ultrafast", 1935)
+	mgr := NewHLSManager(store, log, "/tmp/hls", "ultrafast", 1935, 30*time.Second)
 
 	assert.Equal(t, 0, len(mgr.sessions))
 }
@@ -62,7 +63,7 @@ func TestHLSManager_Shutdown(t *testing.T) {
 	log := logger.NewLogger()
 	store := state.NewStore()
 
-	mgr := NewHLSManager(store, log, "/tmp/hls", "ultrafast", 1935)
+	mgr := NewHLSManager(store, log, "/tmp/hls", "ultrafast", 1935, 30*time.Second)
 
 	mgr.Shutdown()
 	assert.Equal(t, 0, len(mgr.sessions))
@@ -70,11 +71,17 @@ func TestHLSManager_Shutdown(t *testing.T) {
 
 func TestHLSSession_Struct(t *testing.T) {
 	sess := &hlsSession{
-		viewerCount: 5,
 		playlistDir: "/tmp/hls/test",
+		viewers: map[string]time.Time{
+			"viewer-1": time.Now(),
+			"viewer-2": time.Now(),
+			"viewer-3": time.Now(),
+			"viewer-4": time.Now(),
+			"viewer-5": time.Now(),
+		},
 	}
 
-	assert.Equal(t, 5, sess.viewerCount)
+	assert.Len(t, sess.viewers, 5)
 	assert.Equal(t, "/tmp/hls/test", sess.playlistDir)
 }
 

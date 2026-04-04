@@ -2,10 +2,35 @@
 const API = (() => {
     const BASE = '';
 
-    const fetchJSON = (url, method = 'GET', body = null) => {
+    const fetchJSON = async (url, method = 'GET', body = null) => {
         const opts = { method, headers: { 'Content-Type': 'application/json' } };
         if (body) opts.body = JSON.stringify(body);
-        return fetch(BASE + url, opts).then(r => r.json());
+        const resp = await fetch(BASE + url, opts);
+        const text = await resp.text();
+        let data = null;
+
+        if (text) {
+            try {
+                data = JSON.parse(text);
+            } catch {
+                if (!resp.ok) {
+                    const err = new Error(text);
+                    err.status = resp.status;
+                    throw err;
+                }
+                data = text;
+            }
+        }
+
+        if (!resp.ok) {
+            const message = data && (data.error || data.message) ? (data.error || data.message) : `Request failed (${resp.status})`;
+            const err = new Error(message);
+            err.status = resp.status;
+            err.body = data;
+            throw err;
+        }
+
+        return data;
     };
 
     const transformStats = (data) => {
@@ -13,11 +38,12 @@ const API = (() => {
         const inputsByPath = {};
 
         for (const input of (data.inputs || [])) {
+            const inputStatus = input.status === 'Active' ? 'Running' : (input.status || 'Stopped');
             inputsByPath[input.stream_path] = {
                 input: {
-                    input_url: input.remote_url || '',
+                    input_url: input.remote_url || input.remote_addr || '',
                     input_name: input.stream_path,
-                    status: input.status || 'Stopped',
+                    status: inputStatus,
                     cpu: input.telemetry?.cpu || 0,
                     mem: (input.telemetry?.mem_mb || 0) * 1024 * 1024,
                     speed: input.telemetry?.speed || 0,
@@ -87,24 +113,22 @@ const API = (() => {
             if (config.resolution) outputConfig.resolution = config.resolution;
             if (config.framerate) outputConfig.framerate = config.framerate;
             if (config.bitrate) outputConfig.bitrate = config.bitrate;
-            if (config.rotation) {
-                outputConfig.video_args = ['-vf', config.rotation];
-            }
+            if (config.rotation) outputConfig.rotation = config.rotation;
             return fetchJSON('/outputs', 'POST', outputConfig);
         },
 
         startRelay: async (config) => {
-            if (config.input_name || config.input_url) {
-                await API.startInput(config);
-            }
-            if (config.output_url) {
-                await API.startOutput(config);
-            }
-            return { status: 'ok' };
+            return fetchJSON('/outputs/start', 'POST', {
+                stream_path: config.input_name,
+                output_id: config.output_name || 'default'
+            });
         },
 
         stopRelay: async (ids) => {
-            return { status: 'ok' };
+            return fetchJSON('/outputs/stop', 'POST', {
+                stream_path: ids.input_name,
+                output_id: ids.output_name || 'default'
+            });
         },
 
         getStatus: async () => {
@@ -141,18 +165,38 @@ const API = (() => {
             return fetchJSON('/hls/stop', 'POST', { stream: inputName, viewer_id: viewerId });
         },
 
-        heartbeat: () => Promise.resolve({ status: 'ok' }),
+        heartbeat: async (inputName, viewerId) => {
+            const resp = await fetch(BASE + '/hls/heartbeat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ stream: inputName, viewer_id: viewerId })
+            });
+            let data = null;
+            const text = await resp.text();
+            if (text) {
+                try {
+                    data = JSON.parse(text);
+                } catch {
+                    data = { error: text };
+                }
+            }
+            return {
+                ok: resp.ok,
+                status: resp.status,
+                body: data
+            };
+        },
 
-        getRecordings: () => Promise.resolve([]),
+        getRecordings: () => fetchJSON('/recordings'),
 
         startRecording: (name, source) => {
-            return fetchJSON(`/record?stream=${encodeURIComponent(source || name)}`, 'POST');
+            return fetchJSON(`/record?stream=${encodeURIComponent(name)}`, 'POST');
         },
 
         stopRecording: (name, source) => {
-            return fetchJSON(`/record?stream=${encodeURIComponent(source || name)}`, 'DELETE');
+            return fetchJSON(`/record?stream=${encodeURIComponent(name)}`, 'DELETE');
         },
 
-        deleteRecording: () => Promise.resolve({ status: 'ok' }),
+        deleteRecording: (filename) => fetchJSON(`/recordings?filename=${encodeURIComponent(filename)}`, 'DELETE'),
     };
 })();

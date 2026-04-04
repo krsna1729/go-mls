@@ -149,11 +149,15 @@ echo ""
 
 echo "=== STEP 5: HLS Generation ==="
 echo "5.1: Start HLS for pull-stream"
-curl -s -X POST "${API}/hls/start?stream=pull-stream" | tee /results/step5_hls_pull.json
+PULL_HLS=$(curl -s -X POST "${API}/hls/start?stream=pull-stream")
+echo "$PULL_HLS" | tee /results/step5_hls_pull.json
+PULL_VIEWER_ID=$(echo "$PULL_HLS" | sed -n 's/.*"viewer_id":"\([^"]*\)".*/\1/p')
 echo ""
 
 echo "5.2: Start HLS for push-stream"
-curl -s -X POST "${API}/hls/start?stream=push-stream" | tee /results/step5_hls_push.json
+PUSH_HLS=$(curl -s -X POST "${API}/hls/start?stream=push-stream")
+echo "$PUSH_HLS" | tee /results/step5_hls_push.json
+PUSH_VIEWER_ID=$(echo "$PUSH_HLS" | sed -n 's/.*"viewer_id":"\([^"]*\)".*/\1/p')
 echo ""
 
 wait_for_hls "pull-stream" 20
@@ -166,7 +170,7 @@ STATS=$(curl -s "${API}/stats")
 echo "$STATS" | tee /results/step6_stats.json
 echo ""
 
-INPUT_COUNT=$(echo "$STATS" | grep -o '"stream_path"' | wc -l)
+INPUT_COUNT=$(echo "$STATS" | sed -n 's/.*"inputs":\[\(.*\)\],"outputs".*/\1/p' | grep -o '"stream_path"' | wc -l)
 OUTPUT_COUNT=$(echo "$STATS" | grep -o '"output_id"' | wc -l)
 echo "  Inputs: $INPUT_COUNT (expected: 2)"
 echo "  Outputs: $OUTPUT_COUNT (expected: 4)"
@@ -182,8 +186,8 @@ echo ""
 
 echo "=== STEP 7: Cleanup ==="
 echo "7.1: Stop HLS"
-curl -s -X POST "${API}/hls/stop" -H "Content-Type: application/json" -d '{"stream": "pull-stream"}' | tee /results/step7_hls_pull.json
-curl -s -X POST "${API}/hls/stop" -H "Content-Type: application/json" -d '{"stream": "push-stream"}' | tee /results/step7_hls_push.json
+curl -s -X POST "${API}/hls/stop" -H "Content-Type: application/json" -d '{"stream": "pull-stream", "viewer_id": "'"${PULL_VIEWER_ID}"'"}' | tee /results/step7_hls_pull.json
+curl -s -X POST "${API}/hls/stop" -H "Content-Type: application/json" -d '{"stream": "push-stream", "viewer_id": "'"${PUSH_VIEWER_ID}"'"}' | tee /results/step7_hls_push.json
 echo ""
 
 echo "7.2: Stop recordings"

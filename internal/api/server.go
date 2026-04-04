@@ -8,8 +8,13 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path"
+	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"go-mls/internal/ingest"
 	"go-mls/internal/logger"
@@ -30,6 +35,8 @@ type Server struct {
 	rtmpPort   int
 	configPath string
 	ctx        context.Context
+	recBroker  *recordingsBroker
+	recWatch   *recordingsWatcher
 
 	// Active workers tracking
 	mu          sync.RWMutex
@@ -49,6 +56,14 @@ func NewServer(
 	configPath string,
 	ctx context.Context,
 ) *Server {
+	recBroker := newRecordingsBroker()
+	recWatch, err := newRecordingsWatcher(recDir, recBroker, func(msg string, args ...interface{}) {
+		log.Debug(fmt.Sprintf(msg, args...))
+	})
+	if err != nil {
+		log.Warn("Failed to start recordings watcher", "dir", recDir, "error", err)
+	}
+
 	return &Server{
 		store:       store,
 		ingest:      ingestRouter,
@@ -59,6 +74,8 @@ func NewServer(
 		rtmpPort:    rtmpPort,
 		configPath:  configPath,
 		ctx:         ctx,
+		recBroker:   recBroker,
+		recWatch:    recWatch,
 		restreamers: make(map[string]*worker.Restreamer),
 		recorders:   make(map[string]*worker.Recorder),
 	}
@@ -69,8 +86,12 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	// Core REFACTOR.md endpoints
 	mux.HandleFunc("/inputs", s.handleInputs)
 	mux.HandleFunc("/outputs", s.handleOutputs)
+	mux.HandleFunc("/outputs/start", s.handleOutputStart)
+	mux.HandleFunc("/outputs/stop", s.handleOutputStop)
 	mux.HandleFunc("/presets", s.handlePresets)
 	mux.HandleFunc("/record", s.handleRecord)
+	mux.HandleFunc("/recordings", s.handleRecordings)
+	mux.HandleFunc("/recordings/sse", s.handleRecordingsSSE)
 	mux.HandleFunc("/stats", s.handleStats)
 	mux.HandleFunc("/system/export", s.handleExport)
 	mux.HandleFunc("/system/import", s.handleImport)
@@ -78,6 +99,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	// HLS endpoints
 	mux.HandleFunc("/hls/start", s.handleHLSStart)
 	mux.HandleFunc("/hls/stop", s.handleHLSStop)
+	mux.HandleFunc("/hls/heartbeat", s.handleHLSHeartbeat)
 
 	// HLS file serving - serve from hls directory
 	if s.hlsDir != "" {
@@ -190,8 +212,14 @@ type outputRequest struct {
 	Resolution string   `json:"resolution,omitempty"`
 	Framerate  string   `json:"framerate,omitempty"`
 	Bitrate    string   `json:"bitrate,omitempty"`
+	Rotation   string   `json:"rotation,omitempty"`
 	VideoArgs  []string `json:"video_args,omitempty"`
 	AudioArgs  []string `json:"audio_args,omitempty"`
+}
+
+type outputActionRequest struct {
+	StreamPath string `json:"stream_path"`
+	OutputID   string `json:"output_id"`
 }
 
 func (s *Server) handleOutputs(w http.ResponseWriter, r *http.Request) {
@@ -227,7 +255,7 @@ func (s *Server) createOutput(w http.ResponseWriter, r *http.Request) {
 	videoArgs := req.VideoArgs
 	audioArgs := req.AudioArgs
 
-	if req.Preset != "" || req.VideoCodec != "" || req.AudioCodec != "" || req.Resolution != "" || req.Framerate != "" || req.Bitrate != "" {
+	if req.Preset != "" || req.VideoCodec != "" || req.AudioCodec != "" || req.Resolution != "" || req.Framerate != "" || req.Bitrate != "" || req.Rotation != "" {
 		preset, hasPreset := state.GetPreset(req.Preset)
 		if !hasPreset && req.Preset != "" && req.Preset != "Custom" {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("unknown preset %q", req.Preset)})
@@ -251,6 +279,9 @@ func (s *Server) createOutput(w http.ResponseWriter, r *http.Request) {
 		if req.Bitrate != "" {
 			presetVideoArgs = append(presetVideoArgs, "-b:v", req.Bitrate)
 		}
+		if req.Rotation != "" {
+			presetVideoArgs = append(presetVideoArgs, "-vf", req.Rotation)
+		}
 
 		if len(videoArgs) == 0 {
 			videoArgs = presetVideoArgs
@@ -261,13 +292,15 @@ func (s *Server) createOutput(w http.ResponseWriter, r *http.Request) {
 	}
 
 	out := &state.Output{
-		StreamPath: req.StreamPath,
-		OutputID:   req.OutputID,
-		RemoteURL:  req.RemoteURL,
-		StreamKey:  req.StreamKey,
-		VideoArgs:  videoArgs,
-		AudioArgs:  audioArgs,
-		Status:     state.OutputStatusStarting,
+		StreamPath:     req.StreamPath,
+		OutputID:       req.OutputID,
+		RemoteURL:      req.RemoteURL,
+		StreamKey:      req.StreamKey,
+		VideoArgs:      videoArgs,
+		AudioArgs:      audioArgs,
+		PlatformPreset: req.Preset,
+		FFmpegOptions:  buildFFmpegOptions(req),
+		Status:         state.OutputStatusStarting,
 	}
 
 	if err := s.store.AddOutput(out); err != nil {
@@ -289,6 +322,100 @@ func (s *Server) createOutput(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 
 	s.log.Info("Output started", "stream_path", req.StreamPath, "output_id", req.OutputID)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "output_id": req.OutputID})
+}
+
+func (s *Server) handleOutputStart(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req outputActionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+	if req.StreamPath == "" || req.OutputID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "stream_path and output_id required"})
+		return
+	}
+
+	out, ok := s.store.GetOutput(req.StreamPath, req.OutputID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": fmt.Sprintf("output %q/%q not found", req.StreamPath, req.OutputID)})
+		return
+	}
+	if _, ok := s.store.GetInput(req.StreamPath); !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": fmt.Sprintf("input %q not found", req.StreamPath)})
+		return
+	}
+
+	if err := s.ingest.EnsureInputActive(s.ctx, req.StreamPath); err != nil {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		return
+	}
+
+	key := req.StreamPath + "/" + req.OutputID
+	s.mu.Lock()
+	if _, running := s.restreamers[key]; running {
+		s.mu.Unlock()
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "output_id": req.OutputID})
+		return
+	}
+	s.mu.Unlock()
+
+	s.store.UpdateOutputStatus(req.StreamPath, req.OutputID, state.OutputStatusStarting, "")
+	rs, err := worker.StartRestreamer(s.ctx, s.store, s.log, out, s.rtmpPort)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	s.mu.Lock()
+	s.restreamers[key] = rs
+	s.mu.Unlock()
+
+	s.log.Info("Output restarted", "stream_path", req.StreamPath, "output_id", req.OutputID)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "output_id": req.OutputID})
+}
+
+func (s *Server) handleOutputStop(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req outputActionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+	if req.StreamPath == "" || req.OutputID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "stream_path and output_id required"})
+		return
+	}
+
+	if _, ok := s.store.GetOutput(req.StreamPath, req.OutputID); !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": fmt.Sprintf("output %q/%q not found", req.StreamPath, req.OutputID)})
+		return
+	}
+
+	key := req.StreamPath + "/" + req.OutputID
+	s.mu.Lock()
+	rs, ok := s.restreamers[key]
+	if ok {
+		delete(s.restreamers, key)
+	}
+	s.mu.Unlock()
+
+	if ok {
+		rs.Stop()
+	} else {
+		s.store.UpdateOutputStatus(req.StreamPath, req.OutputID, state.OutputStatusStopped, "")
+	}
+
+	s.log.Info("Output stopped", "stream_path", req.StreamPath, "output_id", req.OutputID)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "output_id": req.OutputID})
 }
 
@@ -365,6 +492,7 @@ func (s *Server) startRecord(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 
 	s.log.Info("Recording started", "stream_path", streamPath)
+	s.notifyRecordingsChanged()
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "stream_path": streamPath})
 }
 
@@ -391,7 +519,82 @@ func (s *Server) stopRecord(w http.ResponseWriter, r *http.Request) {
 	s.store.RemoveRecording(streamPath)
 
 	s.log.Info("Recording stopped", "stream_path", streamPath)
+	s.notifyRecordingsChanged()
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// --- /recordings ---
+
+type recordingEntry struct {
+	StreamPath string    `json:"stream_path"`
+	Name       string    `json:"name"`
+	Filename   string    `json:"filename"`
+	StartedAt  time.Time `json:"started_at"`
+	FileSize   int64     `json:"file_size"`
+	Active     bool      `json:"active"`
+}
+
+var recordingFilenamePattern = regexp.MustCompile(`^(?s)(.+)_(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})\.mp4$`)
+
+func (s *Server) handleRecordings(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		s.listRecordings(w, r)
+	case http.MethodDelete:
+		s.deleteRecording(w, r)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Server) listRecordings(w http.ResponseWriter, r *http.Request) {
+	entries, err := s.collectRecordings()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, entries)
+}
+
+func (s *Server) deleteRecording(w http.ResponseWriter, r *http.Request) {
+	filename := r.URL.Query().Get("filename")
+	if filename == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "filename query param required"})
+		return
+	}
+
+	for _, rec := range s.store.ListRecordings() {
+		if rec.Filename == filename {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "recording is still active"})
+			return
+		}
+	}
+
+	fullPath, err := resolveRecordingPath(s.recDir, filename)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if err := os.Remove(fullPath); err != nil {
+		if os.IsNotExist(err) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "recording not found"})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	pruneEmptyRecordingDirs(s.recDir, filepath.Dir(fullPath))
+	s.notifyRecordingsChanged()
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleRecordingsSSE(w http.ResponseWriter, r *http.Request) {
+	if s.recBroker == nil {
+		http.Error(w, "recordings SSE unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	s.recBroker.Handler().ServeHTTP(w, r)
 }
 
 // --- /stats ---
@@ -412,6 +615,7 @@ type inputStats struct {
 	Mode       state.InputMode   `json:"mode"`
 	Status     state.InputStatus `json:"status"`
 	RemoteURL  string            `json:"remote_url,omitempty"`
+	RemoteAddr string            `json:"remote_addr,omitempty"`
 	LastError  string            `json:"last_error,omitempty"`
 	Telemetry  *state.Telemetry  `json:"telemetry,omitempty"`
 }
@@ -441,13 +645,14 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 
 	// Input stats
 	for _, in := range s.store.ListInputs() {
-		is := inputStats{
-			StreamPath: in.StreamPath,
-			Mode:       in.Mode,
-			Status:     in.Status,
-			RemoteURL:  in.RemoteURL,
-			LastError:  in.LastError,
-		}
+			is := inputStats{
+				StreamPath: in.StreamPath,
+				Mode:       in.Mode,
+				Status:     in.Status,
+				RemoteURL:  in.RemoteURL,
+				RemoteAddr: in.RemoteAddr,
+				LastError:  in.LastError,
+			}
 		if in.PID > 0 {
 			if t, ok := s.store.GetTelemetry(in.PID); ok {
 				is.Telemetry = t
@@ -547,16 +752,18 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	for _, out := range outputs {
-		relay, ok := relays[out.StreamPath]
-		if !ok {
-			continue
+		for _, out := range outputs {
+			relay, ok := relays[out.StreamPath]
+			if !ok {
+				continue
+			}
+			relay.Outputs = append(relay.Outputs, exportOutput{
+				OutputURL:      out.RemoteURL,
+				OutputName:     out.OutputID,
+				PlatformPreset: out.PlatformPreset,
+				FFmpegOptions:  exportFFmpegOptions(out),
+			})
 		}
-		relay.Outputs = append(relay.Outputs, exportOutput{
-			OutputURL:  out.RemoteURL,
-			OutputName: out.OutputID,
-		})
-	}
 
 	result := make([]exportRelay, 0, len(relays))
 	for _, relay := range relays {
@@ -658,13 +865,15 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 
-			stateOut := &state.Output{
-				StreamPath: relay.InputName,
-				OutputID:   out.OutputName,
-				RemoteURL:  out.OutputURL,
-				VideoArgs:  videoArgs,
-				AudioArgs:  audioArgs,
-			}
+				stateOut := &state.Output{
+					StreamPath:     relay.InputName,
+					OutputID:       out.OutputName,
+					RemoteURL:      out.OutputURL,
+					VideoArgs:      videoArgs,
+					AudioArgs:      audioArgs,
+					PlatformPreset: out.PlatformPreset,
+					FFmpegOptions:  copyStringMap(out.FFmpegOptions),
+				}
 
 			if err := s.store.AddOutput(stateOut); err != nil {
 				s.log.Error("Failed to add output", "output_name", out.OutputName, "error", err)
@@ -704,13 +913,13 @@ func (s *Server) handleHLSStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	playlistURL, err := s.hlsMgr.AddViewer(s.ctx, streamPath)
+	viewerID, err := s.hlsMgr.AddViewer(s.ctx, streamPath)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
 
-	viewerID := streamPath
+	playlistURL := path.Join("/hls", streamPath, "index.m3u8")
 	s.log.Info("HLS viewer started", "stream_path", streamPath)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "stream_path": streamPath, "viewer_id": viewerID, "playlist_url": playlistURL})
 }
@@ -736,18 +945,44 @@ func (s *Server) handleHLSStop(w http.ResponseWriter, r *http.Request) {
 		req.Stream = streamPath
 	}
 
-	if req.Stream == "" && req.ViewerID == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "stream or viewer_id required"})
+	if req.Stream == "" || req.ViewerID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "stream and viewer_id required"})
 		return
 	}
 
-	streamPath := req.Stream
-	if streamPath == "" {
-		streamPath = req.ViewerID
+	s.hlsMgr.RemoveViewer(req.Stream, req.ViewerID)
+	s.log.Info("HLS viewer stopped", "stream_path", req.Stream, "viewer_id", req.ViewerID)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleHLSHeartbeat(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
 	}
 
-	s.hlsMgr.RemoveViewer(streamPath)
-	s.log.Info("HLS viewer stopped", "stream_path", streamPath)
+	var req struct {
+		Stream   string `json:"stream"`
+		ViewerID string `json:"viewer_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+	if req.Stream == "" || req.ViewerID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "stream and viewer_id required"})
+		return
+	}
+
+	if err := s.hlsMgr.Heartbeat(req.Stream, req.ViewerID); err != nil {
+		if err.Error() == "session not found" {
+			writeJSON(w, http.StatusGone, map[string]string{"error": "viewer session expired or stream ended"})
+			return
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -760,6 +995,182 @@ func (s *Server) handlePresets(w http.ResponseWriter, r *http.Request) {
 	}
 	presets := state.ListPresets()
 	writeJSON(w, http.StatusOK, presets)
+}
+
+func buildFFmpegOptions(req outputRequest) map[string]string {
+	opts := map[string]string{}
+	if req.VideoCodec != "" {
+		opts["video_codec"] = req.VideoCodec
+	}
+	if req.AudioCodec != "" {
+		opts["audio_codec"] = req.AudioCodec
+	}
+	if req.Resolution != "" {
+		opts["resolution"] = req.Resolution
+	}
+	if req.Framerate != "" {
+		opts["framerate"] = req.Framerate
+	}
+	if req.Bitrate != "" {
+		opts["bitrate"] = req.Bitrate
+	}
+	if req.Rotation != "" {
+		opts["rotation"] = req.Rotation
+	}
+	if len(opts) == 0 {
+		return nil
+	}
+	return opts
+}
+
+func exportFFmpegOptions(out *state.Output) map[string]string {
+	if len(out.FFmpegOptions) > 0 {
+		return copyStringMap(out.FFmpegOptions)
+	}
+
+	opts := map[string]string{}
+	for i := 0; i < len(out.VideoArgs)-1; i++ {
+		switch out.VideoArgs[i] {
+		case "-c:v":
+			opts["video_codec"] = out.VideoArgs[i+1]
+		case "-s":
+			opts["resolution"] = out.VideoArgs[i+1]
+		case "-r":
+			opts["framerate"] = out.VideoArgs[i+1]
+		case "-b:v":
+			opts["bitrate"] = out.VideoArgs[i+1]
+		case "-vf":
+			opts["rotation"] = out.VideoArgs[i+1]
+		}
+	}
+	for i := 0; i < len(out.AudioArgs)-1; i++ {
+		if out.AudioArgs[i] == "-c:a" {
+			opts["audio_codec"] = out.AudioArgs[i+1]
+		}
+	}
+	if len(opts) == 0 {
+		return nil
+	}
+	return opts
+}
+
+func copyStringMap(src map[string]string) map[string]string {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(map[string]string, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
+}
+
+func (s *Server) collectRecordings() ([]recordingEntry, error) {
+	entries := map[string]recordingEntry{}
+	activeRecordings := s.store.ListRecordings()
+	activeByFilename := make(map[string]*state.Recording, len(activeRecordings))
+	for _, rec := range activeRecordings {
+		activeByFilename[filepath.ToSlash(rec.Filename)] = rec
+	}
+
+	if s.recDir != "" {
+		err := filepath.Walk(s.recDir, func(fullPath string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+			if info.IsDir() {
+				return nil
+			}
+
+			relPath, err := filepath.Rel(s.recDir, fullPath)
+			if err != nil {
+				return err
+			}
+			relPath = filepath.ToSlash(relPath)
+
+			streamPath, startedAt := parseRecordingMetadata(relPath, info.ModTime())
+			_, active := activeByFilename[relPath]
+			entries[relPath] = recordingEntry{
+				StreamPath: streamPath,
+				Name:       streamPath,
+				Filename:   relPath,
+				StartedAt:  startedAt,
+				FileSize:   info.Size(),
+				Active:     active,
+			}
+			return nil
+		})
+		if err != nil && !os.IsNotExist(err) {
+			return nil, fmt.Errorf("walk recordings: %w", err)
+		}
+	}
+
+	for filename, rec := range activeByFilename {
+		if _, exists := entries[filename]; exists {
+			continue
+		}
+		entries[filename] = recordingEntry{
+			StreamPath: rec.StreamPath,
+			Name:       rec.StreamPath,
+			Filename:   filepath.ToSlash(rec.Filename),
+			StartedAt:  rec.StartedAt,
+			Active:     true,
+		}
+	}
+
+	result := make([]recordingEntry, 0, len(entries))
+	for _, entry := range entries {
+		result = append(result, entry)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].StartedAt.After(result[j].StartedAt)
+	})
+	return result, nil
+}
+
+func parseRecordingMetadata(filename string, fallback time.Time) (string, time.Time) {
+	matches := recordingFilenamePattern.FindStringSubmatch(filepath.ToSlash(filename))
+	if len(matches) != 3 {
+		return strings.TrimSuffix(filepath.ToSlash(filename), filepath.Ext(filename)), fallback
+	}
+
+	startedAt, err := time.Parse("2006-01-02_15-04-05", matches[2])
+	if err != nil {
+		return matches[1], fallback
+	}
+	return matches[1], startedAt
+}
+
+func resolveRecordingPath(baseDir, filename string) (string, error) {
+	if baseDir == "" {
+		return "", fmt.Errorf("recording directory not configured")
+	}
+	cleanName := filepath.Clean(strings.TrimPrefix(filename, "/"))
+	if cleanName == "." || cleanName == "" || strings.HasPrefix(cleanName, "..") {
+		return "", fmt.Errorf("invalid filename")
+	}
+
+	fullPath := filepath.Join(baseDir, cleanName)
+	rel, err := filepath.Rel(baseDir, fullPath)
+	if err != nil {
+		return "", fmt.Errorf("resolve filename: %w", err)
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return "", fmt.Errorf("invalid filename")
+	}
+	return fullPath, nil
+}
+
+func pruneEmptyRecordingDirs(baseDir, dir string) {
+	baseDir = filepath.Clean(baseDir)
+	dir = filepath.Clean(dir)
+	for dir != baseDir && dir != "." && dir != string(filepath.Separator) {
+		err := os.Remove(dir)
+		if err != nil {
+			return
+		}
+		dir = filepath.Dir(dir)
+	}
 }
 
 // writeJSON writes a JSON response with the given status code.
@@ -790,5 +1201,18 @@ func (s *Server) Shutdown() {
 		r.Stop()
 	}
 
+	if s.recWatch != nil {
+		s.recWatch.Shutdown()
+	}
+	if s.recBroker != nil {
+		s.recBroker.Shutdown()
+	}
+
 	s.log.Info("API Server shutdown complete")
+}
+
+func (s *Server) notifyRecordingsChanged() {
+	if s.recBroker != nil {
+		s.recBroker.Broadcast("update")
+	}
 }

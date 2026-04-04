@@ -1,777 +1,594 @@
 # Go-MLS API Reference
 
 **Generated**: April 2026  
-**Status**: Current Architecture
+**Status**: Current refactored HTTP control plane
 
 ---
 
 ## Table of Contents
 
-1. [Pipeline](#pipeline)
-2. [FFmpegFactory](#ffmpegfactory)
-3. [FFmpegProcess](#ffmpegprocess)
-4. [SSEBroker](#ssebroker)
-5. [RTSPServerManager](#rtspservermanager)
-6. [Types](#types)
-7. [HTTP API Endpoints](#http-api-endpoints)
-8. [Presets](#presets)
+1. [Overview](#overview)
+2. [Core Runtime Types](#core-runtime-types)
+3. [HTTP API Endpoints](#http-api-endpoints)
+4. [Export and Import Format](#export-and-import-format)
+5. [Presets](#presets)
 
 ---
 
-## Pipeline
+## Overview
 
-The central manager for all streaming operations.
+Go-MLS exposes a REST API for managing:
 
-### Constructor
+- Inputs registered as either pull or accept-mode push sources
+- Outputs that can be created, stopped, restarted, or deleted independently
+- Recordings stored on disk and listed from the filesystem
+- HLS viewer sessions with explicit `viewer_id` heartbeat tracking
+- System export/import using the `relay_config.json` schema
 
-```go
-func NewPipeline(l *logger.Logger, recDir string, ffmpegTimeout time.Duration) *Pipeline
-```
+The current control plane lives in `internal/api/server.go` and is mounted with these top-level routes:
 
-### Configuration
-
-```go
-func (p *Pipeline) SetRTSPServer(srv *RTSPServerManager)
-func (p *Pipeline) SetFFmpegFactory(factory FFmpegFactory)
-func (p *Pipeline) GetRecDir() string
-```
-
-### Input Operations
-
-```go
-func (p *Pipeline) StartInput(ctx context.Context, name, sourceURL string) error
-func (p *Pipeline) StopInput(name string) error
-func (p *Pipeline) DeleteInput(inputName string) error
-func (p *Pipeline) GetInputURL(name string) (string, bool)
-```
-
-### Output Operations
-
-```go
-func (p *Pipeline) StartOutput(ctx context.Context, name, inputName, destURL string, opts FFmpegOpts, preset string) error
-func (p *Pipeline) StopOutput(name string) error
-```
-
-### Recording Operations
-
-```go
-func (p *Pipeline) StartRecording(ctx context.Context, name, inputName string) error
-func (p *Pipeline) StopRecording(name string) error
-func (p *Pipeline) ListRecordings() []*PipelineRecording
-func (p *Pipeline) DeleteRecording(name string) error
-```
-
-### HLS Operations
-
-```go
-func (p *Pipeline) StartHLS(ctx context.Context, name, inputName string, preset string) error
-func (p *Pipeline) StopHLS(name string) error
-```
-
-### Status & Config
-
-```go
-func (p *Pipeline) Status() PipelineStatus
-func (p *Pipeline) ExportConfig(filename string) error
-func (p *Pipeline) ImportConfig(filename string) error
-```
-
-### Lifecycle
-
-```go
-func (p *Pipeline) Shutdown()
-```
+- `/inputs`
+- `/outputs`
+- `/outputs/start`
+- `/outputs/stop`
+- `/presets`
+- `/record`
+- `/recordings`
+- `/recordings/sse`
+- `/stats`
+- `/system/export`
+- `/system/import`
+- `/hls/start`
+- `/hls/stop`
+- `/hls/heartbeat`
+- `/hls/...` for HLS playlist and segments
+- `/recordings/...` for recorded file download/serving
 
 ---
 
-## FFmpegFactory
+## Core Runtime Types
 
-Interface for creating FFmpeg processes. Default implementation uses real ffmpeg binaries.
+The API is backed by the in-memory store in `internal/state`.
 
-### Interface
+### Input
 
 ```go
-type FFmpegFactory interface {
-    NewInputProcess(ctx context.Context, src, dst string) (FFmpegProcess, error)
-    NewOutputProcess(ctx context.Context, src, dst string, opts FFmpegOpts) (FFmpegProcess, error)
-    NewHLSProcess(ctx context.Context, src, dir string, preset string) (FFmpegProcess, error)
-    NewRecordProcess(ctx context.Context, src, file string) (FFmpegProcess, error)
+type Input struct {
+    StreamPath  string
+    Mode        InputMode
+    Status      InputStatus
+    RemoteURL   string
+    RemoteAddr  string
+    IngestToken string
+    LastError   string
+    PID         int
 }
 ```
 
-### Default Implementation
+Notes:
+
+- `Mode` is `Pull` when `remote_url` is configured.
+- `Mode` is `Accept` for push ingest where publishers connect to the hub.
+- `RemoteAddr` is updated at runtime for push ingest when the publisher lands on the hub.
+
+### Output
 
 ```go
-func NewDefaultFFmpegFactory() FFmpegFactory
-```
-
-### FFmpegOpts
-
-```go
-type FFmpegOpts struct {
-    VideoCodec string   // e.g., "libx264", "copy"
-    AudioCodec string   // e.g., "aac", "copy"
-    Resolution string   // e.g., "1920x1080", "1280x720"
-    Framerate  string  // e.g., "30", "60"
-    Bitrate    string  // e.g., "4500k", "2500k"
-    ExtraArgs  []string // Additional ffmpeg arguments
+type Output struct {
+    StreamPath     string
+    OutputID       string
+    RemoteURL      string
+    StreamKey      string
+    VideoArgs      []string
+    AudioArgs      []string
+    PlatformPreset string
+    FFmpegOptions  map[string]string
+    Status         OutputStatus
+    LastError      string
+    PID            int
 }
 ```
 
----
+### Recording Entry
 
-## FFmpegProcess
-
-Interface for managing individual FFmpeg processes.
-
-### Interface
+Filesystem-backed recordings are returned as:
 
 ```go
-type FFmpegProcess interface {
-    Start(ctx context.Context) error
-    Stop(ctx context.Context, timeout time.Duration) error
-    Wait() error
-    GetOutput() string
-    GetSpeed() (float64, time.Time)
-    GetBitrate() (float64, bool)
-    GetPID() int
-    OutputChannel() <-chan string
+type recordingEntry struct {
+    StreamPath string    `json:"stream_path"`
+    Name       string    `json:"name"`
+    Filename   string    `json:"filename"`
+    StartedAt  time.Time `json:"started_at"`
+    FileSize   int64     `json:"file_size"`
+    Active     bool      `json:"active"`
 }
 ```
 
-### Constructor
+### Stats Response
 
 ```go
-func NewFFmpegProcess(ctx context.Context, args ...string) (FFmpegProcess, error)
-```
-
----
-
-## SSEBroker
-
-Server-Sent Events broker for real-time updates.
-
-### Constructor
-
-```go
-func NewSSEBroker() *SSEBroker
-```
-
-### Methods
-
-```go
-func (b *SSEBroker) Broadcast(msg string)
-func (b *SSEBroker) Subscribe() (<-chan string, func())
-func (b *SSEBroker) Handler() http.HandlerFunc
-func (b *SSEBroker) Shutdown()
-```
-
----
-
-## RTSPServerManager
-
-Manages the embedded RTSP server.
-
-### Constructor
-
-```go
-func NewRTSPServerManager(l *logger.Logger, host string, port int) *RTSPServerManager
-```
-
-### Lifecycle
-
-```go
-func (rm *RTSPServerManager) Start() error
-func (rm *RTSPServerManager) Stop()
-```
-
-### Stream Management
-
-```go
-func (rm *RTSPServerManager) AddStream(path string) (*gortsplib.ServerStream, error)
-func (rm *RTSPServerManager) RemoveStream(path string)
-func (rm *RTSPServerManager) GetStreamStats() map[string]StreamStats
-func (rm *RTSPServerManager) GetRTSPURL(path string) string
-func (rm *RTSPServerManager) WaitForStreamReady(name string, timeout time.Duration) error
-func (rm *RTSPServerManager) IsStreamReady(name string) bool
-```
-
----
-
-## SSEBroker
-
-### Constructor
-
-```go
-func NewSSEBroker() *SSEBroker
-func NewSSEBrokerWithWatcher(dir string) (*SSEBroker, error)
-```
-
-### Methods
-
-```go
-func (b *SSEBroker) Broadcast(msg string)
-func (b *SSEBroker) BroadcastRefresh()
-func (b *SSEBroker) Subscribe() (<-chan string, func())
-func (b *SSEBroker) Handler() http.HandlerFunc
-func (b *SSEBroker) Shutdown()
-```
-
-### RecordingInfo
-
-```go
-type RecordingInfo struct {
-    Filename        string `json:"filename"`
-    Size            int64  `json:"size"`
-    ModifiedAtUnix  int64  `json:"modified_at_unix"`
+type statsResponse struct {
+    Server  serverStats   `json:"server"`
+    Inputs  []inputStats  `json:"inputs"`
+    Outputs []outputStats `json:"outputs"`
 }
 ```
 
----
-
-## Types
-
-### Relay
-
-Internal relay structure grouping an input with its outputs, recording, and HLS session.
-
-```go
-type Relay struct {
-    Input      *PipelineStream
-    Outputs    map[string]*PipelineStream
-    Recording  *PipelineRecording
-    HLSSession *PipelineHLSSession
-}
-```
-
-### StatusResponse
-
-Hierarchical status response with relays grouped by input.
-
-```go
-type StatusResponse struct {
-    Server PipelineServerStatus `json:"server"`
-    Relays []RelayStatus        `json:"relays"`
-}
-
-type RelayStatus struct {
-    Input   RelayInputStatus    `json:"input"`
-    Outputs []RelayOutputStatus `json:"outputs"`
-}
-
-type RelayInputStatus struct {
-    InputName       string  `json:"input_name"`
-    InputURL        string  `json:"input_url"`
-    LocalURL        string  `json:"local_url"`
-    Status          string  `json:"status"`
-    LastError       string  `json:"last_error,omitempty"`
-    RefCount        int     `json:"ref_count"`
-    Speed           float64 `json:"speed"`
-    CPU             float64 `json:"cpu"`
-    Mem             uint64  `json:"mem"`
-    RecordingActive bool    `json:"recording_active"`
-}
-
-type RelayOutputStatus struct {
-    OutputName string  `json:"output_name"`
-    Status     string  `json:"status"`
-    LastError  string  `json:"last_error,omitempty"`
-    Preset     string  `json:"preset,omitempty"`
-    Bitrate    float64 `json:"bitrate"`
-    CPU        float64 `json:"cpu"`
-    Mem        uint64  `json:"mem"`
-}
-
-type PipelineServerStatus struct {
-    CPU float64 `json:"cpu"`
-    Mem uint64  `json:"mem"`
-}
-```
-
-### PipelineStream
-
-```go
-type PipelineStream struct {
-    Name      string
-    Type      PipelineStreamType  // PTypeInput, PTypeOutput
-    SourceURL string
-    LocalURL  string
-    Status    PipelineStreamStatus  // PStreamStopped, PStreamStarting, PStreamRunning, PStreamError
-    LastError string
-    Proc      FFmpegProcess
-    RefCount  int
-    CreatedAt time.Time
-    StartedAt time.Time
-}
-```
-
-### PipelineStreamStatus
-
-```go
-const (
-    PStreamStopped PipelineStreamStatus = iota
-    PStreamStarting
-    PStreamRunning
-    PStreamError
-)
-
-func (s PipelineStreamStatus) String() string
-```
-
-### PipelineHLSSession
-
-```go
-type PipelineHLSSession struct {
-    PipelineStream
-    Mu          sync.RWMutex
-    Dir         string
-    Ready       bool
-    ViewerIDs   map[string]time.Time
-    LastAccess  time.Time
-    ViewerCount int
-}
-```
-
-### PipelineRecording
-
-```go
-type PipelineRecording struct {
-    Name      string
-    SourceURL string
-    Filename  string
-    FilePath  string
-    FileSize  int64
-    StartedAt time.Time
-    StoppedAt time.Time
-    Active    bool
-}
-```
-
-### RecordingListItem
-
-```go
-type RecordingListItem struct {
-    Name      string    `json:"name"`
-    Source    string    `json:"source"`
-    Filename  string    `json:"filename"`
-    StartedAt time.Time `json:"started_at"`
-    FileSize  int64     `json:"file_size"`
-    Active    bool      `json:"active"`
-}
-```
+`inputStats` includes `remote_addr` for push publishers and optional per-process telemetry.  
+`outputStats` includes current status, error state, and optional per-process telemetry.
 
 ---
 
 ## HTTP API Endpoints
 
-### Relay Endpoints
+## Inputs
 
-#### POST `/api/relay/start`
+#### POST `/inputs`
 
-Start an output relay. Auto-starts input if not running.
+Register an input.
 
-**Request:**
+Use `remote_url` for a pull input, or leave it empty to register an accept-mode push input.
+
+**Request**
+
 ```json
 {
-  "input_name": "MyInput",
-  "input_url": "rtsp://source:554/stream",
-  "output_name": "MyOutput",
-  "output_url": "rtmp://dest/live/key",
-  "platform_preset": "YouTube",
-  "ffmpeg_options": {
-    "resolution": "1920x1080",
-    "bitrate": "4500k"
-  }
+  "stream_path": "pull-stream",
+  "remote_url": "rtmp://source-rtmp:1935/live/testsrc",
+  "ingest_token": ""
 }
 ```
 
-**Response:** `200 OK`
-```json
-{"status": "started"}
-```
+**Response**
 
----
-
-#### POST `/api/relay/stop`
-
-Stop an output relay.
-
-**Request:**
 ```json
 {
-  "output_name": "MyOutput"
+  "status": "ok",
+  "stream_path": "pull-stream"
 }
 ```
 
-**Response:** `200 OK`
-```json
-{"status": "stopped"}
-```
+#### GET `/inputs`
 
----
+List registered inputs from the state store.
 
-#### GET `/api/relay/status`
+**Response**
 
-Get status of all relays (hierarchical by input).
-
-**Response:** `200 OK`
-```json
-{
-  "server": {"cpu": 12.5, "mem": 52428800},
-  "relays": [
-    {
-      "input": {
-        "input_name": "MyInput",
-        "input_url": "rtsp://source:554/stream",
-        "local_url": "rtsp://localhost:8554/relay/MyInput",
-        "status": "running",
-        "ref_count": 2,
-        "recording_active": true
-      },
-      "outputs": [
-        {
-          "output_name": "MyOutput",
-          "status": "running",
-          "preset": "YouTube",
-          "bitrate": 4500.0
-        }
-      ]
-    }
-  ]
-}
-```
-
----
-
-#### POST `/api/relay/delete-input`
-
-Force delete an input and all its consumers.
-
-**Request:**
-```json
-{
-  "input_name": "MyInput"
-}
-```
-
-**Response:** `200 OK`
-```json
-{"status": "deleted"}
-```
-
----
-
-#### POST `/api/relay/delete-output`
-
-Stop and delete an output.
-
-**Request:**
-```json
-{
-  "output_name": "MyOutput"
-}
-```
-
-**Response:** `200 OK`
-```json
-{"status": "deleted"}
-```
-
----
-
-#### GET `/api/relay/presets`
-
-Get available platform presets.
-
-**Response:** `200 OK`
-```json
-{
-  "YouTube": {
-    "name": "YouTube",
-    "options": {
-      "video_codec": "libx264",
-      "audio_codec": "aac",
-      "resolution": "1920x1080",
-      "framerate": "30",
-      "bitrate": "4500k"
-    }
-  },
-  "Facebook": {...},
-  "Twitch": {...}
-}
-```
-
----
-
-#### POST `/api/relay/export`
-
-Export current configuration to JSON file.
-
-**Response:** `200 OK` (file download)
-
----
-
-#### POST `/api/relay/import`
-
-Import configuration from JSON file upload.
-
-**Request:** `multipart/form-data` with `file` field
-
-**Response:** `200 OK`
-```json
-{"status": "imported"}
-```
-
----
-
-### Recording Endpoints
-
-#### POST `/api/recording/start`
-
-Start recording an input.
-
-**Request:**
-```json
-{
-  "name": "MyRecording",
-  "input_name": "MyInput",
-  "input_url": "rtsp://source:554/stream"
-}
-```
-
-**Response:** `200 OK`
-```json
-{"status": "started"}
-```
-
----
-
-#### POST `/api/recording/stop`
-
-Stop a recording.
-
-**Request:**
-```json
-{
-  "name": "MyRecording"
-}
-```
-
-**Response:** `200 OK`
-```json
-{"status": "stopped"}
-```
-
----
-
-#### GET `/api/recording/list`
-
-List all recordings.
-
-**Response:** `200 OK`
 ```json
 [
   {
-    "name": "MyRecording",
-    "filename": "MyRecording_1234567890.mp4",
-    "file_size": 104857600,
-    "started_at": "2026-04-03T10:00:00Z",
-    "stopped_at": "2026-04-03T11:00:00Z",
+    "stream_path": "pull-stream",
+    "mode": "Pull",
+    "status": "Active",
+    "remote_url": "rtmp://source-rtmp:1935/live/testsrc"
+  },
+  {
+    "stream_path": "push-stream",
+    "mode": "Accept",
+    "status": "Active",
+    "remote_addr": "172.18.0.5:49412"
+  }
+]
+```
+
+#### DELETE `/inputs?stream={stream_path}`
+
+Delete an input and stop any attached outputs or active recording first.
+
+**Response**
+
+```json
+{
+  "status": "ok"
+}
+```
+
+## Outputs
+
+#### POST `/outputs`
+
+Create and immediately start an output.
+
+**Request**
+
+```json
+{
+  "stream_path": "pull-stream",
+  "output_id": "youtube-main",
+  "remote_url": "rtmp://example.com/live/app",
+  "preset": "YouTube",
+  "video_codec": "libx264",
+  "audio_codec": "aac",
+  "resolution": "1920x1080",
+  "framerate": "30",
+  "bitrate": "4500k",
+  "rotation": "transpose=2"
+}
+```
+
+`preset` and explicit ffmpeg option fields can be combined. Explicit values override preset defaults.
+
+**Response**
+
+```json
+{
+  "status": "ok",
+  "output_id": "youtube-main"
+}
+```
+
+#### GET `/outputs`
+
+List all outputs.
+
+#### GET `/outputs?stream={stream_path}`
+
+List outputs for a single input.
+
+#### POST `/outputs/start`
+
+Restart an existing output in place.
+
+This is the row-level Start behavior in the Web UI. For pull inputs, the backend ensures the input is active before starting the output. For accept-mode push inputs, it restarts only the output worker and relies on the publisher to connect to the hub.
+
+**Request**
+
+```json
+{
+  "stream_path": "push-stream",
+  "output_id": "backup"
+}
+```
+
+**Response**
+
+```json
+{
+  "status": "ok",
+  "output_id": "backup"
+}
+```
+
+#### POST `/outputs/stop`
+
+Stop an existing output without deleting its definition.
+
+**Request**
+
+```json
+{
+  "stream_path": "push-stream",
+  "output_id": "backup"
+}
+```
+
+**Response**
+
+```json
+{
+  "status": "ok",
+  "output_id": "backup"
+}
+```
+
+#### DELETE `/outputs?stream={stream_path}&id={output_id}`
+
+Delete an output definition entirely.
+
+**Response**
+
+```json
+{
+  "status": "ok"
+}
+```
+
+## Recording
+
+#### POST `/record?stream={stream_path}`
+
+Start recording for an input.
+
+**Response**
+
+```json
+{
+  "status": "ok",
+  "stream_path": "pull-stream"
+}
+```
+
+#### DELETE `/record?stream={stream_path}`
+
+Stop an active recording.
+
+**Response**
+
+```json
+{
+  "status": "ok"
+}
+```
+
+## Recordings
+
+#### GET `/recordings`
+
+List recordings from the filesystem, with `active` overlaid from current runtime state.
+
+The API does not keep historical recording state in memory. The disk directory is the source of truth.
+
+**Response**
+
+```json
+[
+  {
+    "stream_path": "pull-stream",
+    "name": "pull-stream",
+    "filename": "pull-stream_2026-04-04_13-15-20.mp4",
+    "started_at": "2026-04-04T07:45:20Z",
+    "file_size": 10485760,
     "active": false
   }
 ]
 ```
 
----
+#### DELETE `/recordings?filename={relative_filename}`
 
-#### POST `/api/recording/delete`
+Delete a completed recording file.
 
-Delete a recording file.
+The request is rejected if the file is still active.
 
-**Request:**
+**Response**
+
 ```json
 {
-  "filename": "MyRecording_1234567890.mp4"
+  "status": "ok"
 }
 ```
 
-**Response:** `200 OK`
-```json
-{"status": "deleted"}
+#### GET `/recordings/sse`
+
+Server-Sent Events endpoint for recording list refresh.
+
+This route is backed by an API-layer `fsnotify` watcher and broadcasts lightweight refresh signals when files are created, written, removed, or renamed under the recordings directory.
+
+**Headers**
+
+- `Content-Type: text/event-stream`
+- `Cache-Control: no-cache`
+- `Connection: keep-alive`
+
+**Stream format**
+
+```text
+retry: 3000
+
+data: update
 ```
 
----
+The Web UI uses this to refetch `/recordings` instead of embedding full recording lists inside SSE events.
 
-#### GET `/api/recording/download`
+#### GET `/recordings/{file}`
 
-Download a recording file.
+Serve a recording file from the configured recordings directory.
 
-**Query Parameters:**
-- `filename` (required): Name of the recording file
+This is the path used by the browser download links in the Web UI.
 
-**Response:** `200 OK` (file download)
+## Stats
 
----
+#### GET `/stats`
 
-#### GET `/api/recording/sse`
+Return server, input, and output status plus optional process telemetry.
 
-Server-Sent Events for recording updates. Watches the recordings directory and sends full list on changes.
+**Response**
 
-**Response:** `200 OK` (text/event-stream)
-
-**Event Format:**
-```json
-data: [{"filename":"rec_123.mp4","size":1048576,"modified_at_unix":1709500000}]
-```
-
-**Triggers:**
-- `fsnotify.Write` - File modified
-- `fsnotify.Create` - New file created
-- `fsnotify.Remove` - File deleted
-
----
-
-### HLS Endpoints
-
-#### POST `/api/relay/hls/start-viewer`
-
-Start an HLS viewer session.
-
-**Request:**
 ```json
 {
-  "input_name": "MyInput"
+  "server": {
+    "cpu": 1.3,
+    "mem_mb": 42.7
+  },
+  "inputs": [
+    {
+      "stream_path": "push-stream",
+      "mode": "Accept",
+      "status": "Active",
+      "remote_addr": "172.18.0.5:49412",
+      "telemetry": {
+        "cpu": 0.8,
+        "mem_mb": 18.2,
+        "speed": 1.0,
+        "bitrate": 3500000
+      }
+    }
+  ],
+  "outputs": [
+    {
+      "stream_path": "push-stream",
+      "output_id": "youtube-main",
+      "remote_url": "rtmp://example.com/live/key",
+      "status": "Active",
+      "telemetry": {
+        "cpu": 1.2,
+        "mem_mb": 24.0,
+        "speed": 1.0,
+        "bitrate": 4200000
+      }
+    }
+  ]
 }
 ```
 
-**Response:** `200 OK`
+## Export and Import
+
+#### GET `/system/export`
+
+Export the current runtime config as `relay_config.json`.
+
+The response is served as:
+
+- `Content-Type: application/json`
+- `Content-Disposition: attachment; filename="relay_config.json"`
+
+#### POST `/system/import`
+
+Import a `relay_config.json`-compatible payload.
+
+The current runtime workers are stopped before the imported inputs and outputs are recreated.
+
+**Response**
+
 ```json
 {
-  "viewer_id": "viewer-1234567890",
-  "playlist_url": "/api/relay/watch-input/hls/MyInput/index.m3u8"
+  "status": "ok"
 }
 ```
 
----
+## Presets
 
-#### POST `/api/relay/hls/stop-viewer`
+#### GET `/presets`
+
+Return available output presets from the state package.
+
+**Response**
+
+```json
+{
+  "YouTube": {
+    "video_args": ["-c:v", "libx264", "-preset", "veryfast", "-b:v", "4500k"],
+    "audio_args": ["-c:a", "aac", "-b:a", "128k"]
+  }
+}
+```
+
+## HLS
+
+#### POST `/hls/start?stream={stream_path}`
+
+Start or attach to an HLS viewer session for a stream.
+
+**Response**
+
+```json
+{
+  "status": "ok",
+  "stream_path": "pull-stream",
+  "viewer_id": "9dcb4f4f-bb89-4b36-8d8a-2b9d77962f04",
+  "playlist_url": "/hls/pull-stream/index.m3u8"
+}
+```
+
+#### POST `/hls/stop`
 
 Stop an HLS viewer session.
 
-**Request:**
+**Request**
+
 ```json
 {
-  "input_name": "MyInput",
-  "viewer_id": "viewer-1234567890"
+  "stream": "pull-stream",
+  "viewer_id": "9dcb4f4f-bb89-4b36-8d8a-2b9d77962f04"
 }
 ```
 
-**Response:** `200 OK`
-```json
-{"status": "stopped"}
-```
+**Response**
 
----
-
-#### POST `/api/relay/hls/heartbeat`
-
-Send viewer heartbeat to keep session alive.
-
-**Request:**
 ```json
 {
-  "input_name": "MyInput",
-  "viewer_id": "viewer-1234567890"
+  "status": "ok"
 }
 ```
 
-**Response:** `200 OK`
-```json
-{"status": "ok"}
-```
+#### POST `/hls/heartbeat`
 
----
+Refresh a viewer session heartbeat.
 
-#### GET `/api/relay/watch-input/hls/{inputName}/{file}`
+**Request**
 
-Serve HLS playlist and segment files.
-
-**Path Parameters:**
-- `inputName`: Name of the HLS session
-- `file`: Either `index.m3u8` or a `.ts` segment file
-
-**Response:**
-- `index.m3u8`: `Content-Type: application/vnd.apple.mpegurl`
-- `.ts` segments: `Content-Type: video/MP2T`
-
----
-
-### RTSP Endpoints
-
-#### GET `/api/rtsp/status`
-
-Get RTSP server stream statistics.
-
-**Response:** `200 OK`
 ```json
 {
-  "streams": {
-    "relay/MyInput": {
-      "name": "MyInput",
-      "path": "relay/MyInput",
-      "client_count": 2,
-      "bytes_received": 1048576,
-      "start_time": "2026-04-03T10:00:00Z"
-    }
-  },
-  "total": 1
+  "stream": "pull-stream",
+  "viewer_id": "9dcb4f4f-bb89-4b36-8d8a-2b9d77962f04"
 }
 ```
+
+**Success response**
+
+```json
+{
+  "status": "ok"
+}
+```
+
+**Expired viewer response**
+
+`410 Gone`
+
+```json
+{
+  "error": "viewer session expired or stream ended"
+}
+```
+
+#### GET `/hls/{stream_path}/index.m3u8`
+
+Serve the HLS playlist for a stream.
+
+#### GET `/hls/{stream_path}/{segment}`
+
+Serve HLS segment files generated by the HLS manager.
+
+---
+
+## Export and Import Format
+
+The export/import payload matches `relay_config.json`.
+
+```json
+[
+  {
+    "input_url": "rtmp://localhost:1933/live/stream",
+    "input_name": "Tamil",
+    "outputs": [
+      {
+        "output_url": "rtmp://localhost:1935/live/stream",
+        "output_name": "TN-2",
+        "platform_preset": "Instagram"
+      },
+      {
+        "output_url": "rtmp://localhost:1936/live/stream",
+        "output_name": "TN-1",
+        "ffmpeg_options": {
+          "video_codec": "",
+          "audio_codec": "aac",
+          "resolution": "1280x720",
+          "framerate": "60",
+          "bitrate": "2000k",
+          "rotation": ""
+        }
+      }
+    ]
+  }
+]
+```
+
+Notes:
+
+- `input_url: ""` means accept-mode push ingest.
+- `platform_preset` and `ffmpeg_options` both round-trip through export/import.
+- `ffmpeg_options` keys currently used are:
+  - `video_codec`
+  - `audio_codec`
+  - `resolution`
+  - `framerate`
+  - `bitrate`
+  - `rotation`
 
 ---
 
 ## Presets
 
-### ApplyPresetAndOptions
+Presets are defined in the state package and converted into ffmpeg args for outputs.
 
-```go
-func ApplyPresetAndOptions(preset string, manualOpts map[string]string) FFmpegOpts
-```
-
-Combines a platform preset with manual override options. Manual options take precedence.
-
-**Example:**
-```go
-opts := ApplyPresetAndOptions("YouTube", map[string]string{
-    "resolution": "1280x720",
-})
-// Result: YouTube preset with 1280x720 override
-```
-
-### PlatformPresets
-
-```go
-var PlatformPresets = map[string]PlatformPreset{
-    "YouTube": {
-        Name: "YouTube",
-        Options: FFmpegOpts{
-            VideoCodec: "libx264",
-            AudioCodec: "aac",
-            Resolution: "1920x1080",
-            Framerate:  "30",
-            Bitrate:    "4500k",
-        },
-    },
-    "Facebook": {...},
-    "Twitch": {...},
-    "Instagram": {...},
-    "Custom": {Name: "Custom", Options: FFmpegOpts{}},
-}
-```
-
----
-
-## Related Documentation
-
-- [Architecture Overview](architecture.md) - High-level architecture with diagrams
-- [Configuration](configuration.md) - JSON config schema
+Explicit request fields such as `bitrate` or `resolution` override preset defaults when both are provided.

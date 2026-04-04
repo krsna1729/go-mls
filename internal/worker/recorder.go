@@ -34,6 +34,9 @@ func StartRecorder(ctx context.Context, store *state.Store, log *logger.Logger, 
 	ts := time.Now().Format("2006-01-02_15-04-05")
 	filename := fmt.Sprintf("%s_%s.mp4", streamPath, ts)
 	outPath := filepath.Join(recDir, filename)
+	if err := os.MkdirAll(filepath.Dir(outPath), 0755); err != nil {
+		return nil, fmt.Errorf("create recording parent dir: %w", err)
+	}
 
 	localInput := fmt.Sprintf("rtmp://127.0.0.1:%d/%s", rtmpPort, streamPath)
 

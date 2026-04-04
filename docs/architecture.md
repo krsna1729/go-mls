@@ -204,9 +204,14 @@ flowchart TB
 |----------|---------|-------------|
 | `/inputs` | GET, POST, DELETE | Manage input streams |
 | `/outputs` | GET, POST, DELETE | Manage output relays |
+| `/outputs/start` | POST | Restart an existing output in place |
+| `/outputs/stop` | POST | Stop an existing output without deleting it |
 | `/record` | POST, DELETE | Start/stop recording |
+| `/recordings` | GET, DELETE | List recordings from disk and delete completed files |
+| `/recordings/sse` | GET | Push recording refresh notifications to the web UI |
 | `/hls/start` | POST | Start HLS viewer |
 | `/hls/stop` | POST | Stop HLS viewer |
+| `/hls/heartbeat` | POST | Refresh HLS viewer heartbeat |
 | `/stats` | GET | Get system statistics |
 | `/system/export` | GET | Export configuration |
 | `/system/import` | POST | Import configuration |

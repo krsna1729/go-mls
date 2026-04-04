@@ -91,7 +91,7 @@ func TestRTMPHub_SetHandlers(t *testing.T) {
 	log := logger.NewLogger()
 	h := NewRTMPHub(log, "127.0.0.1", 0)
 
-	h.SetOnPublish(func(sp, tok string) error {
+	h.SetOnPublish(func(sp, tok, remoteAddr string) error {
 		return nil
 	})
 
@@ -113,7 +113,7 @@ func TestRTSPHub_SetHandlers(t *testing.T) {
 	log := logger.NewLogger()
 	h := NewRTSPHub(log, "127.0.0.1", 0)
 
-	h.SetOnPublish(func(sp, tok string) error {
+	h.SetOnPublish(func(sp, tok, remoteAddr string) error {
 		return nil
 	})
 
@@ -259,7 +259,7 @@ func TestRTMPHub_AcceptConnection(t *testing.T) {
 	h := NewRTMPHub(log, "127.0.0.1", 0)
 
 	var publishCalled bool
-	h.SetOnPublish(func(sp, tok string) error {
+	h.SetOnPublish(func(sp, tok, remoteAddr string) error {
 		publishCalled = true
 		return nil
 	})
@@ -286,7 +286,7 @@ func TestRTSPHub_AcceptConnection(t *testing.T) {
 	h := NewRTSPHub(log, "127.0.0.1", 0)
 
 	var publishCalled bool
-	h.SetOnPublish(func(sp, tok string) error {
+	h.SetOnPublish(func(sp, tok, remoteAddr string) error {
 		publishCalled = true
 		return nil
 	})
@@ -381,7 +381,7 @@ func TestRTMPHub_PublishReject(t *testing.T) {
 	log := logger.NewLogger()
 	h := NewRTMPHub(log, "127.0.0.1", 0)
 
-	h.SetOnPublish(func(sp, tok string) error {
+	h.SetOnPublish(func(sp, tok, remoteAddr string) error {
 		if tok != "valid-token" {
 			return assert.AnError
 		}
@@ -401,7 +401,7 @@ func TestRTSPHub_PublishReject(t *testing.T) {
 	log := logger.NewLogger()
 	h := NewRTSPHub(log, "127.0.0.1", 0)
 
-	h.SetOnPublish(func(sp, tok string) error {
+	h.SetOnPublish(func(sp, tok, remoteAddr string) error {
 		if tok != "valid-token" {
 			return assert.AnError
 		}

@@ -34,6 +34,7 @@ type Input struct {
 	RemoteURL   string    `json:"remote_url,omitempty"`
 	IngestToken string    `json:"ingest_token,omitempty"`
 	Mode        InputMode `json:"mode"`
+	RemoteAddr  string    `json:"-"`
 
 	// Runtime state (not persisted)
 	Status    InputStatus `json:"-"`
@@ -53,12 +54,14 @@ const (
 
 // Output represents an active output worker (restreamer).
 type Output struct {
-	StreamPath string   `json:"stream_path"`
-	OutputID   string   `json:"output_id"`
-	RemoteURL  string   `json:"remote_url"`
-	StreamKey  string   `json:"stream_key,omitempty"`
-	VideoArgs  []string `json:"video_args,omitempty"`
-	AudioArgs  []string `json:"audio_args,omitempty"`
+	StreamPath     string            `json:"stream_path"`
+	OutputID       string            `json:"output_id"`
+	RemoteURL      string            `json:"remote_url"`
+	StreamKey      string            `json:"stream_key,omitempty"`
+	VideoArgs      []string          `json:"video_args,omitempty"`
+	AudioArgs      []string          `json:"audio_args,omitempty"`
+	PlatformPreset string            `json:"platform_preset,omitempty"`
+	FFmpegOptions  map[string]string `json:"ffmpeg_options,omitempty"`
 
 	// Runtime state (not persisted)
 	Status    OutputStatus `json:"-"`
@@ -177,6 +180,14 @@ func (s *Store) UpdateInputStatus(streamPath string, status InputStatus, lastErr
 	if in, ok := s.inputs[streamPath]; ok {
 		in.Status = status
 		in.LastError = lastErr
+	}
+}
+
+func (s *Store) UpdateInputRemoteAddr(streamPath, remoteAddr string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if in, ok := s.inputs[streamPath]; ok {
+		in.RemoteAddr = remoteAddr
 	}
 }
 
