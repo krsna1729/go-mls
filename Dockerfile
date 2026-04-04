@@ -1,27 +1,26 @@
+# ============================================================================
 # Build stage
+# ============================================================================
 FROM golang:1.23-alpine AS builder
 
 WORKDIR /app
 
-# Install build dependencies
 RUN apk add --no-cache git
 
-# Copy go mod files
 COPY go.mod go.sum ./
 
-# Enable auto toolchain to download required Go version
 ENV GOTOOLCHAIN=auto
 
 RUN go mod download
 
-# Copy source code
 COPY . .
 
-# Build the application
 RUN CGO_ENABLED=0 GOOS=linux go build -o go-mls .
 
-# Runtime stage
-FROM alpine:3.19
+# ============================================================================
+# Runtime stage (go-mls)
+# ============================================================================
+FROM alpine:3.19 AS runtime
 
 RUN apk add --no-cache \
     ffmpeg \
@@ -30,20 +29,29 @@ RUN apk add --no-cache \
 
 WORKDIR /app
 
-# Copy binary from builder
 COPY --from=builder /app/go-mls .
-
-# Copy web assets
 COPY web/ ./web/
 
-# Create directories
 RUN mkdir -p /recordings /hls
 
 EXPOSE 8080 1935
 
-# Health check
 HEALTHCHECK --interval=10s --timeout=5s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8080/stats || exit 1
 
 ENTRYPOINT ["./go-mls"]
 CMD ["-config", "config.json"]
+
+# ============================================================================
+# Source push stage (FFmpeg pushing to RTMP)
+# ============================================================================
+FROM jrottenberg/ffmpeg:4.4-alpine AS source-push
+
+RUN apk add --no-cache curl bash
+
+# ============================================================================
+# Test runner stage
+# ============================================================================
+FROM jrottenberg/ffmpeg:4.4-alpine AS test-runner
+
+RUN apk add --no-cache curl bash
