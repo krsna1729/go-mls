@@ -27,15 +27,21 @@ services:
       start_period: 3s
 
   # ============================================================================
-  # source-http: Test video server for pull mode
+  # source-rtmp: RTMP source server - hosts test video for go-mls pull mode
+  # Runs nginx-rtmp + ffmpeg from the dedicated Dockerfile stage
   # ============================================================================
-  source-http:
-    image: nginx:alpine
-    container_name: source-http
-    volumes:
-      - ./testdata:/usr/share/nginx/html:ro
+  source-rtmp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: source-rtmp
+    container_name: source-rtmp
     networks:
       - media-net
+    volumes:
+      - ./testdata:/testdata:ro
+      - ./scripts/source-rtmp.sh:/source-rtmp.sh:ro
+    entrypoint: ["/bin/sh", "/source-rtmp.sh"]
 
   # ============================================================================
   # source-push: FFmpeg pushing to go-mls RTMP hub (port 1935)

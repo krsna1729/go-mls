@@ -120,7 +120,7 @@ docker compose down -v
 ```
 
 The e2e tests verify:
-- Pull ingest (RTMP/HTTP source)
+- Pull ingest from an RTMP source
 - Push ingest (FFmpeg push)
 - Simultaneous operation with 2 inputs
 - Multiple outputs per input (2 outputs each)

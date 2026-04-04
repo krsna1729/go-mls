@@ -7,6 +7,7 @@ chmod 777 /results
 API="http://go-mls:8080"
 RTMP_HUB="rtmp://go-mls:1935"
 OUTPUT_RTMP="rtmp://output-rtmp:1935"
+SOURCE_RTMP="rtmp://source-rtmp:1935/live/testsrc"
 
 echo "=========================================="
 echo "Go-MLS E2E Test: Pull + Push Simultaneous"
@@ -61,11 +62,15 @@ for i in $(seq 1 30); do
 done
 echo ""
 
+echo "Waiting for RTMP source stream..."
+wait_for_stream "${SOURCE_RTMP}" 30 "source-rtmp/testsrc"
+echo ""
+
 echo "=== STEP 1: Register Inputs ==="
 echo "1.1: Register pull input"
 curl -s -X POST "${API}/inputs" \
     -H "Content-Type: application/json" \
-    -d '{"stream_path": "pull-stream", "remote_url": "http://source-http/testsrc.mp4", "mode": "pull"}' | tee /results/step1_pull_input.json
+    -d '{"stream_path": "pull-stream", "remote_url": "'"${SOURCE_RTMP}"'", "mode": "pull"}' | tee /results/step1_pull_input.json
 echo ""
 
 echo "1.2: Register push input (acceptor)"
