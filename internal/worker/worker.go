@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -204,10 +205,19 @@ func RunProcessWorker(name string, log *logger.Logger, factory ProcessFactory) (
 		case <-w.stopCh:
 			w.setState(WorkerStateStopping)
 			proc.Stop()
-			proc.Wait()
+			if err := proc.Wait(); err != nil {
+				if !errors.Is(err, ErrProcessKilled) && !IsProcessKilled(err) {
+					w.exitErr = fmt.Errorf("%w: %v", ErrProcessFailed, err)
+					w.log.Error("Process exited with error", "error", err)
+				}
+			}
 		case <-proc.Done():
 			if err := proc.Err(); err != nil {
-				w.exitErr = err
+				if IsProcessKilled(err) {
+					w.exitErr = fmt.Errorf("%w: %v", ErrProcessKilled, err)
+				} else {
+					w.exitErr = fmt.Errorf("%w: %v", ErrProcessFailed, err)
+				}
 				w.log.Error("Process exited with error", "error", err)
 			}
 			w.setState(WorkerStateStopping)

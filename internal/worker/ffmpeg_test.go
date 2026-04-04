@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"runtime"
 	"testing"
 	"time"
@@ -38,8 +39,7 @@ func TestFFmpegProcess_ProcessGroupIsolation(t *testing.T) {
 	proc.Stop()
 
 	// Wait for process to exit (may take up to 5 seconds for graceful timeout)
-	err = proc.Wait()
-	// We accept either no error (graceful) or "signal: killed" (forced after timeout)
+	_ = proc.Wait()
 
 	// Verify goroutines are cleaned up
 	time.Sleep(100 * time.Millisecond)
@@ -71,8 +71,8 @@ func TestFFmpegProcess_StopWaitsForProcess(t *testing.T) {
 
 	// Wait should complete (may take up to 5 seconds)
 	err = proc.Wait()
-	// Accept both graceful exit and forced kill
-	if err != nil && err.Error() != "signal: killed" {
+	// Accept both graceful exit and killed
+	if err != nil && !IsProcessKilled(err) && !errors.Is(err, ErrProcessKilled) {
 		assert.NoError(t, err)
 	}
 
@@ -118,9 +118,16 @@ func TestFFmpegProcess_KillProcessGroup(t *testing.T) {
 	select {
 	case err := <-done:
 		// Process exited (either gracefully or killed)
-		assert.True(t, err == nil || err.Error() == "signal: killed",
+		assert.True(t, err == nil || IsProcessKilled(err) || errors.Is(err, ErrProcessKilled),
 			"unexpected error: %v", err)
 	case <-time.After(15 * time.Second):
 		t.Fatal("Process did not exit within timeout")
 	}
+}
+
+func TestErrors_TypedErrors(t *testing.T) {
+	assert.True(t, IsProcessKilled(ErrProcessKilled))
+	assert.False(t, IsProcessKilled(ErrProcessFailed))
+	assert.True(t, IsProcessFailed(ErrProcessFailed))
+	assert.False(t, IsProcessFailed(ErrProcessKilled))
 }
