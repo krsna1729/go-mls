@@ -1,12 +1,10 @@
-// Package worker implements the runAndMonitorFFmpeg wrapper and telemetry parsing.
-package worker
+package ffmpeg
 
 import (
 	"bufio"
 	"context"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -21,6 +19,14 @@ import (
 	"github.com/shirou/gopsutil/v3/process"
 )
 
+type Process interface {
+	PID() int
+	Stop()
+	Wait() error
+	Done() <-chan struct{}
+	Err() error
+}
+
 // FFmpegProcess represents a managed FFmpeg child process.
 type FFmpegProcess struct {
 	cmd    *exec.Cmd
@@ -34,10 +40,10 @@ type FFmpegProcess struct {
 	stderr io.Closer
 }
 
-// RunAndMonitorFFmpeg starts an FFmpeg process and continuously monitors it.
+// RunAndMonitor starts an FFmpeg process and continuously monitors it.
 // It parses stderr for video telemetry and polls gopsutil for hardware usage.
 // The returned FFmpegProcess can be used to stop the process.
-func RunAndMonitorFFmpeg(ctx context.Context, store *state.Store, log *logger.Logger, args ...string) (*FFmpegProcess, error) {
+func RunAndMonitor(ctx context.Context, store *state.Store, log *logger.Logger, args ...string) (*FFmpegProcess, error) {
 	childCtx, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(childCtx, "ffmpeg", args...)
 	cmd.Stdout = nil // Not used
@@ -58,12 +64,18 @@ func RunAndMonitorFFmpeg(ctx context.Context, store *state.Store, log *logger.Lo
 		return nil, fmt.Errorf("start ffmpeg: %w", err)
 	}
 
+	ffmpegLog := log
+	if ffmpegLog == nil {
+		ffmpegLog = logger.NewLogger()
+	}
+	ffmpegLog = ffmpegLog.With("component", "ffmpeg", "pid", cmd.Process.Pid)
+
 	fp := &FFmpegProcess{
 		cmd:    cmd,
 		cancel: cancel,
 		pid:    cmd.Process.Pid,
 		done:   make(chan struct{}),
-		log:    log.With("component", "ffmpeg", "pid", cmd.Process.Pid),
+		log:    ffmpegLog,
 		store:  store,
 		stderr: stderrPipe,
 	}
@@ -122,8 +134,15 @@ func (fp *FFmpegProcess) Stop() {
 	}()
 }
 
-// killProcessGroup kills the entire process group to ensure ffmpeg and all
-// child processes are terminated.
+// Wait blocks until the process has fully exited.
+func (fp *FFmpegProcess) Wait() error {
+	<-fp.done
+	if fp.store != nil {
+		fp.store.RemoveTelemetry(fp.pid)
+	}
+	return fp.Err()
+}
+
 func (fp *FFmpegProcess) killProcessGroup() {
 	fp.mu.Lock()
 	defer fp.mu.Unlock()
@@ -138,19 +157,14 @@ func (fp *FFmpegProcess) killProcessGroup() {
 	syscall.Kill(-pgid, syscall.SIGKILL)
 }
 
-// Wait blocks until the process has fully exited.
-func (fp *FFmpegProcess) Wait() error {
-	<-fp.done
-	fp.store.RemoveTelemetry(fp.pid)
-	return fp.Err()
-}
-
 func (fp *FFmpegProcess) wait() {
 	err := fp.cmd.Wait()
 	fp.mu.Lock()
 	fp.err = err
 	fp.mu.Unlock()
-	fp.store.RemoveTelemetry(fp.pid)
+	if fp.store != nil {
+		fp.store.RemoveTelemetry(fp.pid)
+	}
 	close(fp.done)
 }
 
@@ -170,6 +184,9 @@ func (fp *FFmpegProcess) parseStderr(r io.Reader) {
 	for scanner.Scan() {
 		line := scanner.Text()
 		if strings.Contains(line, "frame=") || strings.Contains(line, "speed=") {
+			if fp.store == nil {
+				continue
+			}
 			t := parseProgressLine(line)
 			fp.store.UpdateTelemetry(fp.pid, t)
 		} else if strings.Contains(line, "Error") || strings.Contains(line, "error") {
@@ -212,6 +229,9 @@ func (fp *FFmpegProcess) pollHardware(ctx context.Context) {
 			if err != nil {
 				continue
 			}
+			if fp.store == nil {
+				continue
+			}
 			// Get existing telemetry or create new
 			t, ok := fp.store.GetTelemetry(fp.pid)
 			if !ok {
@@ -240,10 +260,6 @@ func scanCRLF(data []byte, atEOF bool) (advance int, token []byte, err error) {
 			return i + 1, data[:i], nil
 		}
 		if data[i] == '\r' {
-			// If \r\n, treat as one newline
-			if i+1 < len(data) && data[i+1] == '\n' {
-				return i + 2, data[:i], nil
-			}
 			return i + 1, data[:i], nil
 		}
 	}
@@ -253,8 +269,14 @@ func scanCRLF(data []byte, atEOF bool) (advance int, token []byte, err error) {
 	return 0, nil, nil
 }
 
-// Ensure stderr is accessible (for tests that need to capture it).
-func init() {
-	// Prevent FFmpeg from inheriting our stdin
-	_ = os.Stdin
+type NoopFFmpegProcess struct{}
+
+func (p *NoopFFmpegProcess) PID() int    { return 0 }
+func (p *NoopFFmpegProcess) Stop()       {}
+func (p *NoopFFmpegProcess) Wait() error { return nil }
+func (p *NoopFFmpegProcess) Done() <-chan struct{} {
+	ch := make(chan struct{})
+	close(ch)
+	return ch
 }
+func (p *NoopFFmpegProcess) Err() error { return nil }

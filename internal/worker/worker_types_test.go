@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"go-mls/internal/ffmpeg"
 	"go-mls/internal/logger"
 	"go-mls/internal/state"
 
@@ -71,6 +72,7 @@ func TestHLSManager_Shutdown(t *testing.T) {
 
 func TestHLSSession_Struct(t *testing.T) {
 	sess := &hlsSession{
+		proc:        &ffmpeg.NoopFFmpegProcess{},
 		playlistDir: "/tmp/hls/test",
 		viewers: map[string]time.Time{
 			"viewer-1": time.Now(),

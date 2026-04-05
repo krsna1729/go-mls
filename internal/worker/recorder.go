@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"go-mls/internal/ffmpeg"
 	"go-mls/internal/logger"
 	"go-mls/internal/state"
 )
@@ -57,7 +58,7 @@ func StartRecorder(ctx context.Context, store *state.Store, log *logger.Logger, 
 	}
 
 	factory := func(ctx context.Context) (Process, error) {
-		fp, err := RunAndMonitorFFmpeg(ctx, store, r.log, args...)
+		fp, err := ffmpeg.RunAndMonitor(ctx, store, r.log, args...)
 		if err != nil {
 			return nil, fmt.Errorf("start recorder: %w", err)
 		}

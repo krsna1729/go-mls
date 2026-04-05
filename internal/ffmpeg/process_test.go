@@ -1,4 +1,4 @@
-package worker
+package ffmpeg
 
 import (
 	"context"
@@ -28,20 +28,15 @@ func TestFFmpegProcess_ProcessGroupIsolation(t *testing.T) {
 		"-",
 	}
 
-	proc, err := RunAndMonitorFFmpeg(context.Background(), store, log, args...)
+	proc, err := RunAndMonitor(context.Background(), store, log, args...)
 	assert.NoError(t, err)
 	assert.NotNil(t, proc)
 
-	// Verify process is running
 	initialGoroutines := runtime.NumGoroutine()
 
-	// Stop should not kill the parent process group
 	proc.Stop()
-
-	// Wait for process to exit (may take up to 5 seconds for graceful timeout)
 	_ = proc.Wait()
 
-	// Verify goroutines are cleaned up
 	time.Sleep(100 * time.Millisecond)
 	currentGoroutines := runtime.NumGoroutine()
 	diff := currentGoroutines - initialGoroutines
@@ -63,20 +58,16 @@ func TestFFmpegProcess_StopWaitsForProcess(t *testing.T) {
 		"-",
 	}
 
-	proc, err := RunAndMonitorFFmpeg(context.Background(), store, log, args...)
+	proc, err := RunAndMonitor(context.Background(), store, log, args...)
 	assert.NoError(t, err)
 
-	// Stop the process
 	proc.Stop()
 
-	// Wait should complete (may take up to 5 seconds)
 	err = proc.Wait()
-	// Accept both graceful exit and killed
 	if err != nil && !IsProcessKilled(err) && !errors.Is(err, ErrProcessKilled) {
 		assert.NoError(t, err)
 	}
 
-	// Done channel should be closed
 	select {
 	case <-proc.Done():
 	default:
@@ -99,17 +90,14 @@ func TestFFmpegProcess_KillProcessGroup(t *testing.T) {
 		"-",
 	}
 
-	proc, err := RunAndMonitorFFmpeg(context.Background(), store, log, args...)
+	proc, err := RunAndMonitor(context.Background(), store, log, args...)
 	assert.NoError(t, err)
 
-	// Get the process group ID
 	pid := proc.PID()
 	assert.Greater(t, pid, 0)
 
-	// Stop should eventually kill the process (within 5 seconds + wait time)
 	proc.Stop()
 
-	// Wait with timeout
 	done := make(chan error, 1)
 	go func() {
 		done <- proc.Wait()
@@ -117,7 +105,6 @@ func TestFFmpegProcess_KillProcessGroup(t *testing.T) {
 
 	select {
 	case err := <-done:
-		// Process exited (either gracefully or killed)
 		assert.True(t, err == nil || IsProcessKilled(err) || errors.Is(err, ErrProcessKilled),
 			"unexpected error: %v", err)
 	case <-time.After(15 * time.Second):

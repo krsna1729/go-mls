@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"go-mls/internal/ffmpeg"
 	"go-mls/internal/logger"
 	"go-mls/internal/state"
 )
@@ -45,7 +46,7 @@ func StartRestreamer(ctx context.Context, store *state.Store, log *logger.Logger
 	}
 
 	factory := func(ctx context.Context) (Process, error) {
-		fp, err := RunAndMonitorFFmpeg(ctx, store, log.With("output_id", out.OutputID), args...)
+		fp, err := ffmpeg.RunAndMonitor(ctx, store, log.With("output_id", out.OutputID), args...)
 		if err != nil {
 			store.UpdateOutputStatus(out.StreamPath, out.OutputID, state.OutputStatusError, err.Error())
 			return nil, fmt.Errorf("start restreamer: %w", err)

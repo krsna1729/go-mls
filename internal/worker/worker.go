@@ -45,6 +45,14 @@ type Worker interface {
 	Done() <-chan struct{}
 }
 
+type Process interface {
+	PID() int
+	Stop()
+	Wait() error
+	Done() <-chan struct{}
+	Err() error
+}
+
 type BaseWorker struct {
 	name string
 	log  *logger.Logger

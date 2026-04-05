@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"go-mls/internal/ffmpeg"
 	"go-mls/internal/logger"
 	"go-mls/internal/state"
 )
@@ -34,7 +35,7 @@ func StartPuller(ctx context.Context, store *state.Store, log *logger.Logger, st
 	}
 
 	factory := func(ctx context.Context) (Process, error) {
-		fp, err := RunAndMonitorFFmpeg(ctx, store, log.With("stream_path", stream.StreamPath), args...)
+		fp, err := ffmpeg.RunAndMonitor(ctx, store, log.With("stream_path", stream.StreamPath), args...)
 		if err != nil {
 			store.UpdateInputStatus(stream.StreamPath, state.InputStatusError, err.Error())
 			return nil, fmt.Errorf("start puller: %w", err)

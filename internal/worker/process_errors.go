@@ -18,19 +18,13 @@ func IsProcessKilled(err error) bool {
 	if err == nil {
 		return false
 	}
-	// Check for wrapped error
 	if errors.Is(err, ErrProcessKilled) {
 		return true
 	}
-	// Check for raw signal: killed error from exec.Cmd.Wait()
 	if err.Error() == "signal: killed" {
 		return true
 	}
-	// Check for signaled exit
-	if IsSignaled(err) {
-		return true
-	}
-	return false
+	return IsSignaled(err)
 }
 
 func IsProcessFailed(err error) bool {
@@ -40,7 +34,6 @@ func IsProcessFailed(err error) bool {
 	if errors.Is(err, ErrProcessFailed) {
 		return true
 	}
-	// Check for other non-zero exit codes
 	if IsExitError(err) {
 		return GetExitCode(err) != 0
 	}

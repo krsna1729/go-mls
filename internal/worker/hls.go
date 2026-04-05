@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"go-mls/internal/ffmpeg"
 	"go-mls/internal/logger"
 	"go-mls/internal/state"
 )
@@ -28,7 +29,7 @@ type HLSManager struct {
 }
 
 type hlsSession struct {
-	proc        *FFmpegProcess
+	proc        Process
 	playlistDir string
 	viewers     map[string]time.Time
 }
@@ -91,7 +92,7 @@ func (m *HLSManager) AddViewer(ctx context.Context, streamPath string) (string, 
 		playlistPath,
 	}
 
-	fp, err := RunAndMonitorFFmpeg(ctx, m.store, m.log, args...)
+	fp, err := ffmpeg.RunAndMonitor(ctx, m.store, m.log, args...)
 	if err != nil {
 		return "", fmt.Errorf("start HLS generator: %w", err)
 	}

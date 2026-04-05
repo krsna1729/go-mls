@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"go-mls/internal/ffmpeg"
 	"go-mls/internal/logger"
 
 	"github.com/stretchr/testify/assert"
@@ -165,7 +166,7 @@ func (m *mockProcessWithDone) Done() <-chan struct{} { return m.blocked }
 func (m *mockProcessWithDone) Err() error            { return nil }
 
 func TestNoopFFmpegProcess(t *testing.T) {
-	p := &NoopFFmpegProcess{}
+	p := &ffmpeg.NoopFFmpegProcess{}
 
 	assert.Equal(t, 0, p.PID())
 	assert.NotPanics(t, func() { p.Stop() })
@@ -180,7 +181,7 @@ func TestNoopFFmpegProcess(t *testing.T) {
 }
 
 func TestProcessInterface(t *testing.T) {
-	var _ Process = (*NoopFFmpegProcess)(nil)
+	var _ Process = (*ffmpeg.NoopFFmpegProcess)(nil)
 	var _ Process = (*mockProcess)(nil)
 }
 
@@ -210,11 +211,6 @@ func TestRunProcessWorkerWithError(t *testing.T) {
 	err = w.Wait()
 	assert.Error(t, err, "Wait should return the error from factory")
 	assert.Equal(t, customErr, err)
-}
-
-func TestProcessCreator(t *testing.T) {
-	c := &DefaultProcessCreator{}
-	var _ ProcessCreator = c
 }
 
 func TestRunProcessWorker_GoroutineCleanup(t *testing.T) {
