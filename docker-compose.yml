@@ -12,6 +12,7 @@ services:
       - "8080:8080"  # HTTP API (config.http.port)
     volumes:
       - ./config.json:/app/config.json:ro
+      - ./web:/app/web:ro
       - ./testdata:/testdata:ro
       - ./recordings:/recordings
       - ./hls:/hls
@@ -76,6 +77,8 @@ services:
   output-rtmp:
     image: tiangolo/nginx-rtmp:latest
     container_name: output-rtmp
+    ports:
+      - "1935:1935"
     networks:
       - media-net
     deploy:
@@ -100,6 +103,7 @@ services:
     volumes:
       - ./test-results:/results
       - ./testdata:/testdata:ro
+      - ./relay_config.json:/relay_config.json:ro
       - ./scripts/e2e-test.sh:/e2e-test.sh:ro
     entrypoint: ["/bin/sh", "/e2e-test.sh"]
 

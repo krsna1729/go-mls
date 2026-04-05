@@ -1,47 +1,48 @@
 [
   {
-    "input_url": "rtmp://localhost:1933/live/stream",
-    "input_name": "Tamil",
+    "input_url": "rtmp://source-rtmp:1935/live/testsrc",
+    "input_name": "pull-stream",
     "outputs": [
       {
-        "output_url": "rtmp://localhost:1935/live/stream",
-        "output_name": "TN-2",
-        "platform_preset": "Instagram"
+        "output_url": "rtmp://output-rtmp:1935/live/pull-youtube",
+        "output_name": "pull-youtube",
+        "platform_preset": "YouTube"
       },
       {
-        "output_url": "rtmp://localhost:1936/live/stream",
-        "output_name": "TN-1",
+        "output_url": "rtmp://output-rtmp:1935/live/pull-custom",
+        "output_name": "pull-custom",
+        "platform_preset": "Custom",
         "ffmpeg_options": {
-          "video_codec": "",
+          "video_codec": "libx264",
           "audio_codec": "aac",
           "resolution": "1280x720",
-          "framerate": "60",
-          "bitrate": "2000k",
-          "rotation": ""
+          "framerate": "30",
+          "bitrate": "2000k"
         }
       }
     ]
   },
   {
-    "input_url": "rtmp://localhost:1934/live/stream",
-    "input_name": "English",
+    "input_url": "",
+    "input_name": "push-stream",
     "outputs": [
       {
-        "output_url": "rtmp://localhost:1937/live/stream",
-        "output_name": "ENG-1",
-        "platform_preset": "YouTube",
+        "output_url": "rtmp://output-rtmp:1935/live/push-instagram",
+        "output_name": "push-instagram",
+        "platform_preset": "Instagram"
+      },
+      {
+        "output_url": "rtmp://output-rtmp:1935/live/push-custom-rot",
+        "output_name": "push-custom-rot",
+        "platform_preset": "Custom",
         "ffmpeg_options": {
           "video_codec": "libx264",
           "audio_codec": "aac",
-          "resolution": "1920x1080",
+          "resolution": "720x1280",
           "framerate": "30",
-          "bitrate": "4500k",
-          "rotation": "transpose=2"
+          "bitrate": "2500k",
+          "rotation": "transpose=1"
         }
-      },
-      {
-        "output_url": "rtmp://localhost:1938/live/stream",
-        "output_name": "ENG-2"
       }
     ]
   }

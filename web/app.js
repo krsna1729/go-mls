@@ -428,8 +428,7 @@ document.addEventListener('DOMContentLoaded', function () {
             );
             sortedRelays.forEach(relay => {
                 if (relay.input && relay.input.input_name) {
-                    const label = relay.input.input_name + (relay.input.input_url ? ' (' + relay.input.input_url + ')' : '');
-                    optionsHtml += `<option value="${relay.input.input_name}">${label}</option>`;
+                    optionsHtml += `<option value="${relay.input.input_name}">${relay.input.input_name}</option>`;
                 }
             });
         }
@@ -736,15 +735,38 @@ document.addEventListener('DOMContentLoaded', function () {
     setInterval(fetchStatus, 3000);
 
     // --- Video Player Modal Logic ---
-    // Add modal HTML to body
-    const modalHtml = `
-    <div id="videoPlayerModal" class="modal" style="display:none; position:fixed; z-index:1000; left:0; top:0; width:100%; height:100%; background:rgba(0,0,0,0.8); justify-content:center; align-items:center;">
-        <div class="modal-content" style="position:relative; background:#121212; border-radius:8px; overflow:hidden; max-width:800px; width:90%; max-height:80vh;">
-            <span id="closeVideoModal" class="close" style="position:absolute; top:10px; right:10px; color:white; font-size:24px; cursor:pointer;">&times;</span>
-            <video id="inputVideoPlayer" controls style="width:100%; height:auto; background:black;"></video>
-        </div>
-    </div>`;
-    document.body.insertAdjacentHTML('beforeend', modalHtml);
+    // The modal is declared in index.html; reuse it instead of creating a duplicate.
+
+    async function waitForPlaylistReady(playlistUrl, timeoutMs = 45000) {
+        const deadline = Date.now() + timeoutMs;
+        while (Date.now() < deadline) {
+            try {
+                const res = await fetch(`${playlistUrl}${playlistUrl.includes('?') ? '&' : '?'}probe=${Date.now()}`, {
+                    cache: 'no-store'
+                });
+                if (res.ok) {
+                    const body = await res.text();
+                    if (body.includes('#EXTM3U')) {
+                        return true;
+                    }
+                }
+            } catch {
+                // Keep polling until timeout.
+            }
+            await new Promise(resolve => setTimeout(resolve, 400));
+        }
+        return false;
+    }
+
+    async function startHLSSessionWithRetry(inputName) {
+        const data = await API.startHLSViewer(inputName);
+        if (!data.viewer_id || !data.playlist_url) {
+            throw new Error('missing viewer or playlist details');
+        }
+
+        data.playlist_ready = await waitForPlaylistReady(data.playlist_url, 45000);
+        return data;
+    }
 
     // Play button handler (delegated, robust for icon clicks)
     document.addEventListener('click', function (e) {
@@ -753,15 +775,32 @@ document.addEventListener('DOMContentLoaded', function () {
             const inputName = btn.getAttribute('data-input-name');
             if (!inputName) return;
             // Start HLS viewer session
-            API.startHLSViewer(inputName)
-                .then(data => {
+            startHLSSessionWithRetry(inputName)
+                .then(async data => {
                     if (data.viewer_id && data.playlist_url) {
                         const modal = document.getElementById('videoPlayerModal');
                         const video = document.getElementById('inputVideoPlayer');
+                        const playlistUrl = `${data.playlist_url}${data.playlist_url.includes('?') ? '&' : '?'}ts=${Date.now()}`;
+                        video.playsInline = true;
+                        // Keep autoplay reliable across browsers/headless automation.
+                        video.muted = true;
+
+                        const tryPlay = () => {
+                            const p = video.play();
+                            if (p && typeof p.catch === 'function') {
+                                p.catch(err => {
+                                    console.warn('Video autoplay blocked or delayed:', err);
+                                });
+                            }
+                        };
                         // Store viewer info for cleanup
                         video.dataset.viewerId = data.viewer_id;
                         video.dataset.inputName = inputName;
                         console.log('HLS viewer started:', inputName, data.viewer_id);
+
+                        // Give backend HLS startup a brief head start.
+                        await new Promise(resolve => setTimeout(resolve, 1500));
+
                         // --- Consecutive network error counter ---
                         let hlsNetworkErrorCount = 0;
                         // HLS.js logic with improved error handling
@@ -825,19 +864,32 @@ document.addEventListener('DOMContentLoaded', function () {
                                     alert('Stream has ended.');
                                 }, 500);
                             });
-                            hls.loadSource(data.playlist_url);
+                            hls.on(Hls.Events.MANIFEST_PARSED, function () {
+                                tryPlay();
+                            });
+                            hls.on(Hls.Events.FRAG_LOADED, function () {
+                                if (video.paused) {
+                                    tryPlay();
+                                }
+                            });
+                            hls.loadSource(playlistUrl);
                             hls.attachMedia(video);
                             window.hlsInstance = hls;
                         } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
                             // Native HLS support (Safari)
-                            video.src = data.playlist_url;
+                            video.src = playlistUrl;
+                            video.onloadedmetadata = () => tryPlay();
+                            video.oncanplay = () => tryPlay();
                         } else {
                             console.warn('HLS not supported by this browser, trying fallback');
-                            video.src = data.playlist_url; // fallback, unlikely to work
+                            video.src = playlistUrl; // fallback, unlikely to work
+                            video.onloadedmetadata = () => tryPlay();
+                            video.oncanplay = () => tryPlay();
                         }
 
                         modal.style.display = 'flex';
                         video.focus();
+                        tryPlay();
                         // Start heartbeat
                         startHLSHeartbeat(inputName, data.viewer_id);
                         // --- Auto-close on video end (native event) ---
@@ -910,23 +962,23 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     // Modal close handler (updated)
-    const closeModalBtn = document.getElementById('closeVideoModal');
+    const closeModalBtn = document.querySelector('#videoPlayerModal .modal-close, #videoPlayerModal .close');
     if (closeModalBtn) {
         closeModalBtn.onclick = function () {
             const modal = document.getElementById('videoPlayerModal');
             const video = document.getElementById('inputVideoPlayer');
             if (modal && video) {
-                // Stop HLS viewer session
-                const viewerId = video.dataset.viewerId;
-                const inputName = video.dataset.inputName;
-                stopHLSViewer(inputName, viewerId);
-
                 video.pause();
                 video.src = '';
                 if (window.hlsInstance) {
                     window.hlsInstance.destroy();
                     window.hlsInstance = null;
                 }
+
+                // Stop backend session after local player teardown.
+                const viewerId = video.dataset.viewerId;
+                const inputName = video.dataset.inputName;
+                stopHLSViewer(inputName, viewerId);
                 modal.style.display = 'none';
 
                 // Clean up datasets
@@ -943,16 +995,16 @@ document.addEventListener('DOMContentLoaded', function () {
         modal.onclick = function (e) {
             if (e.target === modal) {
                 const video = document.getElementById('inputVideoPlayer');
-                const viewerId = video.dataset.viewerId;
-                const inputName = video.dataset.inputName;
-                stopHLSViewer(inputName, viewerId);
-
                 video.pause();
                 video.src = '';
                 if (window.hlsInstance) {
                     window.hlsInstance.destroy();
                     window.hlsInstance = null;
                 }
+
+                const viewerId = video.dataset.viewerId;
+                const inputName = video.dataset.inputName;
+                stopHLSViewer(inputName, viewerId);
                 modal.style.display = 'none';
 
                 // Clean up datasets
@@ -985,10 +1037,6 @@ document.addEventListener('DOMContentLoaded', function () {
         const modal = document.getElementById('videoPlayerModal');
         const video = document.getElementById('inputVideoPlayer');
         if (modal && video) {
-            // Stop HLS viewer session
-            const viewerId = video.dataset.viewerId;
-            const inputName = video.dataset.inputName;
-            stopHLSViewer(inputName, viewerId);
             if (heartbeatInterval) {
                 clearInterval(heartbeatInterval);
                 heartbeatInterval = null;
@@ -1001,6 +1049,10 @@ document.addEventListener('DOMContentLoaded', function () {
                 window.hlsInstance.destroy();
                 window.hlsInstance = null;
             }
+
+            const viewerId = video.dataset.viewerId;
+            const inputName = video.dataset.inputName;
+            stopHLSViewer(inputName, viewerId);
             modal.style.display = 'none';
             // Clean up datasets
             delete video.dataset.viewerId;

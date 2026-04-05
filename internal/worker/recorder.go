@@ -77,21 +77,23 @@ func StartRecorder(ctx context.Context, store *state.Store, log *logger.Logger, 
 		}
 
 		r.recording = rec
-		r.ProcessWorker = NewProcessWorker("recorder:"+streamPath, log).WithProcess(fp)
+		// WithProcess modifies proc in place (protected by procMu inside ProcessWorker)
+		r.ProcessWorker.WithProcess(fp)
 		return fp, nil
 	}
 
-	_, err := RunProcessWorker("recorder:"+streamPath, log, factory)
+	pw, err := RunProcessWorker(ctx, "recorder:"+streamPath, log, factory)
 	if err != nil {
 		return nil, err
 	}
 
+	r.ProcessWorker = pw
 	return r, nil
 }
 
 func (r *Recorder) Stop() {
-	if r.ProcessWorker != nil && r.ProcessWorker.proc != nil {
-		r.ProcessWorker.proc.Stop()
+	if r.ProcessWorker != nil {
+		r.ProcessWorker.Stop()
 	}
 	if r.recording != nil {
 		r.recording.Status = state.RecordingStatusStopped

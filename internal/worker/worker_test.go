@@ -188,7 +188,7 @@ func TestProcessInterface(t *testing.T) {
 func TestRunProcessWorker(t *testing.T) {
 	log := logger.NewLogger()
 
-	w, err := RunProcessWorker("test", log, func(ctx context.Context) (Process, error) {
+	w, err := RunProcessWorker(context.Background(), "test", log, func(ctx context.Context) (Process, error) {
 		return nil, nil
 	})
 
@@ -200,7 +200,7 @@ func TestRunProcessWorkerWithError(t *testing.T) {
 	log := logger.NewLogger()
 	customErr := fmt.Errorf("factory error")
 
-	w, err := RunProcessWorker("test", log, func(ctx context.Context) (Process, error) {
+	w, err := RunProcessWorker(context.Background(), "test", log, func(ctx context.Context) (Process, error) {
 		return nil, customErr
 	})
 
@@ -219,7 +219,7 @@ func TestRunProcessWorker_GoroutineCleanup(t *testing.T) {
 	started := make(chan struct{})
 	done := make(chan struct{})
 
-	w, err := RunProcessWorker("test-cleanup", log, func(ctx context.Context) (Process, error) {
+	w, err := RunProcessWorker(context.Background(), "test-cleanup", log, func(ctx context.Context) (Process, error) {
 		proc := &mockProcessWithDone{blocked: make(chan struct{})}
 		close(started)
 		<-done // Block until we signal
@@ -257,7 +257,7 @@ func TestRunProcessWorker_StopBeforeProcessStarts(t *testing.T) {
 	block := make(chan struct{})
 	unblock := make(chan struct{})
 
-	w, err := RunProcessWorker("test-stop-before", log, func(ctx context.Context) (Process, error) {
+	w, err := RunProcessWorker(context.Background(), "test-stop-before", log, func(ctx context.Context) (Process, error) {
 		<-block // Block until we signal
 		proc := &mockProcessWithDone{blocked: make(chan struct{})}
 		select {
@@ -288,7 +288,7 @@ func TestRunProcessWorker_StopBeforeProcessStarts(t *testing.T) {
 func TestProcessWorker_Shutdown(t *testing.T) {
 	log := logger.NewLogger()
 
-	w, err := RunProcessWorker("test-shutdown", log, func(ctx context.Context) (Process, error) {
+	w, err := RunProcessWorker(context.Background(), "test-shutdown", log, func(ctx context.Context) (Process, error) {
 		proc := &mockProcessWithDone{blocked: make(chan struct{})}
 		return proc, nil
 	})

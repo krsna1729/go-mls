@@ -8,6 +8,7 @@ API="http://go-mls:8080"
 RTMP_HUB="rtmp://go-mls:1935"
 OUTPUT_RTMP="rtmp://output-rtmp:1935"
 SOURCE_RTMP="rtmp://source-rtmp:1935/live/testsrc"
+RELAY_CONFIG="/relay_config.json"
 
 echo "=========================================="
 echo "Go-MLS E2E Test: Pull + Push Simultaneous"
@@ -48,6 +49,122 @@ wait_for_hls() {
     return 1
 }
 
+assert_relay_config_push_path() {
+    cfg=$1
+    echo "Validating relay config push path expectations..."
+    grep -q '"input_name"[[:space:]]*:[[:space:]]*"push-stream"' "$cfg" || {
+        echo "  FAIL: relay config missing push-stream input_name"
+        return 1
+    }
+    grep -q '"input_url"[[:space:]]*:[[:space:]]*""' "$cfg" || {
+        echo "  FAIL: relay config push input_url must be empty (accept mode)"
+        return 1
+    }
+    grep -q 'output-rtmp:1935/live/push-' "$cfg" || {
+        echo "  FAIL: relay config missing push output URLs on output-rtmp"
+        return 1
+    }
+    echo "  OK: relay config push path is aligned"
+}
+
+wait_for_input_status() {
+    stream=$1
+    status=$2
+    timeout=$3
+    echo "Waiting for input ${stream} status=${status} (timeout: ${timeout}s)..."
+    for i in $(seq 1 $timeout); do
+        stats=$(curl -s "${API}/stats")
+        if echo "$stats" | tr -d '\n' | grep -q "\"stream_path\":\"${stream}\".*\"status\":\"${status}\""; then
+            echo "  OK: input ${stream} is ${status}"
+            return 0
+        fi
+        sleep 1
+    done
+    echo "  FAIL: input ${stream} did not reach ${status}"
+    return 1
+}
+
+probe_profile() {
+    url=$1
+    ffprobe -v error -select_streams v:0 \
+        -show_entries stream=width,height,r_frame_rate \
+        -of default=nw=1:nk=1 "$url" 2>/dev/null | head -3 | tr '\n' ' '
+}
+
+wait_for_profile() {
+    url=$1
+    timeout=$2
+    for i in $(seq 1 $timeout); do
+        p=$(probe_profile "$url")
+        set -- $p
+        if [ -n "$1" ] && [ -n "$2" ] && [ -n "$3" ]; then
+            echo "$1 $2 $3"
+            return 0
+        fi
+        sleep 1
+    done
+    return 1
+}
+
+verify_profile_exact() {
+    url=$1
+    expected_w=$2
+    expected_h=$3
+    expected_fps=$4
+    name=$5
+
+    profile=$(wait_for_profile "$url" 30) || {
+        echo "  FAIL: ${name} profile unavailable"
+        return 1
+    }
+
+    set -- $profile
+    w=$1
+    h=$2
+    rate=$3
+    fps=$(echo "$rate" | awk -F/ '{ if ($2 > 0) printf("%d", $1 / $2); else printf("%d", $1) }')
+
+    if [ "$w" = "$expected_w" ] && [ "$h" = "$expected_h" ] && [ "$fps" = "$expected_fps" ]; then
+        echo "  OK: ${name} profile ${w}x${h}@${fps}"
+        return 0
+    fi
+
+    echo "  FAIL: ${name} expected ${expected_w}x${expected_h}@${expected_fps}, got ${w}x${h}@${fps}"
+    return 1
+}
+
+verify_profile_dims_any_order() {
+    url=$1
+    dim_a=$2
+    dim_b=$3
+    expected_fps=$4
+    name=$5
+
+    profile=$(wait_for_profile "$url" 30) || {
+        echo "  FAIL: ${name} profile unavailable"
+        return 1
+    }
+
+    set -- $profile
+    w=$1
+    h=$2
+    rate=$3
+    fps=$(echo "$rate" | awk -F/ '{ if ($2 > 0) printf("%d", $1 / $2); else printf("%d", $1) }')
+
+    if [ "$fps" != "$expected_fps" ]; then
+        echo "  FAIL: ${name} expected fps ${expected_fps}, got ${fps}"
+        return 1
+    fi
+
+    if { [ "$w" = "$dim_a" ] && [ "$h" = "$dim_b" ]; } || { [ "$w" = "$dim_b" ] && [ "$h" = "$dim_a" ]; }; then
+        echo "  OK: ${name} profile ${w}x${h}@${fps}"
+        return 0
+    fi
+
+    echo "  FAIL: ${name} expected dimensions ${dim_a}x${dim_b} (any order), got ${w}x${h}"
+    return 1
+}
+
 echo "Waiting for go-mls API..."
 for i in $(seq 1 30); do
     if curl -sf "${API}/stats" > /dev/null 2>&1; then
@@ -81,6 +198,10 @@ echo ""
 
 echo "1.3: Verify both inputs registered"
 curl -s "${API}/inputs" | tee /results/step1_inputs.json
+echo ""
+
+echo "1.4: Verify push acceptor path is push-stream"
+wait_for_input_status "push-stream" "Starting" 20 || wait_for_input_status "push-stream" "Active" 20
 echo ""
 
 echo "=== STEP 2: Start Streams ==="
@@ -184,30 +305,77 @@ echo "6.3: Check HLS files"
 find /hls -name "*.m3u8" 2>/dev/null | tee /results/step6_hls_files.txt || echo "  No HLS files yet"
 echo ""
 
-echo "=== STEP 7: Cleanup ==="
-echo "7.1: Stop HLS"
+echo "6.4: Export baseline config"
+curl -s "${API}/system/export" | tee /results/step6_export_baseline.json
+echo ""
+
+echo "=== STEP 7: Bulk Import + Preset Verification ==="
+if [ ! -f "${RELAY_CONFIG}" ]; then
+    echo "FAIL: relay config file not found at ${RELAY_CONFIG}"
+    exit 1
+fi
+
+echo "7.0: Validate relay_config push path before import"
+assert_relay_config_push_path "${RELAY_CONFIG}"
+echo ""
+
+echo "7.1: Import relay_config"
+curl -s -X POST "${API}/system/import" \
+    -H "Content-Type: application/json" \
+    --data-binary @"${RELAY_CONFIG}" | tee /results/step7_import_response.json
+echo ""
+
+echo "7.2: Wait for imported inputs"
+wait_for_input_status "pull-stream" "Active" 45
+wait_for_input_status "push-stream" "Active" 60
+echo ""
+
+echo "7.3: Verify imported outputs with ffprobe"
+wait_for_stream "${OUTPUT_RTMP}/live/pull-youtube" 30 "pull-youtube"
+wait_for_stream "${OUTPUT_RTMP}/live/pull-custom" 30 "pull-custom"
+wait_for_stream "${OUTPUT_RTMP}/live/push-instagram" 30 "push-instagram"
+wait_for_stream "${OUTPUT_RTMP}/live/push-custom-rot" 30 "push-custom-rot"
+echo ""
+
+echo "7.4: Validate preset profiles via ffprobe"
+verify_profile_exact "${OUTPUT_RTMP}/live/pull-youtube" "1920" "1080" "30" "pull-youtube"
+verify_profile_exact "${OUTPUT_RTMP}/live/pull-custom" "1280" "720" "30" "pull-custom"
+verify_profile_dims_any_order "${OUTPUT_RTMP}/live/push-instagram" "720" "1280" "30" "push-instagram"
+verify_profile_dims_any_order "${OUTPUT_RTMP}/live/push-custom-rot" "720" "1280" "30" "push-custom-rot"
+echo ""
+
+echo "7.5: Export imported config"
+curl -s "${API}/system/export" | tee /results/step7_export_after_import.json
+echo ""
+
+echo "=== STEP 8: Cleanup ==="
+echo "8.1: Stop HLS"
 curl -s -X POST "${API}/hls/stop" -H "Content-Type: application/json" -d '{"stream": "pull-stream", "viewer_id": "'"${PULL_VIEWER_ID}"'"}' | tee /results/step7_hls_pull.json
 curl -s -X POST "${API}/hls/stop" -H "Content-Type: application/json" -d '{"stream": "push-stream", "viewer_id": "'"${PUSH_VIEWER_ID}"'"}' | tee /results/step7_hls_push.json
 echo ""
 
-echo "7.2: Stop recordings"
+echo "8.2: Stop recordings"
 curl -s -X DELETE "${API}/record?stream=pull-stream" | tee /results/step7_rec_pull.json
 curl -s -X DELETE "${API}/record?stream=push-stream" | tee /results/step7_rec_push.json
 echo ""
 
-echo "7.3: Delete all outputs"
+echo "8.3: Delete all outputs"
 curl -s -X DELETE "${API}/outputs?stream=pull-stream&id=pull-to-rtmp1" | tee /results/step7_out_pull1.json
 curl -s -X DELETE "${API}/outputs?stream=pull-stream&id=pull-to-rtmp2" | tee /results/step7_out_pull2.json
 curl -s -X DELETE "${API}/outputs?stream=push-stream&id=push-to-rtmp1" | tee /results/step7_out_push1.json
 curl -s -X DELETE "${API}/outputs?stream=push-stream&id=push-to-rtmp2" | tee /results/step7_out_push2.json
+curl -s -X DELETE "${API}/outputs?stream=pull-stream&id=pull-youtube" | tee /results/step8_out_pull_youtube.json
+curl -s -X DELETE "${API}/outputs?stream=pull-stream&id=pull-custom" | tee /results/step8_out_pull_custom.json
+curl -s -X DELETE "${API}/outputs?stream=push-stream&id=push-instagram" | tee /results/step8_out_push_instagram.json
+curl -s -X DELETE "${API}/outputs?stream=push-stream&id=push-custom-rot" | tee /results/step8_out_push_custom_rot.json
 echo ""
 
-echo "7.4: Delete all inputs"
+echo "8.4: Delete all inputs"
 curl -s -X DELETE "${API}/inputs?stream=pull-stream" | tee /results/step7_in_pull.json
 curl -s -X DELETE "${API}/inputs?stream=push-stream" | tee /results/step7_in_push.json
 echo ""
 
-echo "7.5: Export final config"
+echo "8.5: Export final config"
 curl -s "${API}/system/export" | tee /results/step7_export.json
 echo ""
 

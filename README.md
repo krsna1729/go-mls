@@ -61,10 +61,8 @@ Create a `config.json` file (see `config.example.json` for reference):
     "loglevel": "info"
   },
   "hls": {
-    "cleanup_interval": "2m",
-    "session_timeout": "5m",
     "viewer_heartbeat_timeout": "30s",
-    "playlist_ready_timeout": "30s",
+    "idle_timeout": "30s",
     "playlist_base_dir": "/tmp"
   }
 }

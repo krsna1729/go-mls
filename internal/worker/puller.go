@@ -41,22 +41,29 @@ func StartPuller(ctx context.Context, store *state.Store, log *logger.Logger, st
 			return nil, fmt.Errorf("start puller: %w", err)
 		}
 		stream.PID = fp.PID()
-		store.UpdateInputStatus(stream.StreamPath, state.InputStatusActive, "")
-		p.ProcessWorker = p.ProcessWorker.WithProcess(fp)
+		// WithProcess modifies proc in place (protected by procMu inside ProcessWorker)
+		p.ProcessWorker.WithProcess(fp)
 		return fp, nil
 	}
 
-	_, err := p.ProcessWorker.StartWithFactory(factory)
+	_, err := p.ProcessWorker.StartWithFactory(ctx, factory)
 	if err != nil {
 		return nil, err
 	}
+
+	go func() {
+		<-p.Done()
+		if err := p.Wait(); err != nil {
+			store.UpdateInputStatus(stream.StreamPath, state.InputStatusError, err.Error())
+		}
+	}()
 
 	return p, nil
 }
 
 func (p *Puller) Stop() {
-	if p.ProcessWorker != nil && p.ProcessWorker.proc != nil {
-		p.ProcessWorker.proc.Stop()
+	if p.ProcessWorker != nil {
+		p.ProcessWorker.Stop()
 		p.store.UpdateInputStatus(p.stream.StreamPath, state.InputStatusStopped, "")
 	}
 	p.log.Info("Puller stopped", "stream_path", p.stream.StreamPath)

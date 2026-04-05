@@ -45,18 +45,9 @@ Examples: `"30s"`, `"5m"`, `"1h"`, `"500ms"`.
     "directory": "recordings"
   },
   "hls": {
-    "cleanup_interval": "2m",
-    "session_timeout": "5m",
-    "failed_cooldown": "30s",
-    "not_found_log_interval": "10s",
-    "playlist_ready_timeout": "10s",
-    "playlist_poll_interval": "200ms",
-    "playlist_poll_attempts": 50,
     "viewer_heartbeat_timeout": "30s",
-    "ffmpeg_stop_timeout": "2s",
+    "idle_timeout": "30s",
     "playlist_base_dir": "/tmp",
-    "segment_duration": "2s",
-    "playlist_size": 6,
     "ffmpeg_preset": "ultrafast"
   },
   "ffmpeg": {
@@ -110,25 +101,30 @@ To enable recording, ensure the `recording` section has a valid directory. Recor
 ```
 
 ### HLS Tuning
-You can tune HLS for low latency or stability using `segment_duration`, `playlist_size`, and `ffmpeg_preset`.
+The HLS manager has a small, focused configuration surface:
 
-**Low Latency (Target ~3-5s):**
+- `viewer_heartbeat_timeout`: how long to keep a viewer session alive without heartbeat
+- `idle_timeout`: how long to keep HLS ffmpeg running after viewer count reaches zero
+- `playlist_base_dir`: filesystem location where playlists/segments are generated
+- `ffmpeg_preset`: ffmpeg encoder preset used by HLS generation
+
+**Fast reconnect UX (recommended for web UI playback):**
 ```json
 "hls": {
-  "segment_duration": "1s",
-  "playlist_size": 3,
-  "ffmpeg_preset": "ultrafast",
-  "playlist_poll_interval": "100ms",
-  "playlist_ready_timeout": "5s"
+  "viewer_heartbeat_timeout": "30s",
+  "idle_timeout": "30s",
+  "playlist_base_dir": "/tmp",
+  "ffmpeg_preset": "ultrafast"
 }
 ```
 
-**High Stability (Target ~15-20s):**
+**Resource saving (stop HLS faster when idle):**
 ```json
 "hls": {
-  "segment_duration": "4s",
-  "playlist_size": 10,
-  "ffmpeg_preset": "veryfast"
+  "viewer_heartbeat_timeout": "20s",
+  "idle_timeout": "8s",
+  "playlist_base_dir": "/tmp",
+  "ffmpeg_preset": "ultrafast"
 }
 ```
 

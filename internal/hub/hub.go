@@ -4,7 +4,9 @@ package hub
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
 	"slices"
@@ -150,23 +152,25 @@ func (h *RTMPHub) handleConn(conn net.Conn) {
 
 	if sc.Publish {
 		if err := h.handlePublisher(sc, conn, streamPath, token, remoteAddr); err != nil {
-			h.log.Error("Publisher error", "path", streamPath, "remote", remoteAddr, "error", err)
+			if isExpectedConnClose(err) {
+				h.log.Debug("Publisher disconnected", "path", streamPath, "remote", remoteAddr, "error", err)
+			} else {
+				h.log.Error("Publisher error", "path", streamPath, "remote", remoteAddr, "error", err)
+			}
 		}
 	} else {
 		if err := h.handleSubscriber(sc, conn, streamPath); err != nil {
-			h.log.Error("Subscriber error", "path", streamPath, "remote", remoteAddr, "error", err)
+			if isExpectedConnClose(err) {
+				h.log.Debug("Subscriber disconnected", "path", streamPath, "remote", remoteAddr, "error", err)
+			} else {
+				h.log.Error("Subscriber error", "path", streamPath, "remote", remoteAddr, "error", err)
+			}
 		}
 	}
 }
 
 // handlePublisher processes a publishing connection.
 func (h *RTMPHub) handlePublisher(sc *gortmplib.ServerConn, conn net.Conn, streamPath, token, remoteAddr string) error {
-	if h.onPublish != nil {
-		if err := h.onPublish(streamPath, token, remoteAddr); err != nil {
-			return fmt.Errorf("publish rejected: %w", err)
-		}
-	}
-
 	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 
 	r := &gortmplib.Reader{
@@ -189,6 +193,15 @@ func (h *RTMPHub) handlePublisher(sc *gortmplib.ServerConn, conn net.Conn, strea
 	}
 	h.streams[streamPath] = s
 	h.mu.Unlock()
+
+	if h.onPublish != nil {
+		if err := h.onPublish(streamPath, token, remoteAddr); err != nil {
+			h.mu.Lock()
+			delete(h.streams, streamPath)
+			h.mu.Unlock()
+			return fmt.Errorf("publish rejected: %w", err)
+		}
+	}
 
 	h.log.Info("Publisher connected",
 		"path", streamPath,
@@ -385,6 +398,20 @@ func parseStreamURL(u *url.URL) (streamPath, token string) {
 	streamPath = strings.TrimPrefix(u.Path, "/")
 	token = u.Query().Get("token")
 	return streamPath, token
+}
+
+func isExpectedConnClose(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) || errors.Is(err, context.Canceled) {
+		return true
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "closed network connection") ||
+		strings.Contains(s, "connection reset by peer") ||
+		strings.Contains(s, "broken pipe") ||
+		strings.Contains(s, "read: eof")
 }
 
 // NewHub creates a hub of the specified type.

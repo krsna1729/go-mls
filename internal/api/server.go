@@ -109,6 +109,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 
 	// Recordings file serving - serve from recordings directory
 	if s.recDir != "" {
+		mux.HandleFunc("/recordings/download", s.handleRecordingDownload)
 		recFS := http.FileServer(http.Dir(s.recDir))
 		mux.Handle("/recordings/", http.StripPrefix("/recordings/", recFS))
 	}
@@ -177,6 +178,13 @@ func (s *Server) deleteInput(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Remove all output definitions for this input, including already-stopped outputs.
+	for _, out := range s.store.ListOutputs() {
+		if out.StreamPath == streamPath {
+			s.store.RemoveOutput(streamPath, out.OutputID)
+		}
+	}
+
 	// Stop recording if active
 	if rec, ok := s.recorders[streamPath]; ok {
 		rec.Stop()
@@ -220,6 +228,28 @@ type outputRequest struct {
 type outputActionRequest struct {
 	StreamPath string `json:"stream_path"`
 	OutputID   string `json:"output_id"`
+}
+
+func (s *Server) waitForInputActive(streamPath string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		in, ok := s.store.GetInput(streamPath)
+		if !ok {
+			return fmt.Errorf("input %q not found", streamPath)
+		}
+		switch in.Status {
+		case state.InputStatusActive:
+			return nil
+		case state.InputStatusError:
+			if in.LastError != "" {
+				return fmt.Errorf("input %q error: %s", streamPath, in.LastError)
+			}
+			return fmt.Errorf("input %q error", streamPath)
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+
+	return fmt.Errorf("input %q did not become active in time", streamPath)
 }
 
 func (s *Server) handleOutputs(w http.ResponseWriter, r *http.Request) {
@@ -308,6 +338,17 @@ func (s *Server) createOutput(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := s.ingest.EnsureInputActive(s.ctx, req.StreamPath); err != nil {
+		s.store.RemoveOutput(req.StreamPath, req.OutputID)
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		return
+	}
+	if err := s.waitForInputActive(req.StreamPath, 15*time.Second); err != nil {
+		s.store.RemoveOutput(req.StreamPath, req.OutputID)
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		return
+	}
+
 	// Start the restreamer
 	rs, err := worker.StartRestreamer(s.ctx, s.store, s.log, out, s.rtmpPort)
 	if err != nil {
@@ -352,6 +393,10 @@ func (s *Server) handleOutputStart(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.ingest.EnsureInputActive(s.ctx, req.StreamPath); err != nil {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		return
+	}
+	if err := s.waitForInputActive(req.StreamPath, 15*time.Second); err != nil {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 		return
 	}
@@ -589,6 +634,46 @@ func (s *Server) deleteRecording(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+func (s *Server) handleRecordingDownload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	filename := r.URL.Query().Get("filename")
+	if filename == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "filename query param required"})
+		return
+	}
+
+	fullPath, err := resolveRecordingPath(s.recDir, filename)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	f, err := os.Open(fullPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "recording not found"})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	defer f.Close()
+
+	st, err := f.Stat()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	w.Header().Set("Content-Type", "video/mp4")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filepath.Base(filename)))
+	http.ServeContent(w, r, filepath.Base(filename), st.ModTime(), f)
+}
+
 func (s *Server) handleRecordingsSSE(w http.ResponseWriter, r *http.Request) {
 	if s.recBroker == nil {
 		http.Error(w, "recordings SSE unavailable", http.StatusServiceUnavailable)
@@ -645,14 +730,14 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 
 	// Input stats
 	for _, in := range s.store.ListInputs() {
-			is := inputStats{
-				StreamPath: in.StreamPath,
-				Mode:       in.Mode,
-				Status:     in.Status,
-				RemoteURL:  in.RemoteURL,
-				RemoteAddr: in.RemoteAddr,
-				LastError:  in.LastError,
-			}
+		is := inputStats{
+			StreamPath: in.StreamPath,
+			Mode:       in.Mode,
+			Status:     in.Status,
+			RemoteURL:  in.RemoteURL,
+			RemoteAddr: in.RemoteAddr,
+			LastError:  in.LastError,
+		}
 		if in.PID > 0 {
 			if t, ok := s.store.GetTelemetry(in.PID); ok {
 				is.Telemetry = t
@@ -752,18 +837,18 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-		for _, out := range outputs {
-			relay, ok := relays[out.StreamPath]
-			if !ok {
-				continue
-			}
-			relay.Outputs = append(relay.Outputs, exportOutput{
-				OutputURL:      out.RemoteURL,
-				OutputName:     out.OutputID,
-				PlatformPreset: out.PlatformPreset,
-				FFmpegOptions:  exportFFmpegOptions(out),
-			})
+	for _, out := range outputs {
+		relay, ok := relays[out.StreamPath]
+		if !ok {
+			continue
 		}
+		relay.Outputs = append(relay.Outputs, exportOutput{
+			OutputURL:      out.RemoteURL,
+			OutputName:     out.OutputID,
+			PlatformPreset: out.PlatformPreset,
+			FFmpegOptions:  exportFFmpegOptions(out),
+		})
+	}
 
 	result := make([]exportRelay, 0, len(relays))
 	for _, relay := range relays {
@@ -820,27 +905,43 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Unlock()
 
+	// Fully clear existing inputs via ingest router so pullers/acceptors and store state are reset.
+	for _, in := range s.store.ListInputs() {
+		if err := s.ingest.UnregisterInput(in.StreamPath); err != nil {
+			s.log.Warn("Failed to unregister input during import", "stream_path", in.StreamPath, "error", err)
+		}
+	}
+
+	// Give hub/puller teardown a brief moment so re-registering the same stream path does not race
+	// with stale publishers still being cleaned up.
+	time.Sleep(1 * time.Second)
+
+	// Clear any residual output definitions that may remain if no worker was active.
+	for _, out := range s.store.ListOutputs() {
+		if err := s.store.RemoveOutput(out.StreamPath, out.OutputID); err != nil {
+			s.log.Warn("Failed to remove output during import", "stream_path", out.StreamPath, "output_id", out.OutputID, "error", err)
+		}
+	}
+
 	var totalInputs, totalOutputs int
 
 	for _, relay := range relays {
-		// Create input - if input_url is empty, treat as accepting push
-		in := &state.Input{
-			StreamPath: relay.InputName,
-			RemoteURL:  relay.InputURL,
-		}
-		if relay.InputURL == "" {
-			in.Mode = state.InputModeAccept
-		} else {
-			in.Mode = state.InputModePull
-		}
-		if err := s.store.AddInput(in); err != nil {
-			s.log.Error("Failed to add input", "input_name", relay.InputName, "error", err)
+		in := &state.Input{StreamPath: relay.InputName, RemoteURL: relay.InputURL}
+		if err := s.ingest.RegisterInput(s.ctx, in); err != nil {
+			s.log.Error("Failed to register input", "input_name", relay.InputName, "error", err)
 			continue
 		}
 		totalInputs++
 
+		inputReadyErr := s.waitForInputActive(relay.InputName, 45*time.Second)
+
 		// Create outputs
 		for _, out := range relay.Outputs {
+			outputID := out.OutputName
+			if outputID == "" {
+				outputID = out.OutputURL
+			}
+
 			preset, _ := state.GetPreset(out.PlatformPreset)
 			videoArgs, audioArgs := preset.ToArgs()
 
@@ -865,29 +966,36 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 
-				stateOut := &state.Output{
-					StreamPath:     relay.InputName,
-					OutputID:       out.OutputName,
-					RemoteURL:      out.OutputURL,
-					VideoArgs:      videoArgs,
-					AudioArgs:      audioArgs,
-					PlatformPreset: out.PlatformPreset,
-					FFmpegOptions:  copyStringMap(out.FFmpegOptions),
-				}
+			stateOut := &state.Output{
+				StreamPath:     relay.InputName,
+				OutputID:       outputID,
+				RemoteURL:      out.OutputURL,
+				VideoArgs:      videoArgs,
+				AudioArgs:      audioArgs,
+				PlatformPreset: out.PlatformPreset,
+				FFmpegOptions:  copyStringMap(out.FFmpegOptions),
+				Status:         state.OutputStatusStopped,
+			}
 
 			if err := s.store.AddOutput(stateOut); err != nil {
-				s.log.Error("Failed to add output", "output_name", out.OutputName, "error", err)
+				s.log.Error("Failed to add output", "output_name", outputID, "error", err)
+				continue
+			}
+
+			if inputReadyErr != nil {
+				s.store.UpdateOutputStatus(relay.InputName, outputID, state.OutputStatusError, inputReadyErr.Error())
+				s.log.Warn("Output kept but not started", "stream_path", relay.InputName, "output_id", outputID, "error", inputReadyErr)
 				continue
 			}
 
 			rs, err := worker.StartRestreamer(s.ctx, s.store, s.log, stateOut, s.rtmpPort)
 			if err != nil {
-				s.store.RemoveOutput(relay.InputName, out.OutputName)
-				s.log.Error("Failed to start restreamer", "output_id", out.OutputName, "error", err)
+				s.store.UpdateOutputStatus(relay.InputName, outputID, state.OutputStatusError, err.Error())
+				s.log.Error("Failed to start restreamer", "output_id", outputID, "error", err)
 				continue
 			}
 
-			key := relay.InputName + "/" + out.OutputName
+			key := relay.InputName + "/" + outputID
 			s.mu.Lock()
 			s.restreamers[key] = rs
 			s.mu.Unlock()
@@ -920,8 +1028,33 @@ func (s *Server) handleHLSStart(w http.ResponseWriter, r *http.Request) {
 	}
 
 	playlistURL := path.Join("/hls", streamPath, "index.m3u8")
-	s.log.Info("HLS viewer started", "stream_path", streamPath)
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "stream_path": streamPath, "viewer_id": viewerID, "playlist_url": playlistURL})
+	playlistPath := filepath.Join(s.hlsDir, streamPath, "index.m3u8")
+
+	// Probe for playlist readiness so clients can decide whether to delay initial load.
+	deadline := time.Now().Add(12 * time.Second)
+	playlistReady := false
+	for time.Now().Before(deadline) {
+		b, readErr := os.ReadFile(playlistPath)
+		if readErr == nil && strings.Contains(string(b), "#EXTM3U") {
+			playlistReady = true
+			break
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+
+	if !playlistReady {
+		s.log.Warn("HLS playlist not ready before response timeout", "stream_path", streamPath, "viewer_id", viewerID)
+	} else {
+		s.log.Info("HLS viewer started", "stream_path", streamPath)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status":         "ok",
+		"stream_path":    streamPath,
+		"viewer_id":      viewerID,
+		"playlist_url":   playlistURL,
+		"playlist_ready": playlistReady,
+	})
 }
 
 // --- /hls/stop ---

@@ -59,6 +59,7 @@ type BaseWorker struct {
 
 	mu          sync.RWMutex
 	state       WorkerState
+	stopReq     bool
 	stopCh      chan struct{}
 	doneCh      chan struct{}
 	exitErr     error
@@ -91,12 +92,22 @@ func (w *BaseWorker) Wait() error {
 }
 
 func (w *BaseWorker) Stop() {
+	w.mu.Lock()
+	w.stopReq = true
+	w.mu.Unlock()
+
 	select {
 	case w.stopCh <- struct{}{}:
 		w.log.Debug("Stop signal sent", "worker", w.name)
 	default:
 		w.log.Debug("Stop already requested", "worker", w.name)
 	}
+}
+
+func (w *BaseWorker) stopRequested() bool {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return w.stopReq
 }
 
 func (w *BaseWorker) StopAndWait() {
@@ -118,6 +129,7 @@ func (w *BaseWorker) Start() error {
 		return fmt.Errorf("worker %s already started", w.name)
 	}
 	w.state = WorkerStateStarting
+	w.stopReq = false
 	w.stopCh = make(chan struct{}, 1)
 	w.doneCh = make(chan struct{})
 	w.mu.Unlock()
@@ -149,7 +161,9 @@ func NewProcessWorker(name string, log *logger.Logger) *ProcessWorker {
 }
 
 func (w *ProcessWorker) WithProcess(proc Process) *ProcessWorker {
+	w.procMu.Lock()
 	w.proc = proc
+	w.procMu.Unlock()
 	return w
 }
 
@@ -173,13 +187,8 @@ func (w *ProcessWorker) WaitForProcess(timeout time.Duration) error {
 
 type ProcessFactory func(ctx context.Context) (Process, error)
 
-func RunProcessWorker(name string, log *logger.Logger, factory ProcessFactory) (*ProcessWorker, error) {
-	w := NewProcessWorker(name, log)
-
-	if err := w.Start(); err != nil {
-		return nil, err
-	}
-
+// startProcessLoop is the common goroutine logic for both RunProcessWorker and StartWithFactory.
+func (w *ProcessWorker) startProcessLoop(ctx context.Context, factory ProcessFactory) {
 	w.goroutineWG.Add(1)
 	go func() {
 		defer func() {
@@ -187,7 +196,7 @@ func RunProcessWorker(name string, log *logger.Logger, factory ProcessFactory) (
 			w.complete(w.exitErr)
 		}()
 
-		proc, err := factory(context.Background())
+		proc, err := factory(ctx)
 		if err != nil {
 			w.exitErr = err
 			w.log.Error("Failed to start process", "error", err)
@@ -208,22 +217,43 @@ func RunProcessWorker(name string, log *logger.Logger, factory ProcessFactory) (
 			proc.Stop()
 			if err := proc.Wait(); err != nil {
 				if !errors.Is(err, ErrProcessKilled) && !IsProcessKilled(err) {
+					if w.stopRequested() {
+						w.log.Debug("Process exited after requested stop", "error", err)
+						w.exitErr = nil
+						return
+					}
 					w.exitErr = fmt.Errorf("%w: %v", ErrProcessFailed, err)
 					w.log.Error("Process exited with error", "error", err)
 				}
 			}
 		case <-proc.Done():
 			if err := proc.Err(); err != nil {
+				if w.stopRequested() {
+					w.exitErr = nil
+					w.log.Debug("Process exited after requested stop", "error", err)
+					return
+				}
 				if IsProcessKilled(err) {
-					w.exitErr = fmt.Errorf("%w: %v", ErrProcessKilled, err)
+					w.exitErr = nil
+					w.log.Debug("Process stopped", "reason", "killed")
 				} else {
 					w.exitErr = fmt.Errorf("%w: %v", ErrProcessFailed, err)
+					w.log.Error("Process exited with error", "error", err)
 				}
-				w.log.Error("Process exited with error", "error", err)
 			}
 		}
 	}()
+}
 
+// RunProcessWorker creates a new worker and starts a process, propagating the provided context.
+func RunProcessWorker(ctx context.Context, name string, log *logger.Logger, factory ProcessFactory) (*ProcessWorker, error) {
+	w := NewProcessWorker(name, log)
+
+	if err := w.Start(); err != nil {
+		return nil, err
+	}
+
+	w.startProcessLoop(ctx, factory)
 	return w, nil
 }
 
@@ -232,54 +262,12 @@ func (w *ProcessWorker) Shutdown() {
 	w.goroutineWG.Wait()
 }
 
-func (w *ProcessWorker) StartWithFactory(factory ProcessFactory) (*ProcessWorker, error) {
+// StartWithFactory starts process management on an existing ProcessWorker, propagating the provided context.
+func (w *ProcessWorker) StartWithFactory(ctx context.Context, factory ProcessFactory) (*ProcessWorker, error) {
 	if err := w.Start(); err != nil {
 		return nil, err
 	}
 
-	w.goroutineWG.Add(1)
-	go func() {
-		defer func() {
-			w.goroutineWG.Done()
-			w.complete(w.exitErr)
-		}()
-
-		proc, err := factory(context.Background())
-		if err != nil {
-			w.exitErr = err
-			w.log.Error("Failed to start process", "error", err)
-			return
-		}
-
-		if proc == nil {
-			return
-		}
-
-		w.procMu.Lock()
-		w.proc = proc
-		w.procMu.Unlock()
-		w.setState(WorkerStateRunning)
-
-		select {
-		case <-w.stopCh:
-			proc.Stop()
-			if err := proc.Wait(); err != nil {
-				if !errors.Is(err, ErrProcessKilled) && !IsProcessKilled(err) {
-					w.exitErr = fmt.Errorf("%w: %v", ErrProcessFailed, err)
-					w.log.Error("Process exited with error", "error", err)
-				}
-			}
-		case <-proc.Done():
-			if err := proc.Err(); err != nil {
-				if IsProcessKilled(err) {
-					w.exitErr = fmt.Errorf("%w: %v", ErrProcessKilled, err)
-				} else {
-					w.exitErr = fmt.Errorf("%w: %v", ErrProcessFailed, err)
-				}
-				w.log.Error("Process exited with error", "error", err)
-			}
-		}
-	}()
-
+	w.startProcessLoop(ctx, factory)
 	return w, nil
 }

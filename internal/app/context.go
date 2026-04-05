@@ -72,6 +72,7 @@ func NewContext(cfg *config.Config, log *logger.Logger) (*Context, error) {
 		hlsPreset,
 		hubPort,
 		time.Duration(cfg.HLS.ViewerHeartbeatTimeout),
+		time.Duration(cfg.HLS.IdleTimeout),
 	)
 
 	return ctx, nil

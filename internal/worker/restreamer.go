@@ -53,21 +53,29 @@ func StartRestreamer(ctx context.Context, store *state.Store, log *logger.Logger
 		}
 		out.PID = fp.PID()
 		store.UpdateOutputStatus(out.StreamPath, out.OutputID, state.OutputStatusRunning, "")
-		r.ProcessWorker = r.ProcessWorker.WithProcess(fp)
+		// WithProcess modifies proc in place (protected by procMu inside ProcessWorker)
+		r.ProcessWorker.WithProcess(fp)
 		return fp, nil
 	}
 
-	_, err := r.ProcessWorker.StartWithFactory(factory)
+	_, err := r.ProcessWorker.StartWithFactory(ctx, factory)
 	if err != nil {
 		return nil, err
 	}
+
+	go func() {
+		<-r.Done()
+		if err := r.Wait(); err != nil {
+			store.UpdateOutputStatus(out.StreamPath, out.OutputID, state.OutputStatusError, err.Error())
+		}
+	}()
 
 	return r, nil
 }
 
 func (r *Restreamer) Stop() {
-	if r.ProcessWorker != nil && r.ProcessWorker.proc != nil {
-		r.ProcessWorker.proc.Stop()
+	if r.ProcessWorker != nil {
+		r.ProcessWorker.Stop()
 		r.store.UpdateOutputStatus(r.output.StreamPath, r.output.OutputID, state.OutputStatusStopped, "")
 	}
 	if r.log != nil {

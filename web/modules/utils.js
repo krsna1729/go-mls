@@ -15,6 +15,8 @@ const Utils = (() => {
 
     const getStatusBadge = (status) => {
         if (status === 'Running') return '<span class="badge badge-running">Running</span>';
+        if (status === 'Starting') return '<span class="badge badge-unknown">Starting</span>';
+        if (status === 'Active') return '<span class="badge badge-running">Running</span>';
         if (status === 'Stopped') return '<span class="badge badge-stopped">Stopped</span>';
         if (status === 'Error') return '<span class="badge badge-error">Error</span>';
         return '<span class="badge badge-unknown">Unknown</span>';

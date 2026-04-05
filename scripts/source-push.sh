@@ -22,14 +22,14 @@ if [ $i -eq $MAX_RETRIES ]; then
     exit 1
 fi
 
-echo "source-push: Waiting for push-stream to be registered by test-runner..."
+echo "source-push: Waiting for ${STREAM_PATH} to be registered..."
 while true; do
     inputs=$(curl -s "${API}/inputs" 2>/dev/null)
-    if echo "$inputs" | grep -q "push-stream"; then
-        echo "source-push: push-stream registered, ready to push"
+    if echo "$inputs" | grep -q "\"stream_path\":\"${STREAM_PATH}\""; then
+        echo "source-push: ${STREAM_PATH} registered, ready to push"
         break
     fi
-    echo "source-push: Waiting for push-stream registration..."
+    echo "source-push: Waiting for ${STREAM_PATH} registration..."
     sleep 1
 done
 

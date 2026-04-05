@@ -84,18 +84,9 @@ type LoggingConfig struct {
 // HLSConfig contains HLS manager settings
 // All durations use time.Duration with json:",string" tag for human-readable JSON
 type HLSConfig struct {
-	CleanupInterval        Duration `json:"cleanup_interval"`
-	SessionTimeout         Duration `json:"session_timeout"`
-	FailedCooldown         Duration `json:"failed_cooldown"`
-	NotFoundLogInterval    Duration `json:"not_found_log_interval"`
-	PlaylistReadyTimeout   Duration `json:"playlist_ready_timeout"`
-	PlaylistPollInterval   Duration `json:"playlist_poll_interval"`
-	PlaylistPollAttempts   int      `json:"playlist_poll_attempts"`
 	ViewerHeartbeatTimeout Duration `json:"viewer_heartbeat_timeout"`
-	FFmpegStopTimeout      Duration `json:"ffmpeg_stop_timeout"`
+	IdleTimeout            Duration `json:"idle_timeout"`
 	PlaylistBaseDir        string   `json:"playlist_base_dir"`
-	SegmentDuration        Duration `json:"segment_duration"`
-	PlaylistSize           int      `json:"playlist_size"`
 	FFmpegPreset           string   `json:"ffmpeg_preset"`
 }
 
@@ -150,18 +141,9 @@ func DefaultConfig() *Config {
 			File:  "",
 		},
 		HLS: HLSConfig{
-			CleanupInterval:        Duration(2 * time.Minute),
-			SessionTimeout:         Duration(5 * time.Minute),
-			FailedCooldown:         Duration(30 * time.Second),
-			NotFoundLogInterval:    Duration(10 * time.Second),
-			PlaylistReadyTimeout:   Duration(10 * time.Second),
-			PlaylistPollInterval:   Duration(200 * time.Millisecond),
-			PlaylistPollAttempts:   50,
 			ViewerHeartbeatTimeout: Duration(30 * time.Second),
-			FFmpegStopTimeout:      Duration(2 * time.Second),
+			IdleTimeout:            Duration(30 * time.Second),
 			PlaylistBaseDir:        "/tmp",
-			SegmentDuration:        Duration(2 * time.Second),
-			PlaylistSize:           6,
 			FFmpegPreset:           "ultrafast",
 		},
 		FFmpeg: FFmpegConfig{

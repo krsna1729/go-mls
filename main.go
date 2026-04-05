@@ -23,6 +23,23 @@ import (
 //go:embed web/*
 var webAssets embed.FS
 
+func selectWebFS(log *logger.Logger) fs.FS {
+	// Prefer filesystem assets for development/runtime overrides.
+	if _, err := os.Stat(filepath.Join("web", "index.html")); err == nil {
+		log.Info("Serving web assets from filesystem", "path", "web/")
+		return os.DirFS("web")
+	}
+
+	staticFS, err := fs.Sub(webAssets, "web")
+	if err != nil {
+		log.Error("Failed to create embedded web asset FS", "err", err)
+		os.Exit(1)
+	}
+
+	log.Info("Serving web assets from embedded binary")
+	return staticFS
+}
+
 func main() {
 	var configFile string
 	flag.StringVar(&configFile, "config", "config.json", "Configuration file path")
@@ -82,12 +99,7 @@ func main() {
 		context.Background(),
 	)
 
-	// Use embedded static assets
-	staticFS, err := fs.Sub(webAssets, "web")
-	if err != nil {
-		log.Error("Failed to create sub FS for web assets", "err", err)
-		os.Exit(1)
-	}
+	staticFS := selectWebFS(log)
 
 	// Create HTTP server with custom handler
 	mux := http.NewServeMux()

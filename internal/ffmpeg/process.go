@@ -188,6 +188,10 @@ func (fp *FFmpegProcess) parseStderr(r io.Reader) {
 				continue
 			}
 			t := parseProgressLine(line)
+			if existing, ok := fp.store.GetTelemetry(fp.pid); ok && existing != nil {
+				t.CPU = existing.CPU
+				t.MemMB = existing.MemMB
+			}
 			fp.store.UpdateTelemetry(fp.pid, t)
 		} else if strings.Contains(line, "Error") || strings.Contains(line, "error") {
 			fp.log.Error("ffmpeg stderr", "line", line)
@@ -218,6 +222,8 @@ func (fp *FFmpegProcess) pollHardware(ctx context.Context) {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
+	var proc *process.Process
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -225,12 +231,15 @@ func (fp *FFmpegProcess) pollHardware(ctx context.Context) {
 		case <-fp.done:
 			return
 		case <-ticker.C:
-			proc, err := process.NewProcess(int32(fp.pid))
-			if err != nil {
-				continue
-			}
 			if fp.store == nil {
 				continue
+			}
+			if proc == nil {
+				var err error
+				proc, err = process.NewProcess(int32(fp.pid))
+				if err != nil {
+					continue
+				}
 			}
 			// Get existing telemetry or create new
 			t, ok := fp.store.GetTelemetry(fp.pid)
@@ -239,9 +248,13 @@ func (fp *FFmpegProcess) pollHardware(ctx context.Context) {
 			}
 			if cpuPct, err := proc.CPUPercent(); err == nil {
 				t.CPU = cpuPct
+			} else {
+				proc = nil
 			}
 			if memInfo, err := proc.MemoryInfo(); err == nil {
 				t.MemMB = float64(memInfo.RSS) / (1024 * 1024)
+			} else {
+				proc = nil
 			}
 			fp.store.UpdateTelemetry(fp.pid, t)
 		}

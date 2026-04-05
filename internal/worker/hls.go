@@ -22,6 +22,7 @@ type HLSManager struct {
 	preset        string
 	rtmpPort      int
 	viewerTimeout time.Duration
+	idleTimeout   time.Duration
 	mu            sync.Mutex
 	sessions      map[string]*hlsSession
 	stopCh        chan struct{}
@@ -32,11 +33,15 @@ type hlsSession struct {
 	proc        Process
 	playlistDir string
 	viewers     map[string]time.Time
+	idleSince   time.Time
 }
 
-func NewHLSManager(store *state.Store, log *logger.Logger, baseDir, preset string, rtmpPort int, viewerTimeout time.Duration) *HLSManager {
+func NewHLSManager(store *state.Store, log *logger.Logger, baseDir, preset string, rtmpPort int, viewerTimeout, idleTimeout time.Duration) *HLSManager {
 	if viewerTimeout <= 0 {
 		viewerTimeout = 30 * time.Second
+	}
+	if idleTimeout <= 0 {
+		idleTimeout = 30 * time.Second
 	}
 
 	m := &HLSManager{
@@ -46,6 +51,7 @@ func NewHLSManager(store *state.Store, log *logger.Logger, baseDir, preset strin
 		preset:        preset,
 		rtmpPort:      rtmpPort,
 		viewerTimeout: viewerTimeout,
+		idleTimeout:   idleTimeout,
 		sessions:      make(map[string]*hlsSession),
 		stopCh:        make(chan struct{}),
 	}
@@ -67,6 +73,7 @@ func (m *HLSManager) AddViewer(ctx context.Context, streamPath string) (string, 
 	sess, exists := m.sessions[streamPath]
 	if exists {
 		sess.viewers[viewerID] = time.Now()
+		sess.idleSince = time.Time{}
 		viewerCount := len(sess.viewers)
 		m.log.Info("HLS viewer added", "stream_path", streamPath, "viewer_id", viewerID, "viewers", viewerCount)
 		m.store.UpdateHLSViewerCount(streamPath, viewerCount)
@@ -152,7 +159,7 @@ func (m *HLSManager) RemoveViewer(streamPath, viewerID string) {
 	}
 
 	m.log.Info("HLS viewer removed", "stream_path", streamPath, "viewer_id", viewerID, "viewers", len(sess.viewers))
-	m.stopSessionIfUnusedLocked(streamPath, sess)
+	m.stopSessionIfUnusedLocked(streamPath, sess, time.Now())
 }
 
 func (m *HLSManager) Shutdown() {
@@ -174,8 +181,12 @@ func (m *HLSManager) cleanupLoop() {
 	defer m.wg.Done()
 
 	interval := m.viewerTimeout / 2
-	if interval < 5*time.Second {
-		interval = 5 * time.Second
+	idleInterval := m.idleTimeout / 2
+	if idleInterval < interval {
+		interval = idleInterval
+	}
+	if interval < 2*time.Second {
+		interval = 2 * time.Second
 	}
 
 	ticker := time.NewTicker(interval)
@@ -201,14 +212,26 @@ func (m *HLSManager) cleanupExpiredLocked(now time.Time) {
 				m.log.Info("HLS viewer expired", "stream_path", streamPath, "viewer_id", viewerID)
 			}
 		}
-		m.stopSessionIfUnusedLocked(streamPath, sess)
+		m.stopSessionIfUnusedLocked(streamPath, sess, now)
 	}
 }
 
-func (m *HLSManager) stopSessionIfUnusedLocked(streamPath string, sess *hlsSession) {
+func (m *HLSManager) stopSessionIfUnusedLocked(streamPath string, sess *hlsSession, now time.Time) {
 	viewerCount := len(sess.viewers)
 	if viewerCount > 0 {
+		sess.idleSince = time.Time{}
 		m.store.UpdateHLSViewerCount(streamPath, viewerCount)
+		return
+	}
+
+	m.store.UpdateHLSViewerCount(streamPath, 0)
+	if sess.idleSince.IsZero() {
+		sess.idleSince = now
+		m.log.Info("HLS session became idle", "stream_path", streamPath, "idle_timeout", m.idleTimeout.String())
+		return
+	}
+
+	if now.Sub(sess.idleSince) < m.idleTimeout {
 		return
 	}
 
@@ -216,7 +239,7 @@ func (m *HLSManager) stopSessionIfUnusedLocked(streamPath string, sess *hlsSessi
 	delete(m.sessions, streamPath)
 	m.store.RemoveHLSSession(streamPath)
 	os.RemoveAll(sess.playlistDir)
-	m.log.Info("HLS generation stopped (no viewers)", "stream_path", streamPath)
+	m.log.Info("HLS generation stopped (idle timeout)", "stream_path", streamPath, "idle_for", now.Sub(sess.idleSince).String())
 }
 
 func newViewerID() (string, error) {

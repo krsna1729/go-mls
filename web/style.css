@@ -108,6 +108,35 @@ button .material-icons {
     line-height: 1;
 }
 
+.recording-action-btn {
+    min-width: 32px !important;
+    min-height: 32px !important;
+    width: 32px !important;
+    height: 32px !important;
+    padding: 0 !important;
+    margin: 0 2px;
+    border-radius: 4px;
+    border: none;
+    cursor: pointer;
+    transition: background 0.2s;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0;
+    font-size: 0;
+}
+
+.recording-action-btn .material-icons {
+    font-size: 16px;
+    width: 16px;
+    height: 16px;
+    margin-right: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+}
+
 /* Ripple effect */
 button::after,
 .ripple {
@@ -595,11 +624,13 @@ th .centered-cell {
     color: #fff;
     border: none;
     border-radius: 4px;
-    width: 32px;
-    height: 32px;
-    min-width: 32px;
-    min-height: 32px;
-    padding: 0;
+    width: 32px !important;
+    height: 32px !important;
+    min-width: 32px !important;
+    max-width: 32px !important;
+    min-height: 32px !important;
+    max-height: 32px !important;
+    padding: 0 !important;
     margin: 0 2px;
     font-size: 0;
     box-shadow: none;
@@ -609,23 +640,13 @@ th .centered-cell {
 }
 
 /* Download buttons in recordings tab */
+#recordingsTab .playRecordingBtn,
+#streamsTab .playRecordingBtn,
 #recordingsTab .downloadRecordingBtn,
 #streamsTab .downloadRecordingBtn {
     background: #1976d2;
     color: #fff;
     border: none;
-    border-radius: 4px;
-    width: 32px;
-    height: 32px;
-    min-width: 32px;
-    min-height: 32px;
-    padding: 0;
-    margin: 0 2px;
-    font-size: 0;
-    box-shadow: none;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
 }
 
 /* Override for delete buttons in recordings tab */
@@ -634,9 +655,27 @@ th .centered-cell {
     background: #c62828;
 }
 
+#recordingsTab .playRecordingBtn:hover,
+#streamsTab .playRecordingBtn:hover,
 #recordingsTab .downloadRecordingBtn:hover,
 #streamsTab .downloadRecordingBtn:hover {
     background: #1565c0;
+}
+
+#recordingsTab .playRecordingBtn .material-icons,
+#recordingsTab .downloadRecordingBtn .material-icons,
+#recordingsTab .deleteRecordingBtn .material-icons,
+#streamsTab .playRecordingBtn .material-icons,
+#streamsTab .downloadRecordingBtn .material-icons,
+#streamsTab .deleteRecordingBtn .material-icons {
+    font-size: 16px !important;
+    width: 16px;
+    height: 16px;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 0;
 }
 
 .md-btn {
@@ -748,6 +787,7 @@ th .centered-cell {
 
 /* === Square Action Buttons - Consistent Sizing === */
 .downloadRecordingBtn,
+.playRecordingBtn,
 .deleteRecordingBtn,
 .deleteInputBtn,
 .deleteOutputBtn,

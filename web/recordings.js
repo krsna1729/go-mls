@@ -31,6 +31,18 @@ document.addEventListener('DOMContentLoaded', function () {
 
     recordingsTab.appendChild(card); // append the card with both sections
 
+    function downloadRecordingFile(encodedFilename) {
+        const filename = decodeURIComponent(encodedFilename);
+        let frame = document.getElementById('recordingDownloadFrame');
+        if (!frame) {
+            frame = document.createElement('iframe');
+            frame.id = 'recordingDownloadFrame';
+            frame.style.display = 'none';
+            document.body.appendChild(frame);
+        }
+        frame.src = '/recordings/download?filename=' + encodeURIComponent(filename) + '&ts=' + Date.now();
+    }
+
     // --- Fetch and Render Input URLs ---
     function fetchInputUrls() {
         // Try to get all recordings from window if available
@@ -341,7 +353,7 @@ document.addEventListener('DOMContentLoaded', function () {
             btn.onclick = function () {
                 const filename = btn.getAttribute('data-filename');
                 if (filename) {
-                    window.location = '/recordings/' + filename;
+                    downloadRecordingFile(filename);
                 }
             };
         });
@@ -369,16 +381,19 @@ document.addEventListener('DOMContentLoaded', function () {
             const streamPath = rec.stream_path || rec.name || '';
             if (search && !rec.filename.toLowerCase().includes(search) && !streamPath.toLowerCase().includes(search) && !new Date(rec.started_at).toLocaleString().toLowerCase().includes(search)) continue;
             let sizeStr = rec.file_size ? Utils.formatBytes(rec.file_size) : '';
+            let playBtn = '';
             let downloadBtn = '';
             let deleteBtn = '';
             // Use filename for deletion (no key construction)
             const filename = rec.filename;
             if (rec.active) {
-                downloadBtn = `<button class=\"downloadRecordingBtn\" disabled style=\"opacity:0.5;cursor:not-allowed;\"><span class=\"material-icons\">download</span></button>`;
-                deleteBtn = `<button class=\"deleteRecordingBtn\" disabled style=\"opacity:0.5;cursor:not-allowed;\"><span class=\"material-icons\">delete</span></button>`;
+                playBtn = `<button class=\"playRecordingBtn recording-action-btn relay-action-btn\" disabled style=\"opacity:0.5;cursor:not-allowed;\"><span class=\"material-icons\">play_arrow</span></button>`;
+                downloadBtn = `<button class=\"downloadRecordingBtn recording-action-btn relay-action-btn\" disabled style=\"opacity:0.5;cursor:not-allowed;\"><span class=\"material-icons\">download</span></button>`;
+                deleteBtn = `<button class=\"deleteRecordingBtn recording-action-btn relay-action-btn\" disabled style=\"opacity:0.5;cursor:not-allowed;\"><span class=\"material-icons\">delete</span></button>`;
             } else {
-                downloadBtn = `<button class=\"downloadRecordingBtn\" data-filename=\"${encodeURIComponent(rec.filename)}\"><span class=\"material-icons\">download</span></button>`;
-                deleteBtn = `<button class=\"deleteRecordingBtn\" data-filename=\"${encodeURIComponent(rec.filename)}\"><span class=\"material-icons\">delete</span></button>`;
+                playBtn = `<button class=\"playRecordingBtn recording-action-btn relay-action-btn\" data-filename=\"${encodeURIComponent(rec.filename)}\" title=\"Play in browser\"><span class=\"material-icons\">play_arrow</span></button>`;
+                downloadBtn = `<button class=\"downloadRecordingBtn recording-action-btn relay-action-btn\" data-filename=\"${encodeURIComponent(rec.filename)}\"><span class=\"material-icons\">download</span></button>`;
+                deleteBtn = `<button class=\"deleteRecordingBtn recording-action-btn relay-action-btn\" data-filename=\"${encodeURIComponent(rec.filename)}\"><span class=\"material-icons\">delete</span></button>`;
             }
             // Show source on hover if available
             const titleAttr = streamPath ? `title="Stream: ${streamPath}"` : '';
@@ -388,6 +403,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 <td>${sizeStr}</td>
                 <td>${rec.active ? '<span style=\"color:red;\">Active</span>' : 'Stopped'}</td>
                 <td>
+                    ${playBtn}
                     ${downloadBtn}
                     ${deleteBtn}
                 </td>
@@ -395,11 +411,21 @@ document.addEventListener('DOMContentLoaded', function () {
         }
         html += '</tbody></table>';
         document.getElementById('allRecordingsList').innerHTML = html;
+        document.querySelectorAll('.playRecordingBtn').forEach(btn => {
+            if (btn.disabled) return;
+            btn.onclick = function () {
+                const filename = btn.getAttribute('data-filename');
+                if (filename) {
+                    window.open('/recordings/' + filename, '_blank', 'noopener');
+                }
+            };
+        });
         document.querySelectorAll('.downloadRecordingBtn').forEach(btn => {
             if (btn.disabled) return;
             btn.onclick = function () {
                 const filename = btn.getAttribute('data-filename');
-                window.location = '/recordings/' + filename;
+                if (!filename) return;
+                downloadRecordingFile(filename);
             };
         });
         document.querySelectorAll('.deleteRecordingBtn').forEach(btn => {
@@ -448,10 +474,17 @@ document.addEventListener('DOMContentLoaded', function () {
             fetchAllRecordings();
         };
         recordingsEventSource.onerror = function () {
+            // Stop noisy reconnect loops and switch to robust polling.
+            if (recordingsEventSource) {
+                recordingsEventSource.close();
+                recordingsEventSource = null;
+            }
             if (!recordingsPollingInterval) {
                 setupRecordingsPolling();
             }
         };
     }
-    setupRecordingsSSE();
+
+    // Polling-only mode is intentionally used for frontend stability.
+    setupRecordingsPolling();
 });
