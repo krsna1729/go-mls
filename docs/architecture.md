@@ -276,6 +276,10 @@ Workers follow the `Start()` → `Run()` → `Stop()` → `Wait()` pattern with 
 ### 3. State-Based Design
 Centralized state store for inputs, outputs, recordings, and HLS sessions enables persistence and export/import.
 
+Runtime list APIs return value snapshots (not shared pointers), so read-heavy handlers like `/stats` can iterate safely while writers update status/PID fields under store locks.
+
+The `/stats` endpoint itself is backed by a background-refreshed cache: a periodic goroutine samples self usage, reads store snapshots and telemetry, pre-encodes the JSON response, and atomically swaps the latest payload for request handlers to serve.
+
 ### 4. No Callbacks in Critical Paths
 Token validation and publish handlers are synchronous to ensure correctness.
 
@@ -284,6 +288,8 @@ FFmpeg processes run in their own process group to prevent SIGTERM propagation f
 
 ### 6. Graceful Shutdown with Timeout
 Workers receive SIGTERM first (5s timeout), then SIGKILL if needed.
+
+Hub lifecycle (`Start()`/`Stop()`) is serialized internally to avoid concurrent lifecycle races and to support safe restart after stop.
 
 ---
 

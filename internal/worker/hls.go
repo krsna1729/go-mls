@@ -36,6 +36,12 @@ type hlsSession struct {
 	idleSince   time.Time
 }
 
+type hlsCleanupTask struct {
+	streamPath  string
+	playlistDir string
+	idleFor     time.Duration
+}
+
 func NewHLSManager(store *state.Store, log *logger.Logger, baseDir, preset string, rtmpPort int, viewerTimeout, idleTimeout time.Duration) *HLSManager {
 	if viewerTimeout <= 0 {
 		viewerTimeout = 30 * time.Second
@@ -62,11 +68,12 @@ func NewHLSManager(store *state.Store, log *logger.Logger, baseDir, preset strin
 
 func (m *HLSManager) AddViewer(ctx context.Context, streamPath string) (string, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.cleanupExpiredLocked(time.Now())
+	cleanupTasks := m.cleanupExpiredLocked(time.Now())
 
 	viewerID, err := newViewerID()
 	if err != nil {
+		m.mu.Unlock()
+		m.runCleanupTasks(cleanupTasks)
 		return "", fmt.Errorf("generate viewer id: %w", err)
 	}
 
@@ -77,11 +84,15 @@ func (m *HLSManager) AddViewer(ctx context.Context, streamPath string) (string, 
 		viewerCount := len(sess.viewers)
 		m.log.Info("HLS viewer added", "stream_path", streamPath, "viewer_id", viewerID, "viewers", viewerCount)
 		m.store.UpdateHLSViewerCount(streamPath, viewerCount)
+		m.mu.Unlock()
+		m.runCleanupTasks(cleanupTasks)
 		return viewerID, nil
 	}
 
 	playlistDir := filepath.Join(m.baseDir, streamPath)
 	if err := os.MkdirAll(playlistDir, 0755); err != nil {
+		m.mu.Unlock()
+		m.runCleanupTasks(cleanupTasks)
 		return "", fmt.Errorf("create HLS dir: %w", err)
 	}
 
@@ -101,6 +112,8 @@ func (m *HLSManager) AddViewer(ctx context.Context, streamPath string) (string, 
 
 	fp, err := ffmpeg.RunAndMonitor(ctx, m.store, m.log, args...)
 	if err != nil {
+		m.mu.Unlock()
+		m.runCleanupTasks(cleanupTasks)
 		return "", fmt.Errorf("start HLS generator: %w", err)
 	}
 
@@ -120,32 +133,40 @@ func (m *HLSManager) AddViewer(ctx context.Context, streamPath string) (string, 
 		PID:         fp.PID(),
 	})
 
+	m.mu.Unlock()
+	m.runCleanupTasks(cleanupTasks)
 	m.log.Info("HLS generation started", "stream_path", streamPath, "viewer_id", viewerID)
 	return viewerID, nil
 }
 
 func (m *HLSManager) Heartbeat(streamPath, viewerID string) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.cleanupExpiredLocked(time.Now())
+	cleanupTasks := m.cleanupExpiredLocked(time.Now())
 
 	sess, exists := m.sessions[streamPath]
 	if !exists {
+		m.mu.Unlock()
+		m.runCleanupTasks(cleanupTasks)
 		return fmt.Errorf("session not found")
 	}
 	if _, ok := sess.viewers[viewerID]; !ok {
+		m.mu.Unlock()
+		m.runCleanupTasks(cleanupTasks)
 		return fmt.Errorf("session not found")
 	}
 	sess.viewers[viewerID] = time.Now()
+	m.mu.Unlock()
+	m.runCleanupTasks(cleanupTasks)
 	return nil
 }
 
 func (m *HLSManager) RemoveViewer(streamPath, viewerID string) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	var cleanupTasks []hlsCleanupTask
 
 	sess, exists := m.sessions[streamPath]
 	if !exists {
+		m.mu.Unlock()
 		return
 	}
 
@@ -159,7 +180,11 @@ func (m *HLSManager) RemoveViewer(streamPath, viewerID string) {
 	}
 
 	m.log.Info("HLS viewer removed", "stream_path", streamPath, "viewer_id", viewerID, "viewers", len(sess.viewers))
-	m.stopSessionIfUnusedLocked(streamPath, sess, time.Now())
+	if task, ok := m.stopSessionIfUnusedLocked(streamPath, sess, time.Now()); ok {
+		cleanupTasks = append(cleanupTasks, task)
+	}
+	m.mu.Unlock()
+	m.runCleanupTasks(cleanupTasks)
 }
 
 func (m *HLSManager) Shutdown() {
@@ -167,12 +192,20 @@ func (m *HLSManager) Shutdown() {
 	m.wg.Wait()
 
 	m.mu.Lock()
-	defer m.mu.Unlock()
+
+	cleanupDirs := make([]string, 0, len(m.sessions))
 
 	for path, sess := range m.sessions {
 		sess.proc.Stop()
-		os.RemoveAll(sess.playlistDir)
+		cleanupDirs = append(cleanupDirs, sess.playlistDir)
 		delete(m.sessions, path)
+	}
+	m.mu.Unlock()
+
+	for _, dir := range cleanupDirs {
+		if err := os.RemoveAll(dir); err != nil {
+			m.log.Warn("Failed to remove HLS playlist dir during shutdown", "playlist_dir", dir, "error", err)
+		}
 	}
 	m.log.Info("HLSManager shutdown complete")
 }
@@ -196,15 +229,17 @@ func (m *HLSManager) cleanupLoop() {
 		select {
 		case <-ticker.C:
 			m.mu.Lock()
-			m.cleanupExpiredLocked(time.Now())
+			cleanupTasks := m.cleanupExpiredLocked(time.Now())
 			m.mu.Unlock()
+			m.runCleanupTasks(cleanupTasks)
 		case <-m.stopCh:
 			return
 		}
 	}
 }
 
-func (m *HLSManager) cleanupExpiredLocked(now time.Time) {
+func (m *HLSManager) cleanupExpiredLocked(now time.Time) []hlsCleanupTask {
+	tasks := make([]hlsCleanupTask, 0)
 	for streamPath, sess := range m.sessions {
 		for viewerID, lastSeen := range sess.viewers {
 			if now.Sub(lastSeen) > m.viewerTimeout {
@@ -212,34 +247,48 @@ func (m *HLSManager) cleanupExpiredLocked(now time.Time) {
 				m.log.Info("HLS viewer expired", "stream_path", streamPath, "viewer_id", viewerID)
 			}
 		}
-		m.stopSessionIfUnusedLocked(streamPath, sess, now)
+		if task, ok := m.stopSessionIfUnusedLocked(streamPath, sess, now); ok {
+			tasks = append(tasks, task)
+		}
 	}
+	return tasks
 }
 
-func (m *HLSManager) stopSessionIfUnusedLocked(streamPath string, sess *hlsSession, now time.Time) {
+func (m *HLSManager) stopSessionIfUnusedLocked(streamPath string, sess *hlsSession, now time.Time) (hlsCleanupTask, bool) {
 	viewerCount := len(sess.viewers)
 	if viewerCount > 0 {
 		sess.idleSince = time.Time{}
 		m.store.UpdateHLSViewerCount(streamPath, viewerCount)
-		return
+		return hlsCleanupTask{}, false
 	}
 
 	m.store.UpdateHLSViewerCount(streamPath, 0)
 	if sess.idleSince.IsZero() {
 		sess.idleSince = now
 		m.log.Info("HLS session became idle", "stream_path", streamPath, "idle_timeout", m.idleTimeout.String())
-		return
+		return hlsCleanupTask{}, false
 	}
 
 	if now.Sub(sess.idleSince) < m.idleTimeout {
-		return
+		return hlsCleanupTask{}, false
 	}
 
+	idleFor := now.Sub(sess.idleSince)
+	playlistDir := sess.playlistDir
 	sess.proc.Stop()
 	delete(m.sessions, streamPath)
 	m.store.RemoveHLSSession(streamPath)
-	os.RemoveAll(sess.playlistDir)
-	m.log.Info("HLS generation stopped (idle timeout)", "stream_path", streamPath, "idle_for", now.Sub(sess.idleSince).String())
+	m.log.Info("HLS generation stopped (idle timeout)", "stream_path", streamPath, "idle_for", idleFor.String())
+
+	return hlsCleanupTask{streamPath: streamPath, playlistDir: playlistDir, idleFor: idleFor}, true
+}
+
+func (m *HLSManager) runCleanupTasks(tasks []hlsCleanupTask) {
+	for _, task := range tasks {
+		if err := os.RemoveAll(task.playlistDir); err != nil {
+			m.log.Warn("Failed to remove HLS playlist dir", "stream_path", task.streamPath, "playlist_dir", task.playlistDir, "error", err)
+		}
+	}
 }
 
 func newViewerID() (string, error) {

@@ -46,7 +46,17 @@ type Server struct {
 
 	importMu         sync.Mutex
 	importInProgress bool
+
+	statsCache     atomic.Value
+	statsCacheStop chan struct{}
+	statsCacheWG   sync.WaitGroup
 }
+
+type statsCacheSnapshot struct {
+	body []byte
+}
+
+const statsCacheRefreshInterval = 500 * time.Millisecond
 
 // NewServer creates a new HTTP API server.
 func NewServer(
@@ -68,21 +78,27 @@ func NewServer(
 		log.Warn("Failed to start recordings watcher", "dir", recDir, "error", err)
 	}
 
-	return &Server{
-		store:       store,
-		ingest:      ingestRouter,
-		hlsMgr:      hlsMgr,
-		log:         log.With("component", "api"),
-		recDir:      recDir,
-		hlsDir:      hlsDir,
-		rtmpPort:    rtmpPort,
-		configPath:  configPath,
-		ctx:         ctx,
-		recBroker:   recBroker,
-		recWatch:    recWatch,
-		restreamers: make(map[string]*worker.Restreamer),
-		recorders:   make(map[string]*worker.Recorder),
+	s := &Server{
+		store:          store,
+		ingest:         ingestRouter,
+		hlsMgr:         hlsMgr,
+		log:            log.With("component", "api"),
+		recDir:         recDir,
+		hlsDir:         hlsDir,
+		rtmpPort:       rtmpPort,
+		configPath:     configPath,
+		ctx:            ctx,
+		recBroker:      recBroker,
+		recWatch:       recWatch,
+		restreamers:    make(map[string]*worker.Restreamer),
+		recorders:      make(map[string]*worker.Recorder),
+		statsCacheStop: make(chan struct{}),
 	}
+
+	s.refreshStatsCache()
+	s.startStatsCacheLoop()
+
+	return s
 }
 
 // RegisterRoutes registers all API endpoints on the given mux.
@@ -724,16 +740,62 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := statsResponse{
-		Inputs:  make([]inputStats, 0),
-		Outputs: make([]outputStats, 0),
+	if cached, ok := s.statsCache.Load().(statsCacheSnapshot); ok && len(cached.body) > 0 {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(cached.body)
+		return
 	}
 
-	// Server-level stats (self process CPU and memory)
-	resp.Server = getSelfStats()
+	http.Error(w, "stats unavailable", http.StatusServiceUnavailable)
+}
 
-	// Input stats
-	for _, in := range s.store.ListInputs() {
+func (s *Server) startStatsCacheLoop() {
+	s.statsCacheWG.Add(1)
+	go func() {
+		defer s.statsCacheWG.Done()
+
+		var selfProc *process.Process
+		ticker := time.NewTicker(statsCacheRefreshInterval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				s.refreshStatsCacheWithProcess(&selfProc)
+			case <-s.statsCacheStop:
+				return
+			}
+		}
+	}()
+}
+
+func (s *Server) refreshStatsCache() {
+	var selfProc *process.Process
+	s.refreshStatsCacheWithProcess(&selfProc)
+}
+
+func (s *Server) refreshStatsCacheWithProcess(selfProc **process.Process) {
+	resp := s.buildStatsResponse(selfProc)
+	body, err := json.Marshal(resp)
+	if err != nil {
+		s.log.Warn("Failed to refresh stats cache", "error", err)
+		return
+	}
+	s.statsCache.Store(statsCacheSnapshot{body: body})
+}
+
+func (s *Server) buildStatsResponse(selfProc **process.Process) statsResponse {
+	inputs := s.store.ListInputs()
+	outputs := s.store.ListOutputs()
+
+	resp := statsResponse{
+		Server:  s.getSelfStats(selfProc),
+		Inputs:  make([]inputStats, 0, len(inputs)),
+		Outputs: make([]outputStats, 0, len(outputs)),
+	}
+
+	for _, in := range inputs {
 		is := inputStats{
 			StreamPath: in.StreamPath,
 			Mode:       in.Mode,
@@ -744,16 +806,13 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		}
 		if in.PID > 0 {
 			if t, ok := s.store.GetTelemetry(in.PID); ok {
-				is.Telemetry = t
-			} else {
-				is.Telemetry = getProcessTelemetry(in.PID)
+				is.Telemetry = cloneTelemetry(t)
 			}
 		}
 		resp.Inputs = append(resp.Inputs, is)
 	}
 
-	// Output stats
-	for _, out := range s.store.ListOutputs() {
+	for _, out := range outputs {
 		os := outputStats{
 			StreamPath: out.StreamPath,
 			OutputID:   out.OutputID,
@@ -763,49 +822,50 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		}
 		if out.PID > 0 {
 			if t, ok := s.store.GetTelemetry(out.PID); ok {
-				os.Telemetry = t
-			} else {
-				os.Telemetry = getProcessTelemetry(out.PID)
+				os.Telemetry = cloneTelemetry(t)
 			}
 		}
 		resp.Outputs = append(resp.Outputs, os)
 	}
 
-	writeJSON(w, http.StatusOK, resp)
+	return resp
 }
 
-// getSelfStats returns CPU and memory usage for the current process
-func getSelfStats() serverStats {
+func (s *Server) getSelfStats(selfProc **process.Process) serverStats {
 	stats := serverStats{}
-	p, err := process.NewProcess(int32(os.Getpid()))
-	if err != nil {
+	if selfProc == nil {
 		return stats
 	}
-
-	if cpu, err := p.CPUPercent(); err == nil {
-		stats.CPU = cpu
+	if *selfProc == nil {
+		proc, err := process.NewProcess(int32(os.Getpid()))
+		if err != nil {
+			return stats
+		}
+		*selfProc = proc
 	}
-	if mem, err := p.MemoryInfo(); err == nil {
-		stats.Mem = float64(mem.RSS) / (1024 * 1024) // Convert to MB
+
+	if cpu, err := (*selfProc).CPUPercent(); err == nil {
+		stats.CPU = cpu
+	} else {
+		*selfProc = nil
+	}
+	if *selfProc != nil {
+		if mem, err := (*selfProc).MemoryInfo(); err == nil {
+			stats.Mem = float64(mem.RSS) / (1024 * 1024)
+		} else {
+			*selfProc = nil
+		}
 	}
 
 	return stats
 }
 
-// getProcessTelemetry returns real-time CPU/memory for a given PID
-func getProcessTelemetry(pid int) *state.Telemetry {
-	t := &state.Telemetry{}
-	p, err := process.NewProcess(int32(pid))
-	if err != nil {
-		return t
+func cloneTelemetry(t *state.Telemetry) *state.Telemetry {
+	if t == nil {
+		return nil
 	}
-	if cpu, err := p.CPUPercent(); err == nil {
-		t.CPU = cpu
-	}
-	if mem, err := p.MemoryInfo(); err == nil {
-		t.MemMB = float64(mem.RSS) / (1024 * 1024)
-	}
-	return t
+	copy := *t
+	return &copy
 }
 
 // --- /system/export ---
@@ -1360,6 +1420,9 @@ func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 // Shutdown stops all active workers (restreamers, recorders).
 func (s *Server) Shutdown() {
 	s.log.Info("API Server shutting down...")
+
+	close(s.statsCacheStop)
+	s.statsCacheWG.Wait()
 
 	s.mu.Lock()
 	restreamers := s.restreamers

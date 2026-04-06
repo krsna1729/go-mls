@@ -194,8 +194,8 @@ func (w *ProcessWorker) startProcessLoop(ctx context.Context, factory ProcessFac
 	w.goroutineWG.Add(1)
 	go func() {
 		defer func() {
-			w.goroutineWG.Done()
 			w.complete(w.exitErr)
+			w.goroutineWG.Done()
 		}()
 
 		proc, err := factory(ctx)

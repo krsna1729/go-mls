@@ -82,50 +82,19 @@ type Process interface {
 6. `goroutineWG.Done()` ensures cleanup before return
 
 ```go
-func RunProcessWorker(name string, log *logger.Logger, factory ProcessFactory) (*ProcessWorker, error) {
+func RunProcessWorker(ctx context.Context, name string, log *logger.Logger, factory ProcessFactory) (*ProcessWorker, error) {
     w := NewProcessWorker(name, log)
     if err := w.Start(); err != nil {
         return nil, err
     }
-
-    w.goroutineWG.Add(1)
-    go func() {
-        defer func() {
-            w.goroutineWG.Done()
-            w.complete(w.exitErr)
-        }()
-
-        proc, err := factory(context.Background())
-        if err != nil {
-            w.exitErr = err
-            w.setState(WorkerStateStopping)
-            return
-        }
-
-        w.procMu.Lock()
-        w.proc = proc
-        w.procMu.Unlock()
-        w.setState(WorkerStateRunning)
-
-        select {
-        case <-w.stopCh:
-            w.setState(WorkerStateStopping)
-            proc.Stop()
-        case <-proc.Done():
-            if err := proc.Err(); err != nil {
-                w.exitErr = fmt.Errorf("%w: %v", ErrProcessFailed, err)
-            }
-            w.setState(WorkerStateStopping)
-        }
-    }()
-
+    w.startProcessLoop(ctx, factory)
     return w, nil
 }
 ```
 
 ## Typed Errors
 
-Located in `internal/worker/errors.go`:
+Located in `internal/worker/process_errors.go`:
 
 ```go
 var (
@@ -180,8 +149,10 @@ appCtx.Shutdown()       // 2. Stops Hub, Ingest, HLSManager
 
 ## Data Race Prevention
 
-The `ProcessWorker` uses `procMu` mutex to protect `proc` field:
+The `ProcessWorker` uses `procMu` mutex to protect the `proc` field:
 
 - `Stop()` locks before checking `w.proc`
 - Factory goroutine locks before setting `w.proc`
+- `Stop()` clears `w.proc` under lock before calling `proc.Stop()`
 - Prevents races between `Stop()` and goroutine assignment
+- Prevents double-stop panics when multiple goroutines call `Stop()` concurrently

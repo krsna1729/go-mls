@@ -117,6 +117,8 @@ type statsResponse struct {
 `inputStats` includes `remote_addr` for push publishers and optional per-process telemetry.  
 `outputStats` includes current status, error state, and optional per-process telemetry.
 
+The `/stats` response is served from a background-refreshed in-memory snapshot. The handler does not probe processes or rebuild JSON on the request path; worker telemetry and self usage are refreshed asynchronously and the latest precomputed payload is returned.
+
 ---
 
 ## HTTP API Endpoints

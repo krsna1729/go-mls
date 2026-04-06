@@ -459,4 +459,3 @@ func TestProcessWorker_GoroutineLeak(t *testing.T) {
 	assert.LessOrEqual(t, after-baseline, 2,
 		"goroutine leak: baseline=%d after=%d", baseline, after)
 }
-

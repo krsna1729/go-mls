@@ -64,6 +64,13 @@ func (h *rtspHub) Start() error {
 	h.lifetimeMu.Lock()
 	defer h.lifetimeMu.Unlock()
 
+	// Renew lifecycle context on restart after Stop().
+	select {
+	case <-h.ctx.Done():
+		h.ctx, h.cancel = context.WithCancel(context.Background())
+	default:
+	}
+
 	srv := &gortsplib.Server{
 		Handler:      h,
 		RTSPAddress:  h.addr,
@@ -81,31 +88,18 @@ func (h *rtspHub) Start() error {
 		},
 	}
 
+	if err := srv.Start(); err != nil {
+		h.mu.Lock()
+		h.started = false
+		h.server = nil
+		h.mu.Unlock()
+		return fmt.Errorf("RTSP server start: %w", err)
+	}
+
 	h.mu.Lock()
 	h.server = srv
+	h.started = true
 	h.mu.Unlock()
-
-	ready := make(chan error, 1)
-	go func() {
-		ready <- srv.Start()
-	}()
-
-	select {
-	case err := <-ready:
-		if err != nil {
-			h.mu.Lock()
-			h.started = false
-			h.mu.Unlock()
-			return fmt.Errorf("RTSP server start: %w", err)
-		}
-		h.mu.Lock()
-		h.started = true
-		h.mu.Unlock()
-	case <-time.After(2 * time.Second):
-		h.mu.Lock()
-		h.started = true
-		h.mu.Unlock()
-	}
 
 	h.log.Info("RTSP Hub listening", "addr", h.Addr())
 	return nil
@@ -121,6 +115,8 @@ func (h *rtspHub) Stop() {
 	started := h.started
 	srv := h.server
 	h.started = false
+	h.server = nil
+	h.boundAddr = ""
 	h.mu.Unlock()
 
 	if started && srv != nil {
