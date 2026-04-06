@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"go-mls/internal/ffmpeg"
@@ -16,6 +17,7 @@ type Recorder struct {
 	*ProcessWorker
 	store      *state.Store
 	log        *logger.Logger
+	mu         sync.Mutex
 	recording  *state.Recording
 	recDir     string
 	rtmpPort   int
@@ -76,18 +78,21 @@ func StartRecorder(ctx context.Context, store *state.Store, log *logger.Logger, 
 			return nil, err
 		}
 
+		r.mu.Lock()
 		r.recording = rec
-		// WithProcess modifies proc in place (protected by procMu inside ProcessWorker)
+		r.mu.Unlock()
+
+		// Ensure the worker pointer is initialized before the factory can run.
 		r.ProcessWorker.WithProcess(fp)
 		return fp, nil
 	}
 
-	pw, err := RunProcessWorker(ctx, "recorder:"+streamPath, log, factory)
-	if err != nil {
+	pw := NewProcessWorker("recorder:"+streamPath, log)
+	r.ProcessWorker = pw
+	if _, err := pw.StartWithFactory(ctx, factory); err != nil {
 		return nil, err
 	}
 
-	r.ProcessWorker = pw
 	return r, nil
 }
 
@@ -95,9 +100,12 @@ func (r *Recorder) Stop() {
 	if r.ProcessWorker != nil {
 		r.ProcessWorker.Stop()
 	}
-	if r.recording != nil {
-		r.recording.Status = state.RecordingStatusStopped
-		r.log.Info("Recording stopped", "filename", r.recording.Filename)
+
+	r.mu.Lock()
+	rec := r.recording
+	r.mu.Unlock()
+	if rec != nil {
+		r.log.Info("Recording stopped", "filename", rec.Filename)
 	}
 }
 

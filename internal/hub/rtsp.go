@@ -60,7 +60,7 @@ func (h *rtspHub) SetOnUnpublish(handler func(string)) {
 }
 
 func (h *rtspHub) Start() error {
-	h.server = &gortsplib.Server{
+	srv := &gortsplib.Server{
 		Handler:      h,
 		RTSPAddress:  h.addr,
 		ReadTimeout:  5 * time.Second,
@@ -70,25 +70,37 @@ func (h *rtspHub) Start() error {
 			if err != nil {
 				return ln, err
 			}
+			h.mu.Lock()
 			h.boundAddr = ln.Addr().String()
+			h.mu.Unlock()
 			return ln, nil
 		},
 	}
 
+	h.mu.Lock()
+	h.server = srv
+	h.mu.Unlock()
+
 	ready := make(chan error, 1)
 	go func() {
-		ready <- h.server.Start()
+		ready <- srv.Start()
 	}()
 
 	select {
 	case err := <-ready:
 		if err != nil {
+			h.mu.Lock()
 			h.started = false
+			h.mu.Unlock()
 			return fmt.Errorf("RTSP server start: %w", err)
 		}
+		h.mu.Lock()
 		h.started = true
+		h.mu.Unlock()
 	case <-time.After(2 * time.Second):
+		h.mu.Lock()
 		h.started = true
+		h.mu.Unlock()
 	}
 
 	h.log.Info("RTSP Hub listening", "addr", h.Addr())
@@ -97,14 +109,22 @@ func (h *rtspHub) Start() error {
 
 func (h *rtspHub) Stop() {
 	h.cancel()
-	if h.started && h.server != nil {
-		h.server.Close()
-	}
+
+	h.mu.Lock()
+	started := h.started
+	srv := h.server
 	h.started = false
+	h.mu.Unlock()
+
+	if started && srv != nil {
+		srv.Close()
+	}
 	h.log.Info("RTSP Hub stopped")
 }
 
 func (h *rtspHub) Addr() string {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
 	if h.boundAddr != "" {
 		return h.boundAddr
 	}

@@ -1074,8 +1074,8 @@ func (s *Server) handleHLSStart(w http.ResponseWriter, r *http.Request) {
 	playlistURL := path.Join("/hls", streamPath, "index.m3u8")
 	playlistPath := filepath.Join(s.hlsDir, streamPath, "index.m3u8")
 
-	// Probe for playlist readiness so clients can decide whether to delay initial load.
-	deadline := time.Now().Add(12 * time.Second)
+	// Probe for playlist readiness briefly so API calls remain responsive under load.
+	deadline := time.Now().Add(3 * time.Second)
 	playlistReady := false
 	for time.Now().Before(deadline) {
 		b, readErr := os.ReadFile(playlistPath)
@@ -1083,7 +1083,7 @@ func (s *Server) handleHLSStart(w http.ResponseWriter, r *http.Request) {
 			playlistReady = true
 			break
 		}
-		time.Sleep(250 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 	}
 
 	if !playlistReady {

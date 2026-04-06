@@ -94,23 +94,34 @@ func (h *RTMPHub) SetOnUnpublish(handler func(string)) {
 
 // Start begins listening for RTMP connections.
 func (h *RTMPHub) Start() error {
-	var err error
-	h.listener, err = net.Listen("tcp", h.addr)
+	ln, err := net.Listen("tcp", h.addr)
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", h.addr, err)
 	}
-	h.log.Info("RTMP Hub listening", "addr", h.listener.Addr().String())
+
+	h.mu.Lock()
+	old := h.listener
+	h.listener = ln
+	h.mu.Unlock()
+	if old != nil {
+		_ = old.Close()
+	}
+
+	h.log.Info("RTMP Hub listening", "addr", ln.Addr().String())
 
 	h.wg.Add(1)
-	go h.acceptLoop()
+	go h.acceptLoop(ln)
 	return nil
 }
 
-func (h *RTMPHub) acceptLoop() {
+func (h *RTMPHub) acceptLoop(listener net.Listener) {
 	defer h.wg.Done()
 	for {
-		conn, err := h.listener.Accept()
+		conn, err := listener.Accept()
 		if err != nil {
+			if errors.Is(err, net.ErrClosed) {
+				return
+			}
 			select {
 			case <-h.ctx.Done():
 				return
@@ -369,9 +380,16 @@ func (h *RTMPHub) handleSubscriber(sc *gortmplib.ServerConn, conn net.Conn, stre
 // Stop gracefully shuts down the hub.
 func (h *RTMPHub) Stop() {
 	h.cancel()
-	if h.listener != nil {
-		h.listener.Close()
+
+	h.mu.Lock()
+	ln := h.listener
+	h.listener = nil
+	h.mu.Unlock()
+
+	if ln != nil {
+		_ = ln.Close()
 	}
+
 	h.mu.Lock()
 	for path, s := range h.streams {
 		s.publisher.(*gortmplib.ServerConn).RW.(net.Conn).Close()
@@ -384,6 +402,8 @@ func (h *RTMPHub) Stop() {
 
 // Addr returns the listener address.
 func (h *RTMPHub) Addr() string {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
 	if h.listener != nil {
 		return h.listener.Addr().String()
 	}
