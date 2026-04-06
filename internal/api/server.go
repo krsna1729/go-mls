@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go-mls/internal/ingest"
@@ -42,6 +43,9 @@ type Server struct {
 	mu          sync.RWMutex
 	restreamers map[string]*worker.Restreamer // keyed by stream_path/output_id
 	recorders   map[string]*worker.Recorder   // keyed by stream_path
+
+	importMu         sync.Mutex
+	importInProgress bool
 }
 
 // NewServer creates a new HTTP API server.
@@ -893,118 +897,158 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Stop all current workers
+	s.importMu.Lock()
+	if s.importInProgress {
+		s.importMu.Unlock()
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "import already in progress"})
+		return
+	}
+	s.importInProgress = true
+	s.importMu.Unlock()
+
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "accepted"})
+
+	go func(relays []importRelay) {
+		defer func() {
+			s.importMu.Lock()
+			s.importInProgress = false
+			s.importMu.Unlock()
+		}()
+		s.applyImport(relays)
+	}(relays)
+}
+
+func (s *Server) applyImport(relays []importRelay) {
+	// Stop all current workers first so import writes a clean runtime state.
 	s.mu.Lock()
-	for key, rs := range s.restreamers {
-		rs.Stop()
-		delete(s.restreamers, key)
-	}
-	for key, rec := range s.recorders {
-		rec.Stop()
-		delete(s.recorders, key)
-	}
+	restreamers := s.restreamers
+	recorders := s.recorders
+	s.restreamers = make(map[string]*worker.Restreamer)
+	s.recorders = make(map[string]*worker.Recorder)
 	s.mu.Unlock()
 
-	// Fully clear existing inputs via ingest router so pullers/acceptors and store state are reset.
+	for _, rs := range restreamers {
+		rs.Stop()
+	}
+	for _, rec := range recorders {
+		rec.Stop()
+	}
+
+	// Clear existing routing/state definitions before recreating from imported payload.
 	for _, in := range s.store.ListInputs() {
 		if err := s.ingest.UnregisterInput(in.StreamPath); err != nil {
 			s.log.Warn("Failed to unregister input during import", "stream_path", in.StreamPath, "error", err)
 		}
 	}
-
-	// Give hub/puller teardown a brief moment so re-registering the same stream path does not race
-	// with stale publishers still being cleaned up.
-	time.Sleep(1 * time.Second)
-
-	// Clear any residual output definitions that may remain if no worker was active.
 	for _, out := range s.store.ListOutputs() {
 		if err := s.store.RemoveOutput(out.StreamPath, out.OutputID); err != nil {
 			s.log.Warn("Failed to remove output during import", "stream_path", out.StreamPath, "output_id", out.OutputID, "error", err)
 		}
 	}
 
-	var totalInputs, totalOutputs int
+	var totalInputs atomic.Int64
+	var totalOutputs atomic.Int64
+	var startedOutputs atomic.Int64
+	var wg sync.WaitGroup
 
 	for _, relay := range relays {
-		in := &state.Input{StreamPath: relay.InputName, RemoteURL: relay.InputURL}
-		if err := s.ingest.RegisterInput(s.ctx, in); err != nil {
-			s.log.Error("Failed to register input", "input_name", relay.InputName, "error", err)
-			continue
-		}
-		totalInputs++
+		relay := relay
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
 
-		inputReadyErr := s.waitForInputActive(relay.InputName, 45*time.Second)
-
-		// Create outputs
-		for _, out := range relay.Outputs {
-			outputID := out.OutputName
-			if outputID == "" {
-				outputID = out.OutputURL
+			inputName := strings.TrimSpace(relay.InputName)
+			if inputName == "" {
+				s.log.Warn("Skipping imported relay with empty input_name")
+				return
 			}
 
-			preset, _ := state.GetPreset(out.PlatformPreset)
-			videoArgs, audioArgs := preset.ToArgs()
-
-			if opts := out.FFmpegOptions; opts != nil {
-				if vc, ok := opts["video_codec"]; ok && vc != "" {
-					videoArgs = append(videoArgs, "-c:v", vc)
-				}
-				if ac, ok := opts["audio_codec"]; ok && ac != "" {
-					audioArgs = append(audioArgs, "-c:a", ac)
-				}
-				if res, ok := opts["resolution"]; ok && res != "" {
-					videoArgs = append(videoArgs, "-s", res)
-				}
-				if fps, ok := opts["framerate"]; ok && fps != "" {
-					videoArgs = append(videoArgs, "-r", fps)
-				}
-				if br, ok := opts["bitrate"]; ok && br != "" {
-					videoArgs = append(videoArgs, "-b:v", br)
-				}
-				if rot, ok := opts["rotation"]; ok && rot != "" {
-					videoArgs = append(videoArgs, "-vf", rot)
-				}
+			in := &state.Input{StreamPath: inputName, RemoteURL: relay.InputURL}
+			if err := s.ingest.RegisterInput(s.ctx, in); err != nil {
+				s.log.Error("Failed to register input", "input_name", inputName, "error", err)
+				return
 			}
+			totalInputs.Add(1)
 
-			stateOut := &state.Output{
-				StreamPath:     relay.InputName,
-				OutputID:       outputID,
-				RemoteURL:      out.OutputURL,
-				VideoArgs:      videoArgs,
-				AudioArgs:      audioArgs,
-				PlatformPreset: out.PlatformPreset,
-				FFmpegOptions:  copyStringMap(out.FFmpegOptions),
-				Status:         state.OutputStatusStopped,
-			}
-
-			if err := s.store.AddOutput(stateOut); err != nil {
-				s.log.Error("Failed to add output", "output_name", outputID, "error", err)
-				continue
-			}
-
+			inputReadyErr := s.waitForInputActive(inputName, 10*time.Second)
 			if inputReadyErr != nil {
-				s.store.UpdateOutputStatus(relay.InputName, outputID, state.OutputStatusError, inputReadyErr.Error())
-				s.log.Warn("Output kept but not started", "stream_path", relay.InputName, "output_id", outputID, "error", inputReadyErr)
-				continue
+				s.log.Warn("Imported input did not become active before output start", "stream_path", inputName, "error", inputReadyErr)
 			}
 
-			rs, err := worker.StartRestreamer(s.ctx, s.store, s.log, stateOut, s.rtmpPort)
-			if err != nil {
-				s.store.UpdateOutputStatus(relay.InputName, outputID, state.OutputStatusError, err.Error())
-				s.log.Error("Failed to start restreamer", "output_id", outputID, "error", err)
-				continue
-			}
+			for _, out := range relay.Outputs {
+				outputID := out.OutputName
+				if outputID == "" {
+					outputID = out.OutputURL
+				}
+				if outputID == "" {
+					s.log.Warn("Skipping imported output with empty output identifier", "stream_path", inputName)
+					continue
+				}
 
-			key := relay.InputName + "/" + outputID
-			s.mu.Lock()
-			s.restreamers[key] = rs
-			s.mu.Unlock()
-			totalOutputs++
-		}
+				preset, _ := state.GetPreset(out.PlatformPreset)
+				videoArgs, audioArgs := preset.ToArgs()
+
+				if opts := out.FFmpegOptions; opts != nil {
+					if vc, ok := opts["video_codec"]; ok && vc != "" {
+						videoArgs = append(videoArgs, "-c:v", vc)
+					}
+					if ac, ok := opts["audio_codec"]; ok && ac != "" {
+						audioArgs = append(audioArgs, "-c:a", ac)
+					}
+					if res, ok := opts["resolution"]; ok && res != "" {
+						videoArgs = append(videoArgs, "-s", res)
+					}
+					if fps, ok := opts["framerate"]; ok && fps != "" {
+						videoArgs = append(videoArgs, "-r", fps)
+					}
+					if br, ok := opts["bitrate"]; ok && br != "" {
+						videoArgs = append(videoArgs, "-b:v", br)
+					}
+					if rot, ok := opts["rotation"]; ok && rot != "" {
+						videoArgs = append(videoArgs, "-vf", rot)
+					}
+				}
+
+				stateOut := &state.Output{
+					StreamPath:     inputName,
+					OutputID:       outputID,
+					RemoteURL:      out.OutputURL,
+					VideoArgs:      videoArgs,
+					AudioArgs:      audioArgs,
+					PlatformPreset: out.PlatformPreset,
+					FFmpegOptions:  copyStringMap(out.FFmpegOptions),
+					Status:         state.OutputStatusStopped,
+				}
+
+				if err := s.store.AddOutput(stateOut); err != nil {
+					s.log.Error("Failed to add output", "stream_path", inputName, "output_id", outputID, "error", err)
+					continue
+				}
+				totalOutputs.Add(1)
+
+				if inputReadyErr != nil {
+					s.store.UpdateOutputStatus(inputName, outputID, state.OutputStatusError, inputReadyErr.Error())
+					continue
+				}
+
+				rs, err := worker.StartRestreamer(s.ctx, s.store, s.log, stateOut, s.rtmpPort)
+				if err != nil {
+					s.store.UpdateOutputStatus(inputName, outputID, state.OutputStatusError, err.Error())
+					s.log.Warn("Imported output failed to start", "stream_path", inputName, "output_id", outputID, "error", err)
+					continue
+				}
+
+				key := inputName + "/" + outputID
+				s.mu.Lock()
+				s.restreamers[key] = rs
+				s.mu.Unlock()
+				startedOutputs.Add(1)
+			}
+		}()
 	}
 
-	s.log.Info("Configuration imported", "inputs", totalInputs, "outputs", totalOutputs)
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	wg.Wait()
+	s.log.Info("Configuration imported", "inputs", totalInputs.Load(), "outputs", totalOutputs.Load(), "started_outputs", startedOutputs.Load())
 }
 
 // --- /hls/start ---

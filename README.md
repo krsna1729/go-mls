@@ -145,6 +145,50 @@ Useful functions for interactive testing:
 - `verify_stream_active`, `verify_profile_exact`, `verify_profile_dims_any_order`
 - `start_recording`, `start_hls_viewer`, `stop_hls_viewer`, `export_config`, `import_config`
 
+### Partial Harness Setup for Manual UI/Import Testing
+
+When you only want sources running (without full scripted e2e phases), start `go-mls`, keep a persistent `qa-harness` shell alive, and run source helpers only.
+
+```bash
+# Host shell: start go-mls service
+docker compose up -d go-mls
+
+# Host shell: run persistent qa-harness shell
+docker compose run --rm --entrypoint /bin/sh qa-harness
+```
+
+Inside the `qa-harness` shell:
+
+```sh
+# Prevent auto-running e2e_main when sourcing
+E2E_SOURCE_ONLY=1 . /e2e-test.sh
+
+# Start local harness RTMP and source publishers only
+start_local_rtmp_server
+start_pull_source_publisher      # publishes to rtmp://127.0.0.1:1935/live/testsrc
+start_push_source                # publishes to rtmp://go-mls:1935/push-stream
+
+# Keep shell alive while testing from browser/API
+tail -f /dev/null
+```
+
+From the host, run a manual import and verify UI behavior:
+
+```bash
+curl -sS -X POST \
+  -H 'Content-Type: application/json' \
+  --data-binary @relay_config.json \
+  http://localhost:8080/system/import
+
+# Optional quick API verification
+curl -sS http://localhost:8080/stats | head -c 1200
+```
+
+Notes:
+- This path is useful for import/UI checks because it avoids running all e2e phases.
+- `qa-harness` must stay running for pull/push publishers to remain active.
+- If re-sourcing helper functions repeatedly, `start_local_rtmp_server` can log port-in-use warnings if nginx is already running.
+
 The e2e tests verify:
 - Pull ingest from local RTMP source within `qa-harness`
 - Push ingest from local FFmpeg publisher within `qa-harness`
