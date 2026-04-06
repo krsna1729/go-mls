@@ -560,3 +560,136 @@ func TestOutputStartStopRoutes(t *testing.T) {
 		})
 	}
 }
+
+// TestConcurrentInputs creates many distinct input streams in parallel.
+// This exercises the Store's input map locking under concurrent POST /inputs
+// requests and verifies that all operations land without races or 5xx errors.
+func TestConcurrentInputs(t *testing.T) {
+	for _, hubType := range []string{"rtmp", "rtsp"} {
+		t.Run(hubType, func(t *testing.T) {
+			env := setupTestEnv(t, hubType)
+			defer env.shutdown()
+
+			const n = 10
+			var wg sync.WaitGroup
+			wg.Add(n)
+			errs := make([]error, n)
+			statuses := make([]int, n)
+
+			for i := 0; i < n; i++ {
+				go func(idx int) {
+					defer wg.Done()
+					path := fmt.Sprintf("concurrent-in-%d", idx)
+					resp, err := env.doRequest("POST", "/inputs", map[string]interface{}{
+						"stream_path": path,
+					})
+					errs[idx] = err
+					if resp != nil {
+						statuses[idx] = resp.StatusCode
+						resp.Body.Close()
+					}
+				}(i)
+			}
+			wg.Wait()
+
+			for i := 0; i < n; i++ {
+				require.NoError(t, errs[i], "input %d POST failed", i)
+				require.Equal(t, http.StatusOK, statuses[i], "input %d status", i)
+			}
+
+			// All inputs must appear in the store.
+			resp, err := env.doRequest("GET", "/inputs", nil)
+			require.NoError(t, err)
+			require.Equal(t, http.StatusOK, resp.StatusCode)
+
+			var inputs []map[string]interface{}
+			err = json.NewDecoder(resp.Body).Decode(&inputs)
+			resp.Body.Close()
+			require.NoError(t, err)
+			require.Len(t, inputs, n)
+
+			// Clean up.
+			for i := 0; i < n; i++ {
+				path := fmt.Sprintf("concurrent-in-%d", i)
+				resp, err = env.doRequest("DELETE", "/inputs?stream="+path, nil)
+				require.NoError(t, err)
+				resp.Body.Close()
+			}
+		})
+	}
+}
+
+// TestConcurrentStatsReads hammers GET /stats while inputs and outputs are
+// being added concurrently.  The stats handler reads live from the Store, so
+// any unprotected map iteration will surface as a race.
+func TestConcurrentStatsReads(t *testing.T) {
+	for _, hubType := range []string{"rtmp", "rtsp"} {
+		t.Run(hubType, func(t *testing.T) {
+			env := setupTestEnv(t, hubType)
+			defer env.shutdown()
+
+			const streams = 5
+			for i := 0; i < streams; i++ {
+				path := fmt.Sprintf("stats-stream-%d", i)
+				resp, err := env.doRequest("POST", "/inputs", map[string]interface{}{
+					"stream_path": path,
+				})
+				require.NoError(t, err)
+				resp.Body.Close()
+				env.markInputActive(path)
+			}
+
+			stop := make(chan struct{})
+
+			// Concurrent stat readers.
+			const readers = 8
+			var readerWG sync.WaitGroup
+			readerWG.Add(readers)
+			for i := 0; i < readers; i++ {
+				go func() {
+					defer readerWG.Done()
+					for {
+						select {
+						case <-stop:
+							return
+						default:
+						}
+						resp, err := env.doRequest("GET", "/stats", nil)
+						if err == nil {
+							resp.Body.Close()
+						}
+					}
+				}()
+			}
+
+			// Concurrent output writers.
+			var writerWG sync.WaitGroup
+			for i := 0; i < streams; i++ {
+				writerWG.Add(1)
+				go func(idx int) {
+					defer writerWG.Done()
+					path := fmt.Sprintf("stats-stream-%d", idx)
+					resp, _ := env.doRequest("POST", "/outputs", map[string]interface{}{
+						"stream_path": path,
+						"output_id":   fmt.Sprintf("stats-out-%d", idx),
+						"remote_url":  fmt.Sprintf("file://%s/stats-out%d.flv", env.tempDir, idx),
+					})
+					if resp != nil {
+						resp.Body.Close()
+					}
+					time.Sleep(20 * time.Millisecond)
+					resp, _ = env.doRequest("DELETE",
+						fmt.Sprintf("/outputs?stream=%s&id=stats-out-%d", path, idx), nil)
+					if resp != nil {
+						resp.Body.Close()
+					}
+				}(i)
+			}
+
+			writerWG.Wait()
+			close(stop)
+			readerWG.Wait()
+		})
+	}
+}
+

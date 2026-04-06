@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"runtime"
+	"sync"
 	"testing"
 	"time"
 
@@ -153,11 +154,16 @@ func (m *mockProcess) Done() <-chan struct{} {
 func (m *mockProcess) Err() error { return nil }
 
 type mockProcessWithDone struct {
-	blocked chan struct{}
+	blocked  chan struct{}
+	stopOnce sync.Once
 }
 
 func (m *mockProcessWithDone) PID() int { return 0 }
-func (m *mockProcessWithDone) Stop()    { close(m.blocked) }
+func (m *mockProcessWithDone) Stop() {
+	// Stop is expected to be idempotent; the process owner may call it more
+	// than once (e.g. via ProcessWorker.Stop() and startProcessLoop).
+	m.stopOnce.Do(func() { close(m.blocked) })
+}
 func (m *mockProcessWithDone) Wait() error {
 	<-m.blocked
 	return nil
@@ -301,3 +307,156 @@ func TestProcessWorker_Shutdown(t *testing.T) {
 	// Verify state is stopped
 	assert.Equal(t, WorkerStateStopped, w.State())
 }
+
+// TestProcessWorker_ConcurrentStop fires Stop() from many goroutines at once.
+// procMu protects w.proc, so the race detector must stay silent.
+func TestProcessWorker_ConcurrentStop(t *testing.T) {
+	log := logger.NewLogger()
+
+	blocked := make(chan struct{})
+	w, err := RunProcessWorker(context.Background(), "concurrent-stop", log, func(ctx context.Context) (Process, error) {
+		return &mockProcessWithDone{blocked: blocked}, nil
+	})
+	assert.NoError(t, err)
+
+	// Give the factory goroutine time to assign the process.
+	time.Sleep(50 * time.Millisecond)
+
+	const n = 16
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			w.Stop()
+		}()
+	}
+	wg.Wait()
+
+	select {
+	case <-w.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker did not finish after concurrent Stop() calls")
+	}
+}
+
+// TestProcessWorker_ConcurrentStopAndWait exercises concurrent Stop() and
+// Wait() calls to ensure no goroutine blocks indefinitely on a closed channel.
+func TestProcessWorker_ConcurrentStopAndWait(t *testing.T) {
+	log := logger.NewLogger()
+
+	blocked := make(chan struct{})
+	w, err := RunProcessWorker(context.Background(), "stop-and-wait", log, func(ctx context.Context) (Process, error) {
+		return &mockProcessWithDone{blocked: blocked}, nil
+	})
+	assert.NoError(t, err)
+
+	time.Sleep(50 * time.Millisecond)
+
+	const n = 8
+	var wg sync.WaitGroup
+	wg.Add(n * 2)
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			w.Stop()
+		}()
+		go func() {
+			defer wg.Done()
+			// Wait must return, not hang.
+			done := make(chan struct{})
+			go func() {
+				_ = w.Wait()
+				close(done)
+			}()
+			select {
+			case <-done:
+			case <-time.After(3 * time.Second):
+				t.Errorf("Wait() blocked indefinitely")
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+// TestProcessWorker_WithProcessConcurrent verifies that WithProcess() is
+// safe to call from one goroutine while Stop() is called from another.
+func TestProcessWorker_WithProcessConcurrent(t *testing.T) {
+	log := logger.NewLogger()
+	w := NewProcessWorker("concurrent-with-proc", log)
+
+	var wg sync.WaitGroup
+	const n = 20
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		if i%2 == 0 {
+			go func() {
+				defer wg.Done()
+				w.WithProcess(&mockProcess{})
+			}()
+		} else {
+			go func() {
+				defer wg.Done()
+				w.Stop()
+			}()
+		}
+	}
+	wg.Wait()
+}
+
+// TestBaseWorker_ConcurrentStop ensures that concurrent BaseWorker.Stop()
+// calls never panic or deadlock on the buffered stopCh.
+func TestBaseWorker_ConcurrentStop(t *testing.T) {
+	log := logger.NewLogger()
+	w := NewBaseWorker("concurrent-base-stop", log)
+	_ = w.Start()
+
+	const n = 20
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			w.Stop()
+		}()
+	}
+	wg.Wait()
+
+	// Drain the stop channel so we can call complete.
+	select {
+	case <-w.stopCh:
+	default:
+	}
+	w.complete(nil)
+	assert.Equal(t, WorkerStateStopped, w.State())
+}
+
+// TestProcessWorker_GoroutineLeak verifies that the internal goroutine
+// launched by RunProcessWorker exits after the worker completes.
+func TestProcessWorker_GoroutineLeak(t *testing.T) {
+	log := logger.NewLogger()
+
+	time.Sleep(50 * time.Millisecond)
+	baseline := runtime.NumGoroutine()
+
+	blocked := make(chan struct{})
+	w, err := RunProcessWorker(context.Background(), "leak-check", log, func(ctx context.Context) (Process, error) {
+		return &mockProcessWithDone{blocked: blocked}, nil
+	})
+	assert.NoError(t, err)
+
+	time.Sleep(50 * time.Millisecond)
+	w.Stop()
+
+	select {
+	case <-w.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker did not finish")
+	}
+
+	time.Sleep(100 * time.Millisecond)
+	after := runtime.NumGoroutine()
+	assert.LessOrEqual(t, after-baseline, 2,
+		"goroutine leak: baseline=%d after=%d", baseline, after)
+}
+

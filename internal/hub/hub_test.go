@@ -2,6 +2,7 @@ package hub
 
 import (
 	"net"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -411,6 +412,236 @@ func TestRTSPHub_PublishReject(t *testing.T) {
 	err := h.Start()
 	require.NoError(t, err)
 	defer h.Stop()
+}
+
+// TestRTMPHub_ConcurrentStarts fires Start() from many goroutines simultaneously.
+// With the listener-swap fix each call creates its own listener under h.mu, so
+// the race detector must see no data race.
+func TestRTMPHub_ConcurrentStarts(t *testing.T) {
+	log := logger.NewLogger()
+	h := NewRTMPHub(log, "127.0.0.1", 0)
+	defer h.Stop()
+
+	const n = 8
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			_ = h.Start()
+		}()
+	}
+	wg.Wait()
+
+	// Hub must be usable after concurrent starts.
+	assert.NotEmpty(t, h.Addr())
+}
+
+// TestRTSPHub_ConcurrentStarts is the RTSP analogue.
+func TestRTSPHub_ConcurrentStarts(t *testing.T) {
+	log := logger.NewLogger()
+	h := NewRTSPHub(log, "127.0.0.1", 0)
+	defer h.Stop()
+
+	const n = 4 // fewer because each goroutine blocks for up to 2 s
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			_ = h.Start()
+		}()
+	}
+	wg.Wait()
+
+	assert.NotEmpty(t, h.Addr())
+}
+
+// TestRTMPHub_ConcurrentStartStop_Mixed fires concurrent Stop() calls (a real
+// scenario where multiple error-handling goroutines race to stop the hub), then
+// verifies the hub can be cleanly restarted.  With lifetimeMu the first Stop()
+// does the work; the rest queue and return as no-ops.
+func TestRTMPHub_ConcurrentStartStop_Mixed(t *testing.T) {
+	log := logger.NewLogger()
+	h := NewRTMPHub(log, "127.0.0.1", 0)
+
+	require.NoError(t, h.Start())
+
+	const n = 10
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			h.Stop()
+		}()
+	}
+	wg.Wait()
+
+	// After all concurrent Stops, the hub must be restartable.
+	require.NoError(t, h.Start(), "hub must be restartable after concurrent Stop()s")
+	h.Stop()
+}
+
+// TestRTSPHub_ConcurrentStartStop_Mixed is the RTSP analogue.
+func TestRTSPHub_ConcurrentStartStop_Mixed(t *testing.T) {
+	log := logger.NewLogger()
+	h := NewRTSPHub(log, "127.0.0.1", 0)
+
+	require.NoError(t, h.Start())
+
+	const n = 6
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			h.Stop()
+		}()
+	}
+	wg.Wait()
+
+	// Hub must be restartable after concurrent Stop()s.
+	require.NoError(t, h.Start(), "hub must be restartable after concurrent Stop()s")
+	h.Stop()
+}
+
+// TestRTMPHub_AddrConcurrentAccess spins up readers of Addr() while
+// Start() and Stop() are cycling.  Any unprotected read of h.listener
+// or h.addr triggers the race detector.
+func TestRTMPHub_AddrConcurrentAccess(t *testing.T) {
+	log := logger.NewLogger()
+	h := NewRTMPHub(log, "127.0.0.1", 0)
+	require.NoError(t, h.Start())
+	defer h.Stop()
+
+	stop := make(chan struct{})
+
+	// Background readers.
+	const readers = 8
+	var readerWG sync.WaitGroup
+	readerWG.Add(readers)
+	for i := 0; i < readers; i++ {
+		go func() {
+			defer readerWG.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					_ = h.Addr()
+					runtime.Gosched()
+				}
+			}
+		}()
+	}
+
+	// Background Start/Stop cycling.
+	var cycleWG sync.WaitGroup
+	cycleWG.Add(1)
+	go func() {
+		defer cycleWG.Done()
+		for i := 0; i < 5; i++ {
+			h.Stop()
+			_ = h.Start()
+		}
+	}()
+
+	cycleWG.Wait()
+	close(stop)
+	readerWG.Wait()
+}
+
+// TestRTSPHub_AddrConcurrentAccess is the RTSP analogue.
+func TestRTSPHub_AddrConcurrentAccess(t *testing.T) {
+	log := logger.NewLogger()
+	h := NewRTSPHub(log, "127.0.0.1", 0)
+	require.NoError(t, h.Start())
+	defer h.Stop()
+
+	stop := make(chan struct{})
+
+	const readers = 8
+	var readerWG sync.WaitGroup
+	readerWG.Add(readers)
+	for i := 0; i < readers; i++ {
+		go func() {
+			defer readerWG.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					_ = h.Addr()
+					runtime.Gosched()
+				}
+			}
+		}()
+	}
+
+	// One Stop/Start cycle is enough to stress the RTSP server lifecycle.
+	h.Stop()
+	_ = h.Start()
+
+	close(stop)
+	readerWG.Wait()
+}
+
+// TestRTMPHub_GoroutineLeak verifies that every acceptLoop goroutine
+// spawned by Start() is cleaned up when Stop() returns.
+func TestRTMPHub_GoroutineLeak(t *testing.T) {
+	log := logger.NewLogger()
+
+	// Warm-up: let the runtime settle so we get a reliable baseline.
+	time.Sleep(50 * time.Millisecond)
+	baseline := runtime.NumGoroutine()
+
+	const cycles = 3
+	h := NewRTMPHub(log, "127.0.0.1", 0)
+	for i := 0; i < cycles; i++ {
+		require.NoError(t, h.Start())
+		h.Stop()
+	}
+
+	// Give goroutines a moment to fully exit.
+	time.Sleep(150 * time.Millisecond)
+
+	after := runtime.NumGoroutine()
+	// Allow a small slack for runtime bookkeeping goroutines.
+	assert.LessOrEqual(t, after-baseline, 2,
+		"goroutine leak: baseline=%d after=%d", baseline, after)
+}
+
+// TestRTSPHub_GoroutineLeak is the RTSP analogue.
+func TestRTSPHub_GoroutineLeak(t *testing.T) {
+	log := logger.NewLogger()
+
+	time.Sleep(50 * time.Millisecond)
+	baseline := runtime.NumGoroutine()
+
+	h := NewRTSPHub(log, "127.0.0.1", 0)
+	require.NoError(t, h.Start())
+	h.Stop()
+
+	time.Sleep(150 * time.Millisecond)
+
+	after := runtime.NumGoroutine()
+	assert.LessOrEqual(t, after-baseline, 2,
+		"goroutine leak: baseline=%d after=%d", baseline, after)
+}
+
+// TestRTMPHub_StopWithoutStart verifies Stop() is safe before Start().
+func TestRTMPHub_StopWithoutStart(t *testing.T) {
+	log := logger.NewLogger()
+	h := NewRTMPHub(log, "127.0.0.1", 0)
+	assert.NotPanics(t, h.Stop)
+}
+
+// TestRTSPHub_StopWithoutStart is the RTSP analogue.
+func TestRTSPHub_StopWithoutStart(t *testing.T) {
+	log := logger.NewLogger()
+	h := NewRTSPHub(log, "127.0.0.1", 0)
+	assert.NotPanics(t, h.Stop)
 }
 
 func getHubType(h Hub) HubType {

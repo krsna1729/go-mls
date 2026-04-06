@@ -62,6 +62,7 @@ type RTMPHub struct {
 	addr        string
 	listener    net.Listener
 	mu          sync.RWMutex
+	lifetimeMu  sync.Mutex // serializes Start/Stop to prevent WaitGroup reuse
 	streams     map[string]*stream
 	onPublish   func(streamPath, token, remoteAddr string) error
 	onUnpublish func(streamPath string)
@@ -93,7 +94,18 @@ func (h *RTMPHub) SetOnUnpublish(handler func(string)) {
 }
 
 // Start begins listening for RTMP connections.
+// It is safe to call Start() again after Stop() to restart the hub.
 func (h *RTMPHub) Start() error {
+	h.lifetimeMu.Lock()
+	defer h.lifetimeMu.Unlock()
+
+	// Renew the context if a previous Stop() cancelled it.
+	select {
+	case <-h.ctx.Done():
+		h.ctx, h.cancel = context.WithCancel(context.Background())
+	default:
+	}
+
 	ln, err := net.Listen("tcp", h.addr)
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", h.addr, err)
@@ -110,11 +122,13 @@ func (h *RTMPHub) Start() error {
 	h.log.Info("RTMP Hub listening", "addr", ln.Addr().String())
 
 	h.wg.Add(1)
-	go h.acceptLoop(ln)
+	go h.acceptLoop(ln, h.ctx)
 	return nil
 }
 
-func (h *RTMPHub) acceptLoop(listener net.Listener) {
+// acceptLoop accepts incoming connections until the listener is closed.
+// ctx is captured from the Start() call that spawned this goroutine.
+func (h *RTMPHub) acceptLoop(listener net.Listener, ctx context.Context) {
 	defer h.wg.Done()
 	for {
 		conn, err := listener.Accept()
@@ -123,7 +137,7 @@ func (h *RTMPHub) acceptLoop(listener net.Listener) {
 				return
 			}
 			select {
-			case <-h.ctx.Done():
+			case <-ctx.Done():
 				return
 			default:
 				h.log.Error("Accept error", "error", err)
@@ -377,8 +391,13 @@ func (h *RTMPHub) handleSubscriber(sc *gortmplib.ServerConn, conn net.Conn, stre
 	}
 }
 
-// Stop gracefully shuts down the hub.
+// Stop gracefully shuts down the hub and waits for all goroutines to exit.
+// Concurrent Stop() calls are serialized; the first one does the work and
+// the rest are safe no-ops.
 func (h *RTMPHub) Stop() {
+	h.lifetimeMu.Lock()
+	defer h.lifetimeMu.Unlock()
+
 	h.cancel()
 
 	h.mu.Lock()

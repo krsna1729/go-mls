@@ -850,7 +850,7 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 			OutputURL:      out.RemoteURL,
 			OutputName:     out.OutputID,
 			PlatformPreset: out.PlatformPreset,
-			FFmpegOptions:  exportFFmpegOptions(out),
+			FFmpegOptions:  exportFFmpegOptions(&out),
 		})
 	}
 
@@ -1245,7 +1245,7 @@ func copyStringMap(src map[string]string) map[string]string {
 func (s *Server) collectRecordings() ([]recordingEntry, error) {
 	entries := map[string]recordingEntry{}
 	activeRecordings := s.store.ListRecordings()
-	activeByFilename := make(map[string]*state.Recording, len(activeRecordings))
+	activeByFilename := make(map[string]state.Recording, len(activeRecordings))
 	for _, rec := range activeRecordings {
 		activeByFilename[filepath.ToSlash(rec.Filename)] = rec
 	}

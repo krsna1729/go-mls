@@ -30,6 +30,7 @@ type rtspHub struct {
 	server      *gortsplib.Server
 	started     bool
 	mu          sync.RWMutex
+	lifetimeMu  sync.Mutex // serializes Start/Stop to prevent concurrent lifecycle races
 	streams     map[string]*rtspStream
 	onPublish   func(streamPath, token, remoteAddr string) error
 	onUnpublish func(streamPath string)
@@ -60,6 +61,9 @@ func (h *rtspHub) SetOnUnpublish(handler func(string)) {
 }
 
 func (h *rtspHub) Start() error {
+	h.lifetimeMu.Lock()
+	defer h.lifetimeMu.Unlock()
+
 	srv := &gortsplib.Server{
 		Handler:      h,
 		RTSPAddress:  h.addr,
@@ -108,6 +112,9 @@ func (h *rtspHub) Start() error {
 }
 
 func (h *rtspHub) Stop() {
+	h.lifetimeMu.Lock()
+	defer h.lifetimeMu.Unlock()
+
 	h.cancel()
 
 	h.mu.Lock()

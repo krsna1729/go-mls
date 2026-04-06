@@ -40,7 +40,7 @@ func StartPuller(ctx context.Context, store *state.Store, log *logger.Logger, st
 			store.UpdateInputStatus(stream.StreamPath, state.InputStatusError, err.Error())
 			return nil, fmt.Errorf("start puller: %w", err)
 		}
-		stream.PID = fp.PID()
+		store.UpdateInputPID(stream.StreamPath, fp.PID())
 		// WithProcess modifies proc in place (protected by procMu inside ProcessWorker)
 		p.ProcessWorker.WithProcess(fp)
 		return fp, nil

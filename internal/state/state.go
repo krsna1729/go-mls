@@ -164,12 +164,12 @@ func (s *Store) GetInput(streamPath string) (*Input, bool) {
 	return in, ok
 }
 
-func (s *Store) ListInputs() []*Input {
+func (s *Store) ListInputs() []Input {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	result := make([]*Input, 0, len(s.inputs))
+	result := make([]Input, 0, len(s.inputs))
 	for _, in := range s.inputs {
-		result = append(result, in)
+		result = append(result, *in)
 	}
 	return result
 }
@@ -180,6 +180,14 @@ func (s *Store) UpdateInputStatus(streamPath string, status InputStatus, lastErr
 	if in, ok := s.inputs[streamPath]; ok {
 		in.Status = status
 		in.LastError = lastErr
+	}
+}
+
+func (s *Store) UpdateInputPID(streamPath string, pid int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if in, ok := s.inputs[streamPath]; ok {
+		in.PID = pid
 	}
 }
 
@@ -228,24 +236,24 @@ func (s *Store) GetOutput(streamPath, outputID string) (*Output, bool) {
 	return out, ok
 }
 
-func (s *Store) ListOutputsForInput(streamPath string) []*Output {
+func (s *Store) ListOutputsForInput(streamPath string) []Output {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	var result []*Output
+	var result []Output
 	for _, out := range s.outputs {
 		if out.StreamPath == streamPath {
-			result = append(result, out)
+			result = append(result, *out)
 		}
 	}
 	return result
 }
 
-func (s *Store) ListOutputs() []*Output {
+func (s *Store) ListOutputs() []Output {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	result := make([]*Output, 0, len(s.outputs))
+	result := make([]Output, 0, len(s.outputs))
 	for _, out := range s.outputs {
-		result = append(result, out)
+		result = append(result, *out)
 	}
 	return result
 }
@@ -256,6 +264,14 @@ func (s *Store) UpdateOutputStatus(streamPath, outputID string, status OutputSta
 	if out, ok := s.outputs[outputKey(streamPath, outputID)]; ok {
 		out.Status = status
 		out.LastError = lastErr
+	}
+}
+
+func (s *Store) UpdateOutputPID(streamPath, outputID string, pid int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if out, ok := s.outputs[outputKey(streamPath, outputID)]; ok {
+		out.PID = pid
 	}
 }
 
@@ -290,12 +306,12 @@ func (s *Store) GetRecording(streamPath string) (*Recording, bool) {
 	return rec, ok
 }
 
-func (s *Store) ListRecordings() []*Recording {
+func (s *Store) ListRecordings() []Recording {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	result := make([]*Recording, 0, len(s.recordings))
+	result := make([]Recording, 0, len(s.recordings))
 	for _, rec := range s.recordings {
-		result = append(result, rec)
+		result = append(result, *rec)
 	}
 	return result
 }

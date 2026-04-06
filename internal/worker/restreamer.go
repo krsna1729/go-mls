@@ -51,7 +51,7 @@ func StartRestreamer(ctx context.Context, store *state.Store, log *logger.Logger
 			store.UpdateOutputStatus(out.StreamPath, out.OutputID, state.OutputStatusError, err.Error())
 			return nil, fmt.Errorf("start restreamer: %w", err)
 		}
-		out.PID = fp.PID()
+		store.UpdateOutputPID(out.StreamPath, out.OutputID, fp.PID())
 		store.UpdateOutputStatus(out.StreamPath, out.OutputID, state.OutputStatusRunning, "")
 		// WithProcess modifies proc in place (protected by procMu inside ProcessWorker)
 		r.ProcessWorker.WithProcess(fp)

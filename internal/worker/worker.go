@@ -169,10 +169,12 @@ func (w *ProcessWorker) WithProcess(proc Process) *ProcessWorker {
 
 func (w *ProcessWorker) Stop() {
 	w.procMu.Lock()
-	if w.proc != nil {
-		w.proc.Stop()
-	}
+	proc := w.proc
+	w.proc = nil // clear so concurrent Stop() callers skip the process Stop
 	w.procMu.Unlock()
+	if proc != nil {
+		proc.Stop()
+	}
 	w.BaseWorker.Stop()
 }
 
