@@ -28,73 +28,15 @@ services:
       start_period: 3s
 
   # ============================================================================
-  # source-rtmp: RTMP source server - hosts test video for go-mls pull mode
-  # Runs nginx-rtmp + ffmpeg from the dedicated Dockerfile stage
+  # qa-harness: Single-container source/sink/test runner for deterministic E2E
+  # Keeps go-mls separate while synchronously controlling input/output lifecycle
   # ============================================================================
-  source-rtmp:
+  qa-harness:
     build:
       context: .
       dockerfile: Dockerfile
-      target: source-rtmp
-    container_name: source-rtmp
-    networks:
-      - media-net
-    volumes:
-      - ./testdata:/testdata:ro
-      - ./scripts/source-rtmp.sh:/source-rtmp.sh:ro
-    entrypoint: ["/bin/sh", "/source-rtmp.sh"]
-
-  # ============================================================================
-  # source-push: FFmpeg pushing to go-mls RTMP hub (port 1935)
-  # Auto-starts and registers input via API
-  # ============================================================================
-  source-push:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      target: source-push
-    container_name: source-push
-    volumes:
-      - ./testdata:/testdata:ro
-      - ./scripts/source-push.sh:/source-push.sh:ro
-    networks:
-      - media-net
-    entrypoint: ["/bin/sh", "/source-push.sh"]
-    depends_on:
-      go-mls:
-        condition: service_healthy
-    restart: on-failure
-    healthcheck:
-      test: ["CMD", "pgrep", "-x", "ffmpeg"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 5s
-
-  # ============================================================================
-  # output-rtmp: Receives relayed streams (port 1935)
-  # ============================================================================
-  output-rtmp:
-    image: tiangolo/nginx-rtmp:latest
-    container_name: output-rtmp
-    ports:
-      - "1935:1935"
-    networks:
-      - media-net
-    deploy:
-      resources:
-        limits:
-          memory: 64m
-
-  # ============================================================================
-  # test-runner: Comprehensive e2e tests using ffprobe for verification
-  # ============================================================================
-  test-runner:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      target: test-runner
-    container_name: test-runner
+      target: qa-harness
+    container_name: qa-harness
     networks:
       - media-net
     depends_on:
@@ -106,6 +48,7 @@ services:
       - ./relay_config.json:/relay_config.json:ro
       - ./scripts/e2e-test.sh:/e2e-test.sh:ro
     entrypoint: ["/bin/sh", "/e2e-test.sh"]
+    restart: "no"
 
 networks:
   media-net:

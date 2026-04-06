@@ -43,6 +43,20 @@ FROM jrottenberg/ffmpeg:4.4-alpine AS test-runner
 RUN apk add --no-cache curl bash
 
 # ============================================================================
+# QA harness stage (single-container source+sink+runner)
+# ============================================================================
+FROM tiangolo/nginx-rtmp:latest AS qa-harness
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    curl \
+    bash \
+    jq \
+    netcat-openbsd \
+    procps \
+    && rm -rf /var/lib/apt/lists/*
+
+# ============================================================================
 # Runtime stage (go-mls) - MUST be last as it's the default target
 # ============================================================================
 FROM alpine:3.19 AS runtime

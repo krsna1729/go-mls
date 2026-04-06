@@ -18,6 +18,7 @@ import (
 	"go-mls/internal/app"
 	"go-mls/internal/config"
 	"go-mls/internal/logger"
+	"go-mls/internal/state"
 
 	"github.com/stretchr/testify/require"
 )
@@ -58,6 +59,10 @@ func (e *testEnv) shutdown() {
 	if e.appCtx != nil {
 		e.appCtx.Shutdown()
 	}
+}
+
+func (e *testEnv) markInputActive(streamPath string) {
+	e.appCtx.Store.UpdateInputStatus(streamPath, state.InputStatusActive, "")
 }
 
 func checkTestFile(t *testing.T) {
@@ -201,6 +206,7 @@ func TestOutputsAPI(t *testing.T) {
 			})
 			require.NoError(t, err)
 			resp.Body.Close()
+			env.markInputActive("test-stream")
 
 			remoteURL := "rtmp://youtube.com/live/stream-key"
 			if hubType == "rtsp" {
@@ -385,6 +391,7 @@ func TestFullStackLifecycle(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, http.StatusOK, resp.StatusCode)
 			resp.Body.Close()
+			env.markInputActive(streamPath)
 
 			t.Log("Creating outputs")
 			for i := 0; i < 3; i++ {
@@ -467,6 +474,7 @@ func TestConcurrentOutputs(t *testing.T) {
 			})
 			require.NoError(t, err)
 			resp.Body.Close()
+			env.markInputActive(streamPath)
 
 			var wg sync.WaitGroup
 			n := 5
@@ -523,6 +531,7 @@ func TestOutputStartStopRoutes(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, http.StatusOK, resp.StatusCode)
 			resp.Body.Close()
+			env.markInputActive("test-stream")
 
 			resp, err = env.doRequest("POST", "/outputs", map[string]interface{}{
 				"stream_path": "test-stream",

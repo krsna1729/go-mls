@@ -230,15 +230,12 @@ internal/hub/
 ### internal/worker/ - FFmpeg Process Management
 ```
 internal/worker/
-├── errors.go       # Typed errors (ErrProcessFailed, ErrProcessKilled)
-├── ffmpeg.go      # RunAndMonitorFFmpeg (core wrapper)
-├── ffmpeg_factory.go # Process interface + creator
-├── ffmpeg_test.go  # FFmpeg process tests
-├── hls.go         # HLSManager, HLSSession
-├── puller.go      # Puller - pulls from remote, pushes to hub
-├── recorder.go    # Recorder - hub to MP4
-├── restreamer.go # Restreamer - hub to remote RTMP
-└── worker.go      # BaseWorker, ProcessWorker, WorkerState, WorkerStateMachine
+├── hls.go                # HLSManager, HLSSession lifecycle
+├── process_errors.go     # Worker-level process error mapping
+├── puller.go             # Puller - pulls from remote, pushes to hub
+├── recorder.go           # Recorder - hub to MP4
+├── restreamer.go         # Restreamer - hub to remote RTMP
+└── worker.go             # BaseWorker, ProcessWorker, Worker state machine
 ```
 
 ### internal/ingest/ - Stream Ingestion
@@ -250,8 +247,8 @@ internal/ingest/
 ### internal/state/ - State Management
 ```
 internal/state/
-├── state.go       # Thread-safe in-memory store
-└── types.go       # State types (Input, Output, Recording, HLSSession)
+├── presets.go     # Built-in output presets and ffmpeg args
+└── state.go       # Thread-safe in-memory store and state types
 ```
 
 ### internal/api/ - HTTP Control Plane

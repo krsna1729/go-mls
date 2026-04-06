@@ -101,14 +101,9 @@ go test -short=false ./internal/worker/...
 
 ### End-to-End Tests (Docker Compose)
 ```bash
-# Build and start all services
-docker compose up --build -d
-
-# Watch test progress
-docker compose logs -f test-runner
-
-# Check test results
-docker compose logs test-runner | tail -20
+# Run consolidated harness (go-mls + qa-harness) and exit with harness status
+docker compose down --remove-orphans
+docker compose up --build --abort-on-container-exit --exit-code-from qa-harness qa-harness
 
 # Verify recordings
 ls -la recordings/*stream_*.mp4
@@ -120,9 +115,39 @@ curl http://localhost:8080/hls/pull-stream/index.m3u8 | head -10
 docker compose down -v
 ```
 
+### Interactive E2E Helpers
+
+You can run the harness container interactively and source the script functions.
+
+```bash
+# Start go-mls only
+docker compose up -d go-mls
+
+# Enter qa-harness shell
+docker compose run --rm --entrypoint /bin/sh qa-harness
+
+# Inside qa-harness shell (POSIX sh)
+E2E_SOURCE_ONLY=1 . /e2e-test.sh
+# In bash shells, plain source also works:
+# . /e2e-test.sh
+e2e_prepare_harness
+register_pull_input pull-stream "$SOURCE_RTMP_FOR_GOMLS"
+register_push_input push-stream
+ensure_push_input_active push-stream
+create_output pull-stream demo-pull "$OUTPUT_RTMP_FOR_GOMLS/live/demo-pull" /results/demo_pull.json
+verify_stream_active "$OUTPUT_RTMP_LOCAL/live/demo-pull" 20 demo-pull
+```
+
+Useful functions for interactive testing:
+- `e2e_prepare_harness`
+- `register_pull_input`, `register_push_input`, `list_inputs`
+- `create_output`, `start_output`, `list_outputs`
+- `verify_stream_active`, `verify_profile_exact`, `verify_profile_dims_any_order`
+- `start_recording`, `start_hls_viewer`, `stop_hls_viewer`, `export_config`, `import_config`
+
 The e2e tests verify:
-- Pull ingest from an RTMP source container (`source-rtmp`)
-- Push ingest from an FFmpeg publisher container (`source-push`)
+- Pull ingest from local RTMP source within `qa-harness`
+- Push ingest from local FFmpeg publisher within `qa-harness`
 - Simultaneous operation with 2 inputs
 - Multiple outputs per input (2 outputs each)
 - Recording to disk

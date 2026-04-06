@@ -1,15 +1,15 @@
 [
   {
-    "input_url": "rtmp://source-rtmp:1935/live/testsrc",
+    "input_url": "rtmp://qa-harness:1935/live/testsrc",
     "input_name": "pull-stream",
     "outputs": [
       {
-        "output_url": "rtmp://output-rtmp:1935/live/pull-youtube",
+        "output_url": "rtmp://qa-harness:1935/live/pull-youtube",
         "output_name": "pull-youtube",
         "platform_preset": "YouTube"
       },
       {
-        "output_url": "rtmp://output-rtmp:1935/live/pull-custom",
+        "output_url": "rtmp://qa-harness:1935/live/pull-custom",
         "output_name": "pull-custom",
         "platform_preset": "Custom",
         "ffmpeg_options": {
@@ -27,12 +27,12 @@
     "input_name": "push-stream",
     "outputs": [
       {
-        "output_url": "rtmp://output-rtmp:1935/live/push-instagram",
+        "output_url": "rtmp://qa-harness:1935/live/push-instagram",
         "output_name": "push-instagram",
         "platform_preset": "Instagram"
       },
       {
-        "output_url": "rtmp://output-rtmp:1935/live/push-custom-rot",
+        "output_url": "rtmp://qa-harness:1935/live/push-custom-rot",
         "output_name": "push-custom-rot",
         "platform_preset": "Custom",
         "ffmpeg_options": {

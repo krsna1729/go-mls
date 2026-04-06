@@ -134,7 +134,7 @@ Use `remote_url` for a pull input, or leave it empty to register an accept-mode 
 ```json
 {
   "stream_path": "pull-stream",
-  "remote_url": "rtmp://source-rtmp:1935/live/testsrc",
+  "remote_url": "rtmp://qa-harness:1935/live/testsrc",
   "ingest_token": ""
 }
 ```
@@ -160,7 +160,7 @@ List registered inputs from the state store.
     "stream_path": "pull-stream",
     "mode": "Pull",
     "status": "Active",
-    "remote_url": "rtmp://source-rtmp:1935/live/testsrc"
+    "remote_url": "rtmp://qa-harness:1935/live/testsrc"
   },
   {
     "stream_path": "push-stream",
