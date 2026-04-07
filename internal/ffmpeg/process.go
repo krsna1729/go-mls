@@ -31,6 +31,44 @@ type Process interface {
 // post-mortem logging when the process exits unexpectedly.
 const stderrTailSize = 20
 
+var (
+	binaryPathMu sync.RWMutex
+	binaryPath   = "ffmpeg"
+	logLevel     = "error"
+)
+
+func SetBinaryPath(path string) {
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" {
+		trimmed = "ffmpeg"
+	}
+	binaryPathMu.Lock()
+	binaryPath = trimmed
+	binaryPathMu.Unlock()
+}
+
+func getBinaryPath() string {
+	binaryPathMu.RLock()
+	defer binaryPathMu.RUnlock()
+	return binaryPath
+}
+
+func SetLogLevel(level string) {
+	trimmed := strings.TrimSpace(level)
+	if trimmed == "" {
+		trimmed = "error"
+	}
+	binaryPathMu.Lock()
+	logLevel = trimmed
+	binaryPathMu.Unlock()
+}
+
+func getLogLevel() string {
+	binaryPathMu.RLock()
+	defer binaryPathMu.RUnlock()
+	return logLevel
+}
+
 // FFmpegProcess represents a managed FFmpeg child process.
 type FFmpegProcess struct {
 	cmd    *exec.Cmd
@@ -58,7 +96,11 @@ type FFmpegProcess struct {
 // The returned FFmpegProcess can be used to stop the process.
 func RunAndMonitor(ctx context.Context, store *state.Store, log *logger.Logger, args ...string) (*FFmpegProcess, error) {
 	childCtx, cancel := context.WithCancel(ctx)
-	cmd := exec.CommandContext(childCtx, "ffmpeg", args...)
+	effectiveArgs := args
+	if !containsLogLevelArg(args) {
+		effectiveArgs = append([]string{"-loglevel", getLogLevel()}, args...)
+	}
+	cmd := exec.CommandContext(childCtx, getBinaryPath(), effectiveArgs...)
 	cmd.Stdout = nil // Not used
 
 	// Put ffmpeg in its own process group so SIGTERM doesn't propagate from parent
@@ -170,6 +212,15 @@ func (fp *FFmpegProcess) killProcessGroup() {
 	pgid := fp.cmd.Process.Pid
 	fp.log.Debug("Killing process group", "pgid", pgid)
 	syscall.Kill(-pgid, syscall.SIGKILL)
+}
+
+func containsLogLevelArg(args []string) bool {
+	for i := 0; i < len(args); i++ {
+		if args[i] == "-loglevel" {
+			return true
+		}
+	}
+	return false
 }
 
 func (fp *FFmpegProcess) wait() {

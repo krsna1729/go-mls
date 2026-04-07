@@ -124,12 +124,13 @@ func DefaultConfig() *Config {
 		Relay: RelayConfig{
 			InputTimeout:  Duration(30 * time.Second),
 			OutputTimeout: Duration(60 * time.Second),
+			HubType:       "rtmp",
 			RTSPHub: RTSPConfig{
-				Host: "127.0.0.1",
+				Host: "0.0.0.0",
 				Port: 8554,
 			},
 			RTMPHub: RTMPConfig{
-				Host: "127.0.0.1",
+				Host: "0.0.0.0",
 				Port: 1935,
 			},
 		},
@@ -148,7 +149,7 @@ func DefaultConfig() *Config {
 		},
 		FFmpeg: FFmpegConfig{
 			Path:     "ffmpeg",
-			LogLevel: "info",
+			LogLevel: "error",
 		},
 	}
 }
@@ -199,14 +200,31 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("output timeout must be greater than input timeout")
 	}
 
+	if c.Relay.HubType != "rtmp" && c.Relay.HubType != "rtsp" {
+		return fmt.Errorf("hub_type must be 'rtmp' or 'rtsp'")
+	}
+
 	// Validate RTMP hub configuration
 	if c.Relay.RTMPHub.Port <= 0 || c.Relay.RTMPHub.Port > 65535 {
 		return fmt.Errorf("RTMP hub port must be between 1 and 65535")
 	}
 
+	// Validate RTSP hub configuration (port 0 = OS-assigned, valid for testing/dynamic binding)
+	if c.Relay.RTSPHub.Port < 0 || c.Relay.RTSPHub.Port > 65535 {
+		return fmt.Errorf("RTSP hub port must be between 0 and 65535")
+	}
+
 	// Validate recording directory
 	if c.Recording.Directory == "" {
 		return fmt.Errorf("recording directory cannot be empty")
+	}
+
+	if c.HLS.PlaylistBaseDir == "" {
+		return fmt.Errorf("hls playlist_base_dir cannot be empty")
+	}
+
+	if c.FFmpeg.Path == "" {
+		return fmt.Errorf("ffmpeg path cannot be empty")
 	}
 
 	return nil

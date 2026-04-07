@@ -68,7 +68,7 @@ Create a `config.json` file (see `config.example.json` for reference):
   "hls": {
     "viewer_heartbeat_timeout": "30s",
     "idle_timeout": "30s",
-    "playlist_base_dir": "/hls",
+    "playlist_base_dir": "/tmp",
     "ffmpeg_preset": "ultrafast"
   }
 }

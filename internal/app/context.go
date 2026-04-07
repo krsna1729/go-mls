@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"go-mls/internal/config"
+	"go-mls/internal/ffmpeg"
 	"go-mls/internal/hub"
 	"go-mls/internal/ingest"
 	"go-mls/internal/logger"
@@ -49,12 +50,14 @@ func NewContext(cfg *config.Config, log *logger.Logger) (*Context, error) {
 
 	ctx.Hub = hub.NewHub(log, hubType, hubHost, hubPort)
 
+	ffmpeg.SetBinaryPath(cfg.FFmpeg.Path)
+	ffmpeg.SetLogLevel(cfg.FFmpeg.LogLevel)
+
 	ffmpegTimeout := time.Duration(cfg.Relay.OutputTimeout)
 	_ = ffmpegTimeout
 
 	ctx.Ingest = ingest.NewRouter(ctx.Store, log, ingest.Config{
-		FFMpegPath: cfg.FFmpeg.Path,
-		RTMPPort:   hubPort,
+		RTMPPort: hubPort,
 	})
 
 	ctx.Hub.SetOnPublish(ctx.Ingest.OnPublish)

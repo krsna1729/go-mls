@@ -78,36 +78,14 @@ func setupTestEnv(t *testing.T, hubType string) *testEnv {
 	tempDir := t.TempDir()
 	log := logger.NewLogger()
 
-	cfg := &config.Config{
-		HTTP: config.HTTPConfig{
-			Host:         "127.0.0.1",
-			Port:         "0",
-			ReadTimeout:  config.Duration(30 * time.Second),
-			WriteTimeout: config.Duration(30 * time.Second),
-			IdleTimeout:  config.Duration(120 * time.Second),
-		},
-		Relay: config.RelayConfig{
-			InputTimeout:  config.Duration(30 * time.Second),
-			OutputTimeout: config.Duration(60 * time.Second),
-			RTMPHub: config.RTMPConfig{
-				Host: "127.0.0.1",
-				Port: 1935,
-			},
-		},
-		Recording: config.RecordingConfig{
-			Directory: tempDir,
-		},
-		Logging: config.LoggingConfig{
-			Level: "warn",
-		},
-		HLS: config.HLSConfig{
-			PlaylistBaseDir: tempDir,
-			FFmpegPreset:    "ultrafast",
-		},
-		FFmpeg: config.FFmpegConfig{
-			Path: "ffmpeg",
-		},
-	}
+	cfg := config.DefaultConfig()
+	cfg.HTTP.Host = "127.0.0.1"
+	cfg.HTTP.Port = "0"
+	cfg.Relay.RTMPHub.Host = "127.0.0.1"
+	cfg.Relay.RTMPHub.Port = 1935
+	cfg.Recording.Directory = tempDir
+	cfg.Logging.Level = "warn"
+	cfg.HLS.PlaylistBaseDir = tempDir
 
 	var rtmpPort int
 	var rtspAddr string

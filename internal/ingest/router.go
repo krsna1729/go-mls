@@ -19,7 +19,6 @@ import (
 type Router struct {
 	store    *state.Store
 	log      *logger.Logger
-	ffmpeg   string // path to ffmpeg binary
 	rtmpPort int
 	mu       sync.RWMutex
 
@@ -31,8 +30,7 @@ type Router struct {
 
 // Config holds router configuration.
 type Config struct {
-	FFMpegPath string
-	RTMPPort   int
+	RTMPPort int
 }
 
 // NewRouter creates a new ingest router.
@@ -40,7 +38,6 @@ func NewRouter(store *state.Store, log *logger.Logger, cfg Config) *Router {
 	return &Router{
 		store:    store,
 		log:      log.With("component", "ingest"),
-		ffmpeg:   cfg.FFMpegPath,
 		rtmpPort: cfg.RTMPPort,
 		pullers:  make(map[string]*worker.Puller),
 	}

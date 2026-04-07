@@ -27,10 +27,25 @@ func TestDefaultConfig(t *testing.T) {
 	if time.Duration(config.Relay.OutputTimeout) != 60*time.Second {
 		t.Errorf("expected default output timeout 60s, got %v", config.Relay.OutputTimeout)
 	}
+	if config.Relay.HubType != "rtmp" {
+		t.Errorf("expected default hub_type 'rtmp', got '%s'", config.Relay.HubType)
+	}
+	if config.Relay.RTMPHub.Host != "0.0.0.0" || config.Relay.RTMPHub.Port != 1935 {
+		t.Errorf("expected default RTMP hub 0.0.0.0:1935, got %s:%d", config.Relay.RTMPHub.Host, config.Relay.RTMPHub.Port)
+	}
+	if config.Relay.RTSPHub.Host != "0.0.0.0" || config.Relay.RTSPHub.Port != 8554 {
+		t.Errorf("expected default RTSP hub 0.0.0.0:8554, got %s:%d", config.Relay.RTSPHub.Host, config.Relay.RTSPHub.Port)
+	}
 
 	// Test Recording defaults
 	if config.Recording.Directory != "recordings" {
 		t.Errorf("expected recording directory 'recordings', got '%s'", config.Recording.Directory)
+	}
+	if config.HLS.PlaylistBaseDir != "/tmp" {
+		t.Errorf("expected default hls dir '/tmp', got '%s'", config.HLS.PlaylistBaseDir)
+	}
+	if config.FFmpeg.Path != "ffmpeg" || config.FFmpeg.LogLevel != "error" {
+		t.Errorf("expected default ffmpeg config path=ffmpeg loglevel=error, got path=%s loglevel=%s", config.FFmpeg.Path, config.FFmpeg.LogLevel)
 	}
 }
 
@@ -43,6 +58,12 @@ func TestLoadConfigNonExistent(t *testing.T) {
 	// Should return default config
 	if config.HTTP.Port != "8080" {
 		t.Errorf("expected default port, got %s", config.HTTP.Port)
+	}
+	if config.Relay.HubType != "rtmp" {
+		t.Errorf("expected default hub_type, got %s", config.Relay.HubType)
+	}
+	if config.HLS.PlaylistBaseDir != "/tmp" {
+		t.Errorf("expected default hls playlist_base_dir '/tmp', got %s", config.HLS.PlaylistBaseDir)
 	}
 }
 
@@ -92,6 +113,14 @@ func TestConfigValidation(t *testing.T) {
 			},
 			shouldError: true,
 			errorMsg:    "RTMP hub port must be between 1 and 65535",
+		},
+		{
+			name: "Invalid hub type",
+			modifyFunc: func(c *Config) {
+				c.Relay.HubType = "invalid"
+			},
+			shouldError: true,
+			errorMsg:    "hub_type must be 'rtmp' or 'rtsp'",
 		},
 		{
 			name: "Empty recording directory",
@@ -158,15 +187,9 @@ func TestLoadConfigInvalidValues(t *testing.T) {
 	tempDir := t.TempDir()
 	configFile := filepath.Join(tempDir, "invalid_values.json")
 
-	// Write config with invalid values
 	invalidConfig := `{
-		"http": {
-			"host": "0.0.0.0",
-			"port": ""
-		},
 		"relay": {
-			"input_timeout": "30s",
-			"output_timeout": "60s"
+			"hub_type": "invalid"
 		}
 	}`
 
@@ -202,7 +225,7 @@ func TestLoadConfig_ParseError(t *testing.T) {
 
 func TestLoadConfig_ValidationError(t *testing.T) {
 	file := filepath.Join(t.TempDir(), "badval.json")
-	os.WriteFile(file, []byte(`{"http": {"host": "0.0.0.0", "port": ""}}`), 0644)
+	os.WriteFile(file, []byte(`{"relay": {"hub_type": "broken"}}`), 0644)
 	_, err := LoadConfig(file, logger.NewLogger())
 	if err == nil {
 		t.Error("expected validation error, got nil")
