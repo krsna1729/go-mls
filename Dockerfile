@@ -18,31 +18,6 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -o go-mls .
 
 # ============================================================================
-# Source RTMP stage (nginx-rtmp + FFmpeg self-publisher)
-# ============================================================================
-FROM tiangolo/nginx-rtmp:latest AS source-rtmp
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg \
-    netcat-openbsd \
-    procps \
-    && rm -rf /var/lib/apt/lists/*
-
-# ============================================================================
-# Source push stage (FFmpeg pushing to RTMP)
-# ============================================================================
-FROM jrottenberg/ffmpeg:4.4-alpine AS source-push
-
-RUN apk add --no-cache curl bash
-
-# ============================================================================
-# Test runner stage
-# ============================================================================
-FROM jrottenberg/ffmpeg:4.4-alpine AS test-runner
-
-RUN apk add --no-cache curl bash
-
-# ============================================================================
 # QA harness stage (single-container source+sink+runner)
 # ============================================================================
 FROM tiangolo/nginx-rtmp:latest AS qa-harness
