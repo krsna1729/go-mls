@@ -63,8 +63,8 @@ type stoppableWorker interface {
 
 const (
 	statsCacheRefreshInterval = 500 * time.Millisecond
-	importInputReadyTimeout  = 15 * time.Second
-	importWorkerStopTimeout  = 5 * time.Second
+	importInputReadyTimeout   = 15 * time.Second
+	importWorkerStopTimeout   = 5 * time.Second
 )
 
 // NewServer creates a new HTTP API server.
