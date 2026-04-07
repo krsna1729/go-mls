@@ -142,6 +142,7 @@ func TestHLSSession_Struct(t *testing.T) {
 		},
 	}
 
+	assert.NotNil(t, sess.proc)
 	assert.Len(t, sess.viewers, 5)
 	assert.Equal(t, "/tmp/hls/test", sess.playlistDir)
 }
@@ -175,6 +176,7 @@ func TestStateOutput(t *testing.T) {
 	assert.Equal(t, "rtmp://youtube.com/live", out.RemoteURL)
 	assert.Equal(t, "secret-key", out.StreamKey)
 	assert.Equal(t, state.OutputStatusRunning, out.Status)
+	assert.Equal(t, 12345, out.PID)
 }
 
 func TestStateOutput_WithVideoAudioArgs(t *testing.T) {
@@ -187,6 +189,10 @@ func TestStateOutput_WithVideoAudioArgs(t *testing.T) {
 		Status:     state.OutputStatusStarting,
 	}
 
+	assert.Equal(t, "live/stream", out.StreamPath)
+	assert.Equal(t, "custom", out.OutputID)
+	assert.Equal(t, "rtmp://custom.com/stream", out.RemoteURL)
+	assert.Equal(t, state.OutputStatusStarting, out.Status)
 	assert.Len(t, out.VideoArgs, 4)
 	assert.Len(t, out.AudioArgs, 4)
 	assert.Equal(t, "-c:v", out.VideoArgs[0])

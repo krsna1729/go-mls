@@ -68,6 +68,7 @@ func TestPullerConfig(t *testing.T) {
 	assert.NotNil(t, log)
 	assert.Equal(t, "test-stream", input.StreamPath)
 	assert.Equal(t, "rtsp://example.com/stream", input.RemoteURL)
+	assert.Equal(t, state.InputStatusStarting, input.Status)
 }
 
 func TestPullerStreamPathExtraction(t *testing.T) {

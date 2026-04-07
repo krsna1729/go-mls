@@ -237,7 +237,7 @@ func (s *Server) deleteInput(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-func (s *Server) listInputs(w http.ResponseWriter, r *http.Request) {
+func (s *Server) listInputs(w http.ResponseWriter, _ *http.Request) {
 	inputs := s.store.ListInputs()
 	writeJSON(w, http.StatusOK, inputs)
 }
@@ -689,7 +689,7 @@ func (s *Server) handleRecordings(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) listRecordings(w http.ResponseWriter, r *http.Request) {
+func (s *Server) listRecordings(w http.ResponseWriter, _ *http.Request) {
 	entries, err := s.collectRecordings()
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
