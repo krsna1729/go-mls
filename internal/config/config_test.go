@@ -127,8 +127,8 @@ func TestConfigValidation(t *testing.T) {
 
 func TestGetRTSPServerURL(t *testing.T) {
 	config := DefaultConfig()
-	config.Relay.RTSPServer.Host = "192.168.1.100"
-	config.Relay.RTSPServer.Port = 8554
+	config.Relay.RTSPHub.Host = "192.168.1.100"
+	config.Relay.RTSPHub.Port = 8554
 
 	expected := "rtsp://192.168.1.100:8554"
 	actual := config.GetRTSPServerURL()
@@ -239,7 +239,7 @@ func TestLoadConfig_BadDurations(t *testing.T) {
 		"relay": {
 			"input_timeout": "30s",
 			"output_timeout": "60s",
-			"rtsp_server": {"host": "127.0.0.1", "port": 8554}
+			"rtsp_hub": {"host": "127.0.0.1", "port": 8554}
 		},
 		"recording": {"directory": "recordings"},
 		"logging": {"level": "info"},
@@ -267,7 +267,7 @@ func TestLoadConfig_BadTypes(t *testing.T) {
 		"relay": {
 			"input_timeout": "30s",
 			"output_timeout": "60s",
-			"rtsp_server": {"host": "127.0.0.1", "port": 8554}
+			"rtsp_hub": {"host": "127.0.0.1", "port": 8554}
 		},
 		"recording": {"directory": "recordings"},
 		"logging": {"level": "info"},

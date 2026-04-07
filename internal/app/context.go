@@ -40,8 +40,8 @@ func NewContext(cfg *config.Config, log *logger.Logger) (*Context, error) {
 	var hubPort int
 	var hubHost string
 	if hubType == hub.HubTypeRTSP {
-		hubHost = cfg.Relay.RTSPServer.Host
-		hubPort = cfg.Relay.RTSPServer.Port
+		hubHost = cfg.Relay.RTSPHub.Host
+		hubPort = cfg.Relay.RTSPHub.Port
 	} else {
 		hubHost = cfg.Relay.RTMPHub.Host
 		hubPort = cfg.Relay.RTMPHub.Port

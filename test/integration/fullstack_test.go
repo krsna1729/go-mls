@@ -115,7 +115,7 @@ func setupTestEnv(t *testing.T, hubType string) *testEnv {
 	switch hubType {
 	case "rtsp":
 		cfg.Relay.HubType = "rtsp"
-		cfg.Relay.RTSPServer = config.RTSPConfig{
+		cfg.Relay.RTSPHub = config.RTSPConfig{
 			Host: "127.0.0.1",
 			Port: 0,
 		}

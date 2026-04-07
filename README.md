@@ -44,8 +44,13 @@ Create a `config.json` file (see `config.example.json` for reference):
   "relay": {
     "input_timeout": "30s",
     "output_timeout": "60s",
-    "rtsp_server": {
-      "host": "127.0.0.1",
+    "hub_type": "rtmp",
+    "rtmp_hub": {
+      "host": "0.0.0.0",
+      "port": 1935
+    },
+    "rtsp_hub": {
+      "host": "0.0.0.0",
       "port": 8554
     }
   },
@@ -58,12 +63,13 @@ Create a `config.json` file (see `config.example.json` for reference):
   },
   "ffmpeg": {
     "path": "ffmpeg",
-    "loglevel": "info"
+    "loglevel": "error"
   },
   "hls": {
     "viewer_heartbeat_timeout": "30s",
     "idle_timeout": "30s",
-    "playlist_base_dir": "/tmp"
+    "playlist_base_dir": "/hls",
+    "ffmpeg_preset": "ultrafast"
   }
 }
 ```

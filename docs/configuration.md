@@ -1,6 +1,7 @@
 # Configuration Guide
 
 Go-MLS is configured via a JSON file (default: `config.json`).
+The checked-in reference file is `config.example.json`, and examples below mirror that file.
 
 ## Configuration Structure
 
@@ -36,7 +37,7 @@ Examples: `"30s"`, `"5m"`, `"1h"`, `"500ms"`.
       "host": "0.0.0.0",
       "port": 1935
     },
-    "rtsp_server": {
+    "rtsp_hub": {
       "host": "0.0.0.0",
       "port": 8554
     }
@@ -47,12 +48,12 @@ Examples: `"30s"`, `"5m"`, `"1h"`, `"500ms"`.
   "hls": {
     "viewer_heartbeat_timeout": "30s",
     "idle_timeout": "30s",
-    "playlist_base_dir": "/tmp",
+    "playlist_base_dir": "/hls",
     "ffmpeg_preset": "ultrafast"
   },
   "ffmpeg": {
     "path": "ffmpeg",
-    "loglevel": "info"
+    "loglevel": "error"
   },
   "logging": {
     "level": "info",
@@ -82,7 +83,7 @@ For IP cameras, NVRs, or RTSP-compatible sources:
 ```json
 "relay": {
   "hub_type": "rtsp",
-  "rtsp_server": {
+  "rtsp_hub": {
     "host": "0.0.0.0",
     "port": 8554
   }
@@ -113,7 +114,7 @@ The HLS manager has a small, focused configuration surface:
 "hls": {
   "viewer_heartbeat_timeout": "30s",
   "idle_timeout": "30s",
-  "playlist_base_dir": "/tmp",
+  "playlist_base_dir": "/hls",
   "ffmpeg_preset": "ultrafast"
 }
 ```
@@ -123,10 +124,15 @@ The HLS manager has a small, focused configuration surface:
 "hls": {
   "viewer_heartbeat_timeout": "20s",
   "idle_timeout": "8s",
-  "playlist_base_dir": "/tmp",
+  "playlist_base_dir": "/hls",
   "ffmpeg_preset": "ultrafast"
 }
 ```
+
+## Note On Built-In Fallback Defaults
+If `config.json` is missing, the app falls back to defaults from code (`internal/config/config.go`).
+Those fallback defaults are intentionally minimal and may differ from `config.example.json` in a few values (for example bind addresses, HLS base dir, and ffmpeg loglevel).
+For predictable deployments, start from `config.example.json` and provide an explicit `config.json`.
 
 ### Debugging
 To see detailed logs from both the app and FFmpeg:

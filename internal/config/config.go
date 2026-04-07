@@ -54,7 +54,7 @@ type RelayConfig struct {
 	InputTimeout  Duration   `json:"input_timeout"`
 	OutputTimeout Duration   `json:"output_timeout"`
 	HubType       string     `json:"hub_type"` // "rtmp" or "rtsp", defaults to "rtmp"
-	RTSPServer    RTSPConfig `json:"rtsp_server"`
+	RTSPHub       RTSPConfig `json:"rtsp_hub"`
 	RTMPHub       RTMPConfig `json:"rtmp_hub"`
 }
 
@@ -124,7 +124,7 @@ func DefaultConfig() *Config {
 		Relay: RelayConfig{
 			InputTimeout:  Duration(30 * time.Second),
 			OutputTimeout: Duration(60 * time.Second),
-			RTSPServer: RTSPConfig{
+			RTSPHub: RTSPConfig{
 				Host: "127.0.0.1",
 				Port: 8554,
 			},
@@ -214,5 +214,5 @@ func (c *Config) Validate() error {
 
 // GetRTSPServerURL returns the full RTSP server URL
 func (c *Config) GetRTSPServerURL() string {
-	return fmt.Sprintf("rtsp://%s:%d", c.Relay.RTSPServer.Host, c.Relay.RTSPServer.Port)
+	return fmt.Sprintf("rtsp://%s:%d", c.Relay.RTSPHub.Host, c.Relay.RTSPHub.Port)
 }
