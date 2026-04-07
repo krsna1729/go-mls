@@ -9,6 +9,7 @@ import (
 
 	"go-mls/internal/logger"
 
+	"github.com/bluenviron/gortmplib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -652,5 +653,62 @@ func getHubType(h Hub) HubType {
 		return HubTypeRTSP
 	default:
 		return ""
+	}
+}
+
+func TestRTMPHub_EvictStream(t *testing.T) {
+	log := logger.NewLogger()
+	h := NewRTMPHub(log, "127.0.0.1", 0)
+
+	connA, connB := net.Pipe()
+	t.Cleanup(func() {
+		_ = connA.Close()
+		_ = connB.Close()
+	})
+
+	h.mu.Lock()
+	h.streams["live/test"] = &stream{
+		publisher: &gortmplib.ServerConn{RW: connA},
+	}
+	h.mu.Unlock()
+
+	h.EvictStream("live/test")
+
+	h.mu.RLock()
+	_, exists := h.streams["live/test"]
+	h.mu.RUnlock()
+	assert.False(t, exists)
+
+	_ = connB.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+	buf := make([]byte, 1)
+	_, err := connB.Read(buf)
+	assert.Error(t, err)
+}
+
+func TestRTSPHub_EvictStream(t *testing.T) {
+	log := logger.NewLogger()
+	h := NewRTSPHub(log, "127.0.0.1", 0)
+
+	unpublished := make(chan string, 1)
+	h.SetOnUnpublish(func(sp string) {
+		unpublished <- sp
+	})
+
+	h.mu.Lock()
+	h.streams["cam/1"] = &rtspStream{}
+	h.mu.Unlock()
+
+	h.EvictStream("cam/1")
+
+	h.mu.RLock()
+	_, exists := h.streams["cam/1"]
+	h.mu.RUnlock()
+	assert.False(t, exists)
+
+	select {
+	case sp := <-unpublished:
+		assert.Equal(t, "cam/1", sp)
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("expected onUnpublish callback")
 	}
 }

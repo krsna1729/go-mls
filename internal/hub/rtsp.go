@@ -216,3 +216,27 @@ func (h *rtspHub) OnRecord(ctx *gortsplib.ServerHandlerOnPlayCtx) (*base.Respons
 	h.log.Info("RTSP recording started", "path", pathName)
 	return &base.Response{StatusCode: base.StatusOK}, nil
 }
+
+// EvictStream forcibly disconnects stream distribution for streamPath.
+func (h *rtspHub) EvictStream(streamPath string) {
+	h.mu.Lock()
+	s, exists := h.streams[streamPath]
+	if exists {
+		delete(h.streams, streamPath)
+	}
+	h.mu.Unlock()
+
+	if !exists {
+		return
+	}
+
+	if s.stream != nil {
+		s.stream.Close()
+	}
+
+	if h.onUnpublish != nil {
+		h.onUnpublish(streamPath)
+	}
+
+	h.log.Info("RTSP stream evicted", "path", streamPath)
+}

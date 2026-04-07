@@ -45,6 +45,11 @@ type Hub interface {
 
 	// SetOnUnpublish sets the callback for unpublish events.
 	SetOnUnpublish(handler func(streamPath string))
+
+	// EvictStream forcibly disconnects active publishers for a stream path.
+	// This is used by control-plane reset operations (delete/import) to avoid
+	// stale transport sessions surviving state removal.
+	EvictStream(streamPath string)
 }
 
 // stream represents an active published stream with its tracks and subscribers.
@@ -389,6 +394,38 @@ func (h *RTMPHub) handleSubscriber(sc *gortmplib.ServerConn, conn net.Conn, stre
 			return err
 		}
 	}
+}
+
+// EvictStream forcibly disconnects the current publisher (if any) for streamPath.
+func (h *RTMPHub) EvictStream(streamPath string) {
+	h.mu.Lock()
+	s, exists := h.streams[streamPath]
+	if exists {
+		delete(h.streams, streamPath)
+	}
+	h.mu.Unlock()
+
+	if !exists {
+		return
+	}
+
+	if sc, ok := s.publisher.(*gortmplib.ServerConn); ok {
+		if conn, ok := sc.RW.(net.Conn); ok {
+			_ = conn.Close()
+		}
+	}
+
+	s.mu.Lock()
+	for _, w := range s.writers {
+		if sc, ok := w.Conn.(*gortmplib.ServerConn); ok {
+			if conn, ok := sc.RW.(net.Conn); ok {
+				_ = conn.Close()
+			}
+		}
+	}
+	s.mu.Unlock()
+
+	h.log.Info("Stream evicted", "path", streamPath)
 }
 
 // Stop gracefully shuts down the hub and waits for all goroutines to exit.

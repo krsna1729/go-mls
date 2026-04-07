@@ -59,6 +59,7 @@ func NewContext(cfg *config.Config, log *logger.Logger) (*Context, error) {
 
 	ctx.Hub.SetOnPublish(ctx.Ingest.OnPublish)
 	ctx.Hub.SetOnUnpublish(ctx.Ingest.OnPublishEnd)
+	ctx.Ingest.SetStreamEvictor(ctx.Hub.EvictStream)
 
 	hlsPreset := cfg.HLS.FFmpegPreset
 	if hlsPreset == "" {

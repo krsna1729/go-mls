@@ -27,6 +27,10 @@ type Process interface {
 	Err() error
 }
 
+// stderrTailSize is the number of recent ffmpeg stderr lines retained for
+// post-mortem logging when the process exits unexpectedly.
+const stderrTailSize = 20
+
 // FFmpegProcess represents a managed FFmpeg child process.
 type FFmpegProcess struct {
 	cmd    *exec.Cmd
@@ -38,6 +42,15 @@ type FFmpegProcess struct {
 	log    *logger.Logger
 	store  *state.Store
 	stderr io.Closer
+
+	// stderrDone is closed when the parseStderr goroutine exits, ensuring the
+	// tail buffer is fully populated before wait() inspects it.
+	stderrDone chan struct{}
+	// stopped is set to true when Stop() is called so that a non-zero exit
+	// code from an intentional shutdown does not trigger error logging.
+	stopped bool
+	tailMu  sync.Mutex
+	tailBuf []string // ring buffer of the last stderrTailSize stderr lines
 }
 
 // RunAndMonitor starts an FFmpeg process and continuously monitors it.
@@ -71,13 +84,14 @@ func RunAndMonitor(ctx context.Context, store *state.Store, log *logger.Logger, 
 	ffmpegLog = ffmpegLog.With("component", "ffmpeg", "pid", cmd.Process.Pid)
 
 	fp := &FFmpegProcess{
-		cmd:    cmd,
-		cancel: cancel,
-		pid:    cmd.Process.Pid,
-		done:   make(chan struct{}),
-		log:    ffmpegLog,
-		store:  store,
-		stderr: stderrPipe,
+		cmd:        cmd,
+		cancel:     cancel,
+		pid:        cmd.Process.Pid,
+		done:       make(chan struct{}),
+		stderrDone: make(chan struct{}),
+		log:        ffmpegLog,
+		store:      store,
+		stderr:     stderrPipe,
 	}
 
 	// Start telemetry goroutines
@@ -109,6 +123,7 @@ func (fp *FFmpegProcess) Err() error {
 // If the process doesn't exit within the timeout, it kills the entire process group.
 func (fp *FFmpegProcess) Stop() {
 	fp.mu.Lock()
+	fp.stopped = true
 	pid := fp.pid
 	stderr := fp.stderr
 	fp.mu.Unlock()
@@ -159,9 +174,24 @@ func (fp *FFmpegProcess) killProcessGroup() {
 
 func (fp *FFmpegProcess) wait() {
 	err := fp.cmd.Wait()
+	// Wait for parseStderr to drain the pipe fully so the tail buffer is
+	// complete before we inspect it.
+	<-fp.stderrDone
 	fp.mu.Lock()
 	fp.err = err
+	stopped := fp.stopped
 	fp.mu.Unlock()
+	if err != nil && !stopped {
+		fp.tailMu.Lock()
+		tail := make([]string, len(fp.tailBuf))
+		copy(tail, fp.tailBuf)
+		fp.tailMu.Unlock()
+		if len(tail) > 0 {
+			fp.log.Error("ffmpeg process failed; last stderr output",
+				"exit_err", err,
+				"stderr_tail", strings.Join(tail, "\n"))
+		}
+	}
 	if fp.store != nil {
 		fp.store.RemoveTelemetry(fp.pid)
 	}
@@ -178,11 +208,21 @@ var (
 
 // parseStderr reads FFmpeg stderr using a custom \r scanner for real-time progress.
 func (fp *FFmpegProcess) parseStderr(r io.Reader) {
+	defer close(fp.stderrDone)
 	scanner := bufio.NewScanner(r)
 	scanner.Split(scanCRLF) // Custom split function that handles \r
 
 	for scanner.Scan() {
 		line := scanner.Text()
+
+		// Always append to the tail ring buffer for post-mortem logging.
+		fp.tailMu.Lock()
+		fp.tailBuf = append(fp.tailBuf, line)
+		if len(fp.tailBuf) > stderrTailSize {
+			fp.tailBuf = fp.tailBuf[len(fp.tailBuf)-stderrTailSize:]
+		}
+		fp.tailMu.Unlock()
+
 		if strings.Contains(line, "frame=") || strings.Contains(line, "speed=") {
 			if fp.store == nil {
 				continue
@@ -193,8 +233,17 @@ func (fp *FFmpegProcess) parseStderr(r io.Reader) {
 				t.MemMB = existing.MemMB
 			}
 			fp.store.UpdateTelemetry(fp.pid, t)
-		} else if strings.Contains(line, "Error") || strings.Contains(line, "error") {
-			fp.log.Error("ffmpeg stderr", "line", line)
+		} else {
+			// Log lines that likely indicate problems. The check is
+			// case-insensitive to catch ffmpeg's varied capitalisation.
+			lower := strings.ToLower(line)
+			if strings.Contains(lower, "error") ||
+				strings.Contains(lower, "failed") ||
+				strings.Contains(lower, "refused") ||
+				strings.Contains(lower, "fatal") ||
+				strings.Contains(lower, "no such file") {
+				fp.log.Error("ffmpeg stderr", "line", line)
+			}
 		}
 	}
 }

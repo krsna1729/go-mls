@@ -12,6 +12,7 @@
 3. [HTTP API Endpoints](#http-api-endpoints)
 4. [Export and Import Format](#export-and-import-format)
 5. [Presets](#presets)
+6. [State and Stats Behavior](#state-and-stats-behavior)
 
 ---
 
@@ -119,6 +120,8 @@ type statsResponse struct {
 
 The `/stats` response is served from a background-refreshed in-memory snapshot. The handler does not probe processes or rebuild JSON on the request path; worker telemetry and self usage are refreshed asynchronously and the latest precomputed payload is returned.
 
+For deeper runtime behavior and optimization notes, see `docs/state-and-stats.md`.
+
 ---
 
 ## HTTP API Endpoints
@@ -175,7 +178,7 @@ List registered inputs from the state store.
 
 #### DELETE `/inputs?stream={stream_path}`
 
-Delete an input and stop any attached outputs or active recording first.
+Delete an input and stop any attached outputs, active recording, and active HLS generation first.
 
 **Response**
 
@@ -232,6 +235,8 @@ List outputs for a single input.
 Restart an existing output in place.
 
 This is the row-level Start behavior in the Web UI. For pull inputs, the backend ensures the input is active before starting the output. For accept-mode push inputs, it restarts only the output worker and relies on the publisher to connect to the hub.
+
+If the output is already running, the endpoint returns `200 OK` without launching a duplicate worker. During async import rebuilds, output start requests may also observe a startup reservation that suppresses duplicate launches while the imported worker is still being created.
 
 **Request**
 
@@ -437,13 +442,15 @@ The response is served as:
 
 Import a `relay_config.json`-compatible payload.
 
-The current runtime workers are stopped before the imported inputs and outputs are recreated.
+The endpoint responds immediately with `202 Accepted` and performs the rebuild asynchronously. The current runtime workers are drained first, imported inputs are re-registered, pull inputs are waited back to `Active`, and then imported outputs are started.
+
+Because import is asynchronous, clients that immediately issue follow-up `/outputs/start` calls may briefly race output definition creation and should retry on `not found` responses.
 
 **Response**
 
 ```json
 {
-  "status": "ok"
+  "status": "accepted"
 }
 ```
 
@@ -594,3 +601,39 @@ Notes:
 Presets are defined in the state package and converted into ffmpeg args for outputs.
 
 Explicit request fields such as `bitrate` or `resolution` override preset defaults when both are provided.
+
+---
+
+## State and Stats Behavior
+
+This section summarizes operational behavior that is important for contributors.
+
+### State store keying
+
+- Inputs are keyed by `stream_path`
+- Outputs are keyed by composite `stream_path/output_id`
+- Active recordings are keyed by `stream_path`
+- Telemetry is keyed by process PID
+
+### What is usually cheap
+
+Most runtime updates are point mutations on a single key (status updates, PID updates,
+telemetry updates, viewer heartbeats), not whole-store rewrites.
+
+### What still scans
+
+- `/stats` cache refresh reads all inputs and outputs every `500ms`
+- `DELETE /inputs` scans outputs to remove those under one stream path
+- `GET /system/export` and `POST /system/import` iterate full input/output sets
+- `DELETE /recordings` checks active recordings by filename against active runtime set
+
+These scans are currently acceptable because they are either background aggregation
+or low-frequency admin operations.
+
+### Request-path behavior for `/stats`
+
+- Handler serves pre-encoded cached JSON
+- No on-demand process probing in request handler
+- No on-demand stats object reconstruction in request handler
+
+This keeps polling latency and lock pressure stable under concurrency.

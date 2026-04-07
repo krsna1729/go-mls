@@ -187,6 +187,31 @@ func (m *HLSManager) RemoveViewer(streamPath, viewerID string) {
 	m.runCleanupTasks(cleanupTasks)
 }
 
+// StopStream force-stops HLS generation for a stream and removes session state.
+// It is used for explicit lifecycle events (for example input deletion),
+// where waiting for idle timeout is not desired.
+func (m *HLSManager) StopStream(streamPath string) {
+	m.mu.Lock()
+	sess, exists := m.sessions[streamPath]
+	if !exists {
+		m.mu.Unlock()
+		// Ensure any stale store state is cleared even when no live session exists.
+		m.store.RemoveHLSSession(streamPath)
+		return
+	}
+
+	playlistDir := sess.playlistDir
+	sess.proc.Stop()
+	delete(m.sessions, streamPath)
+	m.store.RemoveHLSSession(streamPath)
+	m.mu.Unlock()
+
+	if err := os.RemoveAll(playlistDir); err != nil {
+		m.log.Warn("Failed to remove HLS playlist dir", "stream_path", streamPath, "playlist_dir", playlistDir, "error", err)
+	}
+	m.log.Info("HLS generation stopped", "stream_path", streamPath, "reason", "stream cleanup")
+}
+
 func (m *HLSManager) Shutdown() {
 	close(m.stopCh)
 	m.wg.Wait()

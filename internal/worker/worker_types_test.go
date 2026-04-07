@@ -1,6 +1,8 @@
 package worker
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -68,6 +70,63 @@ func TestHLSManager_Shutdown(t *testing.T) {
 
 	mgr.Shutdown()
 	assert.Equal(t, 0, len(mgr.sessions))
+}
+
+func TestHLSManager_StopStream(t *testing.T) {
+	log := logger.NewLogger()
+	store := state.NewStore()
+	baseDir := t.TempDir()
+
+	mgr := NewHLSManager(store, log, baseDir, "ultrafast", 1935, 30*time.Second, 30*time.Second)
+	t.Cleanup(mgr.Shutdown)
+
+	streamPath := "live/test"
+	playlistDir := filepath.Join(baseDir, streamPath)
+	if err := os.MkdirAll(playlistDir, 0755); err != nil {
+		t.Fatalf("failed to create playlist dir: %v", err)
+	}
+
+	proc := &mockProcess{}
+	mgr.mu.Lock()
+	mgr.sessions[streamPath] = &hlsSession{
+		proc:        proc,
+		playlistDir: playlistDir,
+		viewers:     map[string]time.Time{"viewer-1": time.Now()},
+	}
+	mgr.mu.Unlock()
+
+	mgr.store.AddHLSSession(&state.HLSSession{StreamPath: streamPath, PlaylistDir: playlistDir, ViewerCount: 1, PID: 1234})
+
+	mgr.StopStream(streamPath)
+
+	mgr.mu.Lock()
+	_, exists := mgr.sessions[streamPath]
+	mgr.mu.Unlock()
+	assert.False(t, exists)
+	assert.True(t, proc.stopped)
+
+	_, ok := mgr.store.GetHLSSession(streamPath)
+	assert.False(t, ok)
+
+	_, err := os.Stat(playlistDir)
+	assert.True(t, os.IsNotExist(err))
+}
+
+func TestHLSManager_StopStream_RemovesStaleStoreSession(t *testing.T) {
+	log := logger.NewLogger()
+	store := state.NewStore()
+	baseDir := t.TempDir()
+
+	mgr := NewHLSManager(store, log, baseDir, "ultrafast", 1935, 30*time.Second, 30*time.Second)
+	t.Cleanup(mgr.Shutdown)
+
+	streamPath := "stale/stream"
+	mgr.store.AddHLSSession(&state.HLSSession{StreamPath: streamPath, ViewerCount: 0})
+
+	mgr.StopStream(streamPath)
+
+	_, ok := mgr.store.GetHLSSession(streamPath)
+	assert.False(t, ok)
 }
 
 func TestHLSSession_Struct(t *testing.T) {

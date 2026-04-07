@@ -182,6 +182,74 @@ flowchart TB
 
 ---
 
+## Runtime Lifecycle Sequences
+
+### Import Rebuild Sequence
+
+The import path clears runtime state, re-registers inputs, restores output definitions,
+waits for pull inputs to become active, and then starts outputs. The HTTP request returns `202 Accepted` before this rebuild finishes, so follow-up control calls can briefly overlap the async restore window.
+
+```mermaid
+sequenceDiagram
+    participant Client as Client
+    participant API as API Server
+    participant Store as State Store
+    participant Ingest as Ingest Router
+    participant Hub as Hub (RTMP/RTSP)
+    participant Worker as Puller/Restreamer Workers
+
+    Client->>API: POST /system/import
+    API-->>Client: 202 Accepted
+    API->>API: stopAllOutputs(), stop active recording/HLS
+    API->>Worker: Wait for old workers to drain
+    API->>Ingest: Unregister all inputs
+    Ingest->>Hub: EvictStream(stream_path)
+    Ingest->>Worker: Stop puller (if any)
+    API->>Store: Clear runtime input/output state
+    loop For each imported input
+        API->>Ingest: RegisterInput(input)
+        alt Pull input
+            API->>Ingest: EnsureInputActive(stream_path)
+            Ingest->>Worker: Start puller
+        else Accept input
+            Note over Ingest,Hub: Wait for publisher
+        end
+    end
+    API->>Store: Add output definitions
+    loop For each imported output
+        API->>Store: Reserve output startup slot
+        API->>API: waitForInputActive(stream_path)
+        API->>Worker: Start output worker
+    end
+```
+
+### Input Delete Cleanup Sequence
+
+Deleting an input now performs explicit runtime teardown for outputs, recordings,
+HLS generation, pullers, and hub publishers before removing state.
+
+```mermaid
+sequenceDiagram
+    participant Client as Client
+    participant API as API Server
+    participant Worker as Output/Record/HLS Workers
+    participant Ingest as Ingest Router
+    participant Hub as Hub (RTMP/RTSP)
+    participant Store as State Store
+
+    Client->>API: DELETE /inputs?stream=...
+    API->>Worker: Stop/remove outputs for stream
+    API->>Worker: Stop recording for stream (if active)
+    API->>Worker: Stop HLS stream (if active)
+    API->>Ingest: UnregisterInput(stream_path)
+    Ingest->>Worker: Stop puller (if owned)
+    Ingest->>Hub: EvictStream(stream_path)
+    API->>Store: Remove input + child runtime entries
+    API-->>Client: 200 OK
+```
+
+---
+
 ## State Management
 
 ### State Store Structure
@@ -190,11 +258,14 @@ flowchart TB
 flowchart TB
     subgraph state["State Store"]
         A["Inputs<br/>map[streamPath]*Input"]
-        B["Outputs<br/>map[streamPath]map[outputID]*Output"]
+        B["Outputs<br/>map[streamPath/outputID]*Output"]
         C["Recordings<br/>map[streamPath]*Recording"]
         D["HLSSessions<br/>map[streamPath]*HLSSession"]
+        E["Telemetry<br/>map[pid]*Telemetry"]
     end
 ```
+
+For practical read/write behavior, hot paths, and scan tradeoffs, see `docs/state-and-stats.md`.
 
 ---
 
@@ -298,3 +369,4 @@ Hub lifecycle (`Start()`/`Stop()`) is serialized internally to avoid concurrent 
 - [Worker FSM Design](worker-fsm.md) - Detailed state machine diagrams
 - [API Reference](api-reference.md) - HTTP endpoints
 - [Configuration](configuration.md) - JSON config schema
+- [State And Stats Guide](state-and-stats.md) - Data model keys, access patterns, frequencies

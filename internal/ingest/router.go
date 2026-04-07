@@ -23,6 +23,8 @@ type Router struct {
 	rtmpPort int
 	mu       sync.RWMutex
 
+	evictStream func(streamPath string)
+
 	// Map of stream_path -> active Puller for pull-mode inputs
 	pullers map[string]*worker.Puller
 }
@@ -42,6 +44,14 @@ func NewRouter(store *state.Store, log *logger.Logger, cfg Config) *Router {
 		rtmpPort: cfg.RTMPPort,
 		pullers:  make(map[string]*worker.Puller),
 	}
+}
+
+// SetStreamEvictor registers a callback that forcefully evicts active publishers
+// for a stream path at the hub layer.
+func (r *Router) SetStreamEvictor(evictor func(streamPath string)) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.evictStream = evictor
 }
 
 // RegisterInput registers an input and starts ingestion if it's a puller.
@@ -78,6 +88,13 @@ func (r *Router) EnsureInputActive(ctx context.Context, streamPath string) error
 	if in.Mode != state.InputModePull {
 		return nil
 	}
+	if in.Status == state.InputStatusActive {
+		return nil
+	}
+	if in.Status == state.InputStatusStarting {
+		// A puller startup is already in progress; avoid spawning duplicates.
+		return nil
+	}
 
 	r.mu.RLock()
 	_, running := r.pullers[streamPath]
@@ -94,11 +111,29 @@ func (r *Router) EnsureInputActive(ctx context.Context, streamPath string) error
 // UnregisterInput stops any active puller and removes the input.
 func (r *Router) UnregisterInput(streamPath string) error {
 	r.mu.Lock()
-	if puller, ok := r.pullers[streamPath]; ok {
-		puller.Stop()
+	puller := r.pullers[streamPath]
+	if puller != nil {
 		delete(r.pullers, streamPath)
 	}
+	evictor := r.evictStream
 	r.mu.Unlock()
+
+	if puller != nil {
+		puller.Stop()
+	}
+
+	if evictor != nil {
+		evictor(streamPath)
+	}
+
+	if puller != nil {
+		select {
+		case <-puller.Done():
+		case <-time.After(5 * time.Second):
+			r.log.Warn("Timed out waiting for puller to stop during unregister", "stream_path", streamPath)
+		}
+	}
+
 	return r.store.RemoveInput(streamPath)
 }
 
@@ -152,12 +187,14 @@ func (r *Router) startFFmpegPuller(ctx context.Context, in *state.Input) {
 	r.mu.Unlock()
 
 	// Monitor for exit and clean up
-	go func() {
-		<-puller.Done()
+	go func(p *worker.Puller) {
+		<-p.Done()
 		r.mu.Lock()
-		delete(r.pullers, in.StreamPath)
+		if current, ok := r.pullers[in.StreamPath]; ok && current == p {
+			delete(r.pullers, in.StreamPath)
+		}
 		r.mu.Unlock()
-	}()
+	}(puller)
 }
 
 // ValidateToken checks if the provided token matches the registered ingest token.

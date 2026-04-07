@@ -10,8 +10,29 @@ import (
 	"testing"
 	"time"
 
+	"go-mls/internal/ingest"
+	"go-mls/internal/logger"
 	"go-mls/internal/state"
+	"go-mls/internal/worker"
 )
+
+type blockingStopWorker struct {
+	stopped chan struct{}
+	release chan struct{}
+}
+
+func (w *blockingStopWorker) Stop() {
+	select {
+	case <-w.stopped:
+	default:
+		close(w.stopped)
+	}
+}
+
+func (w *blockingStopWorker) Wait() error {
+	<-w.release
+	return nil
+}
 
 func TestHandleExportFormat(t *testing.T) {
 	store := state.NewStore()
@@ -203,6 +224,90 @@ func TestPresetToArgs(t *testing.T) {
 	}
 	if !foundAudioCodec {
 		t.Error("expected -c:a aac in audio args")
+	}
+}
+
+func TestStopWorkersAndWaitDrainsWorkers(t *testing.T) {
+	s := &Server{log: logger.NewLogger()}
+	workerA := &blockingStopWorker{stopped: make(chan struct{}), release: make(chan struct{})}
+	workerB := &blockingStopWorker{stopped: make(chan struct{}), release: make(chan struct{})}
+	finished := make(chan struct{})
+
+	go func() {
+		s.stopWorkersAndWait("test", 500*time.Millisecond, workerA, workerB)
+		close(finished)
+	}()
+
+	select {
+	case <-workerA.stopped:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("worker A was not stopped")
+	}
+	select {
+	case <-workerB.stopped:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("worker B was not stopped")
+	}
+
+	select {
+	case <-finished:
+		t.Fatal("stopWorkersAndWait returned before workers drained")
+	default:
+	}
+
+	close(workerA.release)
+	close(workerB.release)
+
+	select {
+	case <-finished:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("stopWorkersAndWait did not return after workers drained")
+	}
+}
+
+func TestHandleOutputStartNoopsForReservedOutputSlot(t *testing.T) {
+	store := state.NewStore()
+	log := logger.NewLogger()
+	router := ingest.NewRouter(store, log, ingest.Config{RTMPPort: 1935})
+	if err := store.AddInput(&state.Input{
+		StreamPath: "push-stream",
+		Mode:       state.InputModeAccept,
+		Status:     state.InputStatusActive,
+	}); err != nil {
+		t.Fatalf("add input: %v", err)
+	}
+	if err := store.AddOutput(&state.Output{
+		StreamPath: "push-stream",
+		OutputID:   "push-out",
+		RemoteURL:  "rtmp://dest/live/push-out",
+		Status:     state.OutputStatusStarting,
+	}); err != nil {
+		t.Fatalf("add output: %v", err)
+	}
+
+	s := &Server{
+		store:       store,
+		ingest:      router,
+		log:         log,
+		restreamers: map[string]*worker.Restreamer{"push-stream/push-out": nil},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/outputs/start", strings.NewReader(`{"stream_path":"push-stream","output_id":"push-out"}`))
+	w := httptest.NewRecorder()
+	s.handleOutputStart(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	if len(s.restreamers) != 1 {
+		t.Fatalf("expected reserved restreamer slot to remain, got %d entries", len(s.restreamers))
+	}
+	out, ok := store.GetOutput("push-stream", "push-out")
+	if !ok {
+		t.Fatal("output missing after start call")
+	}
+	if out.Status != state.OutputStatusStarting {
+		t.Fatalf("expected output to remain Starting, got %s", out.Status)
 	}
 }
 

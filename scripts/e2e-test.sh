@@ -14,6 +14,10 @@ RESULTS_DIR="${RESULTS_DIR:-/results}"
 RECORDINGS_DIR="${RECORDINGS_DIR:-/recordings}"
 HLS_DIR="${HLS_DIR:-/hls}"
 TEST_SOURCE_FILE="${TEST_SOURCE_FILE:-/testdata/testsrc.mp4}"
+FFPROBE_TIMEOUT_S="${FFPROBE_TIMEOUT_S:-4}"
+FFPROBE_ANALYZE_US="${FFPROBE_ANALYZE_US:-2000000}"
+FFPROBE_PROBESIZE="${FFPROBE_PROBESIZE:-1000000}"
+FFPROBE_RW_TIMEOUT_US="${FFPROBE_RW_TIMEOUT_US:-3000000}"
 
 NGINX_PID=""
 PULL_SRC_PID=""
@@ -119,7 +123,14 @@ wait_for_stream() {
     name=$3
     echo "Waiting for stream ${name} (timeout: ${timeout}s)..."
     for i in $(seq 1 "${timeout}"); do
-        if ffprobe -v quiet -show_entries stream=codec_type "${url}" 2>/dev/null | grep -q video; then
+        if fast_ffprobe -v error -hide_banner \
+            -analyzeduration "${FFPROBE_ANALYZE_US}" \
+            -probesize "${FFPROBE_PROBESIZE}" \
+            -rw_timeout "${FFPROBE_RW_TIMEOUT_US}" \
+            -select_streams v:0 \
+            -show_entries stream=codec_type \
+            -of default=nw=1:nk=1 \
+            "${url}" 2>/dev/null | grep -q '^video$'; then
             echo "  OK: Stream ${name} is active!"
             return 0
         fi
@@ -223,7 +234,25 @@ start_output() {
     output_id=$2
     result_file=$3
     payload=$(printf '{"stream_path":"%s","output_id":"%s"}' "${stream}" "${output_id}")
-    curl -s -X POST "${API}/outputs/start" -H "Content-Type: application/json" -d "${payload}" | tee "${result_file}"
+
+    max_attempts=8
+    attempt=1
+    while [ "${attempt}" -le "${max_attempts}" ]; do
+        response=$(curl -s -X POST "${API}/outputs/start" -H "Content-Type: application/json" -d "${payload}")
+        echo "${response}" | tee "${result_file}"
+
+        if echo "${response}" | grep -q '"status":"ok"'; then
+            return 0
+        fi
+
+        if [ "${attempt}" -lt "${max_attempts}" ]; then
+            sleep 2
+        fi
+        attempt=$((attempt + 1))
+    done
+
+    echo "FAIL: unable to start output ${stream}/${output_id} after ${max_attempts} attempts"
+    return 1
 }
 
 start_recording() {
@@ -290,7 +319,23 @@ delete_input() {
 
 probe_profile() {
     url=$1
-    ffprobe -v error -select_streams v:0 -show_entries stream=width,height,r_frame_rate -of default=nw=1:nk=1 "${url}" 2>/dev/null | head -3 | tr '\n' ' '
+    fast_ffprobe -v error -hide_banner \
+        -analyzeduration "${FFPROBE_ANALYZE_US}" \
+        -probesize "${FFPROBE_PROBESIZE}" \
+        -rw_timeout "${FFPROBE_RW_TIMEOUT_US}" \
+        -select_streams v:0 \
+        -show_entries stream=width,height,r_frame_rate \
+        -of default=nw=1:nk=1 \
+        "${url}" 2>/dev/null | head -3 | tr '\n' ' '
+}
+
+# Run ffprobe with a hard wall-clock timeout when available to prevent hangs.
+fast_ffprobe() {
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "${FFPROBE_TIMEOUT_S}" ffprobe "$@"
+    else
+        ffprobe "$@"
+    fi
 }
 
 wait_for_profile() {

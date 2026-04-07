@@ -56,7 +56,16 @@ type statsCacheSnapshot struct {
 	body []byte
 }
 
-const statsCacheRefreshInterval = 500 * time.Millisecond
+type stoppableWorker interface {
+	Stop()
+	Wait() error
+}
+
+const (
+	statsCacheRefreshInterval = 500 * time.Millisecond
+	importInputReadyTimeout  = 15 * time.Second
+	importWorkerStopTimeout  = 5 * time.Second
+)
 
 // NewServer creates a new HTTP API server.
 func NewServer(
@@ -193,7 +202,9 @@ func (s *Server) deleteInput(w http.ResponseWriter, r *http.Request) {
 	// Stop all outputs for this input first
 	for key, rs := range s.restreamers {
 		if strings.HasPrefix(key, streamPath+"/") {
-			rs.Stop()
+			if rs != nil {
+				rs.Stop()
+			}
 			delete(s.restreamers, key)
 		}
 	}
@@ -212,6 +223,10 @@ func (s *Server) deleteInput(w http.ResponseWriter, r *http.Request) {
 		s.store.RemoveRecording(streamPath)
 	}
 	s.mu.Unlock()
+
+	if s.hlsMgr != nil {
+		s.hlsMgr.StopStream(streamPath)
+	}
 
 	if err := s.ingest.UnregisterInput(streamPath); err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
@@ -252,6 +267,8 @@ type outputActionRequest struct {
 
 func (s *Server) waitForInputActive(streamPath string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
+	lastEnsure := time.Time{}
+	lastErr := ""
 	for time.Now().Before(deadline) {
 		in, ok := s.store.GetInput(streamPath)
 		if !ok {
@@ -262,14 +279,66 @@ func (s *Server) waitForInputActive(streamPath string, timeout time.Duration) er
 			return nil
 		case state.InputStatusError:
 			if in.LastError != "" {
-				return fmt.Errorf("input %q error: %s", streamPath, in.LastError)
+				lastErr = in.LastError
+			} else {
+				lastErr = "input entered error state"
 			}
-			return fmt.Errorf("input %q error", streamPath)
+		}
+
+		// Keep nudging input activation while waiting.
+		// For pull inputs this restarts failed pullers; for accept inputs it's a no-op.
+		if time.Since(lastEnsure) >= time.Second {
+			if err := s.ingest.EnsureInputActive(s.ctx, streamPath); err != nil {
+				if lastErr == "" {
+					lastErr = err.Error()
+				}
+			} else {
+				lastEnsure = time.Now()
+			}
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
 
+	if lastErr != "" {
+		return fmt.Errorf("input %q did not become active in time: %s", streamPath, lastErr)
+	}
 	return fmt.Errorf("input %q did not become active in time", streamPath)
+}
+
+func (s *Server) stopWorkersAndWait(kind string, timeout time.Duration, workers ...stoppableWorker) {
+	activeWorkers := make([]stoppableWorker, 0, len(workers))
+	for _, worker := range workers {
+		if worker != nil {
+			activeWorkers = append(activeWorkers, worker)
+		}
+	}
+	if len(activeWorkers) == 0 {
+		return
+	}
+
+	var wg sync.WaitGroup
+	done := make(chan struct{})
+	for _, worker := range activeWorkers {
+		wg.Add(1)
+		go func(worker stoppableWorker) {
+			defer wg.Done()
+			worker.Stop()
+			if err := worker.Wait(); err != nil {
+				s.log.Debug("Worker exited while draining import runtime", "kind", kind, "error", err)
+			}
+		}(worker)
+	}
+
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(timeout):
+		s.log.Warn("Timed out waiting for runtime workers to stop during import", "kind", kind, "count", len(activeWorkers), "timeout", timeout)
+	}
 }
 
 func (s *Server) handleOutputs(w http.ResponseWriter, r *http.Request) {
@@ -420,6 +489,10 @@ func (s *Server) handleOutputStart(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 		return
 	}
+	if out.Status == state.OutputStatusRunning {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "output_id": req.OutputID})
+		return
+	}
 
 	key := req.StreamPath + "/" + req.OutputID
 	s.mu.Lock()
@@ -475,7 +548,9 @@ func (s *Server) handleOutputStop(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 
 	if ok {
-		rs.Stop()
+		if rs != nil {
+			rs.Stop()
+		}
 	} else {
 		s.store.UpdateOutputStatus(req.StreamPath, req.OutputID, state.OutputStatusStopped, "")
 	}
@@ -495,7 +570,9 @@ func (s *Server) deleteOutput(w http.ResponseWriter, r *http.Request) {
 	key := streamPath + "/" + outputID
 	s.mu.Lock()
 	if rs, ok := s.restreamers[key]; ok {
-		rs.Stop()
+		if rs != nil {
+			rs.Stop()
+		}
 		delete(s.restreamers, key)
 	}
 	s.mu.Unlock()
@@ -987,12 +1064,16 @@ func (s *Server) applyImport(relays []importRelay) {
 	s.recorders = make(map[string]*worker.Recorder)
 	s.mu.Unlock()
 
+	restreamerWorkers := make([]stoppableWorker, 0, len(restreamers))
 	for _, rs := range restreamers {
-		rs.Stop()
+		restreamerWorkers = append(restreamerWorkers, rs)
 	}
+	recorderWorkers := make([]stoppableWorker, 0, len(recorders))
 	for _, rec := range recorders {
-		rec.Stop()
+		recorderWorkers = append(recorderWorkers, rec)
 	}
+	s.stopWorkersAndWait("restreamer", importWorkerStopTimeout, restreamerWorkers...)
+	s.stopWorkersAndWait("recorder", importWorkerStopTimeout, recorderWorkers...)
 
 	// Clear existing routing/state definitions before recreating from imported payload.
 	for _, in := range s.store.ListInputs() {
@@ -1030,11 +1111,7 @@ func (s *Server) applyImport(relays []importRelay) {
 			}
 			totalInputs.Add(1)
 
-			inputReadyErr := s.waitForInputActive(inputName, 10*time.Second)
-			if inputReadyErr != nil {
-				s.log.Warn("Imported input did not become active before output start", "stream_path", inputName, "error", inputReadyErr)
-			}
-
+			importedOutputs := make([]*state.Output, 0, len(relay.Outputs))
 			for _, out := range relay.Outputs {
 				outputID := out.OutputName
 				if outputID == "" {
@@ -1084,21 +1161,35 @@ func (s *Server) applyImport(relays []importRelay) {
 					s.log.Error("Failed to add output", "stream_path", inputName, "output_id", outputID, "error", err)
 					continue
 				}
+				importedOutputs = append(importedOutputs, stateOut)
 				totalOutputs.Add(1)
+			}
 
-				if inputReadyErr != nil {
-					s.store.UpdateOutputStatus(inputName, outputID, state.OutputStatusError, inputReadyErr.Error())
-					continue
+			inputReadyErr := s.waitForInputActive(inputName, importInputReadyTimeout)
+			if inputReadyErr != nil {
+				s.log.Warn("Imported input did not become active before output start", "stream_path", inputName, "error", inputReadyErr)
+				for _, stateOut := range importedOutputs {
+					s.store.UpdateOutputStatus(stateOut.StreamPath, stateOut.OutputID, state.OutputStatusError, inputReadyErr.Error())
 				}
+				return
+			}
 
+			for _, stateOut := range importedOutputs {
+				key := stateOut.StreamPath + "/" + stateOut.OutputID
+				s.store.UpdateOutputStatus(stateOut.StreamPath, stateOut.OutputID, state.OutputStatusStarting, "")
+				s.mu.Lock()
+				s.restreamers[key] = nil
+				s.mu.Unlock()
 				rs, err := worker.StartRestreamer(s.ctx, s.store, s.log, stateOut, s.rtmpPort)
 				if err != nil {
-					s.store.UpdateOutputStatus(inputName, outputID, state.OutputStatusError, err.Error())
-					s.log.Warn("Imported output failed to start", "stream_path", inputName, "output_id", outputID, "error", err)
+					s.mu.Lock()
+					delete(s.restreamers, key)
+					s.mu.Unlock()
+					s.store.UpdateOutputStatus(stateOut.StreamPath, stateOut.OutputID, state.OutputStatusError, err.Error())
+					s.log.Warn("Imported output failed to start", "stream_path", stateOut.StreamPath, "output_id", stateOut.OutputID, "error", err)
 					continue
 				}
 
-				key := inputName + "/" + outputID
 				s.mu.Lock()
 				s.restreamers[key] = rs
 				s.mu.Unlock()
