@@ -149,6 +149,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 type inputRequest struct {
 	StreamPath  string `json:"stream_path"`
 	RemoteURL   string `json:"remote_url,omitempty"`
+	AcceptProto string `json:"accept_protocol,omitempty"`
 	IngestToken string `json:"ingest_token,omitempty"`
 }
 
@@ -177,9 +178,10 @@ func (s *Server) createInput(w http.ResponseWriter, r *http.Request) {
 	}
 
 	in := &state.Input{
-		StreamPath:  req.StreamPath,
-		RemoteURL:   req.RemoteURL,
-		IngestToken: req.IngestToken,
+		StreamPath:     req.StreamPath,
+		RemoteURL:      req.RemoteURL,
+		AcceptProtocol: strings.ToLower(strings.TrimSpace(req.AcceptProto)),
+		IngestToken:    req.IngestToken,
 	}
 
 	if err := s.ingest.RegisterInput(s.ctx, in); err != nil {
@@ -793,13 +795,14 @@ type serverStats struct {
 }
 
 type inputStats struct {
-	StreamPath string            `json:"stream_path"`
-	Mode       state.InputMode   `json:"mode"`
-	Status     state.InputStatus `json:"status"`
-	RemoteURL  string            `json:"remote_url,omitempty"`
-	RemoteAddr string            `json:"remote_addr,omitempty"`
-	LastError  string            `json:"last_error,omitempty"`
-	Telemetry  *state.Telemetry  `json:"telemetry,omitempty"`
+	StreamPath  string            `json:"stream_path"`
+	Mode        state.InputMode   `json:"mode"`
+	AcceptProto string            `json:"accept_protocol,omitempty"`
+	Status      state.InputStatus `json:"status"`
+	RemoteURL   string            `json:"remote_url,omitempty"`
+	RemoteAddr  string            `json:"remote_addr,omitempty"`
+	LastError   string            `json:"last_error,omitempty"`
+	Telemetry   *state.Telemetry  `json:"telemetry,omitempty"`
 }
 
 type outputStats struct {
@@ -874,12 +877,13 @@ func (s *Server) buildStatsResponse(selfProc **process.Process) statsResponse {
 
 	for _, in := range inputs {
 		is := inputStats{
-			StreamPath: in.StreamPath,
-			Mode:       in.Mode,
-			Status:     in.Status,
-			RemoteURL:  in.RemoteURL,
-			RemoteAddr: in.RemoteAddr,
-			LastError:  in.LastError,
+			StreamPath:  in.StreamPath,
+			Mode:        in.Mode,
+			AcceptProto: in.AcceptProtocol,
+			Status:      in.Status,
+			RemoteURL:   in.RemoteURL,
+			RemoteAddr:  in.RemoteAddr,
+			LastError:   in.LastError,
 		}
 		if in.PID > 0 {
 			if t, ok := s.store.GetTelemetry(in.PID); ok {
@@ -955,9 +959,10 @@ type exportOutput struct {
 }
 
 type exportRelay struct {
-	InputURL  string         `json:"input_url"`
-	InputName string         `json:"input_name"`
-	Outputs   []exportOutput `json:"outputs"`
+	InputURL    string         `json:"input_url"`
+	InputName   string         `json:"input_name"`
+	AcceptProto string         `json:"accept_protocol,omitempty"`
+	Outputs     []exportOutput `json:"outputs"`
 }
 
 func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
@@ -972,9 +977,10 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 	relays := make(map[string]*exportRelay)
 	for _, in := range inputs {
 		relays[in.StreamPath] = &exportRelay{
-			InputURL:  in.RemoteURL,
-			InputName: in.StreamPath,
-			Outputs:   []exportOutput{},
+			InputURL:    in.RemoteURL,
+			InputName:   in.StreamPath,
+			AcceptProto: in.AcceptProtocol,
+			Outputs:     []exportOutput{},
 		}
 	}
 
@@ -1017,9 +1023,10 @@ type importOutput struct {
 }
 
 type importRelay struct {
-	InputURL  string         `json:"input_url"`
-	InputName string         `json:"input_name"`
-	Outputs   []importOutput `json:"outputs"`
+	InputURL    string         `json:"input_url"`
+	InputName   string         `json:"input_name"`
+	AcceptProto string         `json:"accept_protocol,omitempty"`
+	Outputs     []importOutput `json:"outputs"`
 }
 
 func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
@@ -1104,7 +1111,7 @@ func (s *Server) applyImport(relays []importRelay) {
 				return
 			}
 
-			in := &state.Input{StreamPath: inputName, RemoteURL: relay.InputURL}
+			in := &state.Input{StreamPath: inputName, RemoteURL: relay.InputURL, AcceptProtocol: relay.AcceptProto}
 			if err := s.ingest.RegisterInput(s.ctx, in); err != nil {
 				s.log.Error("Failed to register input", "input_name", inputName, "error", err)
 				return

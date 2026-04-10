@@ -3,6 +3,8 @@ set -e
 
 API="http://go-mls:8080"
 RTMP_HUB="rtmp://go-mls:1935"
+SRT_PUSH_URL="${SRT_PUSH_URL:-srt://go-mls:9000?mode=caller&streamid=publish:push-stream&transtype=live}"
+PUSH_PROTOCOL="${PUSH_PROTOCOL:-rtmp}"
 STREAM_PATH="push-stream"
 MAX_RETRIES=120
 
@@ -32,6 +34,11 @@ while true; do
     echo "source-push: Waiting for ${STREAM_PATH} registration..."
     sleep 1
 done
+
+if [ "${PUSH_PROTOCOL}" = "srt" ]; then
+    echo "source-push: Starting ffmpeg SRT push to ${SRT_PUSH_URL}"
+    exec ffmpeg -re -stream_loop -1 -i /testdata/testsrc.mp4 -c copy -f mpegts "${SRT_PUSH_URL}"
+fi
 
 echo "source-push: Starting ffmpeg push to ${RTMP_HUB}/${STREAM_PATH}"
 exec ffmpeg -re -stream_loop -1 -i /testdata/testsrc.mp4 -c copy -f flv "${RTMP_HUB}/${STREAM_PATH}"

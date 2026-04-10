@@ -351,10 +351,12 @@ func (fp *FFmpegProcess) pollHardware(ctx context.Context) {
 			} else {
 				proc = nil
 			}
-			if memInfo, err := proc.MemoryInfo(); err == nil {
-				t.MemMB = float64(memInfo.RSS) / (1024 * 1024)
-			} else {
-				proc = nil
+			if proc != nil {
+				if memInfo, err := proc.MemoryInfo(); err == nil {
+					t.MemMB = float64(memInfo.RSS) / (1024 * 1024)
+				} else {
+					proc = nil
+				}
 			}
 			fp.store.UpdateTelemetry(fp.pid, t)
 		}

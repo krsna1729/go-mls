@@ -52,6 +52,10 @@ Create a `config.json` file (see `config.example.json` for reference):
     "rtsp_hub": {
       "host": "0.0.0.0",
       "port": 8554
+    },
+    "srt_hub": {
+      "host": "0.0.0.0",
+      "port": 9000
     }
   },
   "recording": {
@@ -173,6 +177,8 @@ E2E_SOURCE_ONLY=1 . /e2e-test.sh
 start_local_rtmp_server
 start_pull_source_publisher      # publishes to rtmp://127.0.0.1:1935/live/testsrc
 start_push_source                # publishes to rtmp://go-mls:1935/push-stream
+# Optional: SRT passive push path
+# PUSH_PROTOCOL=srt start_push_source
 
 # Keep shell alive while testing from browser/API
 tail -f /dev/null
@@ -197,9 +203,10 @@ Notes:
 
 The e2e tests verify:
 - Pull ingest from local RTMP source within `qa-harness`
-- Push ingest from local FFmpeg publisher within `qa-harness`
-- Simultaneous operation with 2 inputs
-- Multiple outputs per input (2 outputs each)
+- Push ingest from local FFmpeg publisher within `qa-harness` (RTMP by default, optional SRT mode)
+- Simultaneous operation with 4 inputs and 4 outputs
+- Single output per input with diverse destinations (RTMP/RTSP/SRT)
+- Full import/export cycle
 - Recording to disk
 - Recording list refresh and file serving from the recordings directory
 - HLS playlist generation

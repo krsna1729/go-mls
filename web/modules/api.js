@@ -151,7 +151,8 @@ const API = (() => {
             }
             return fetchJSON('/inputs', 'POST', {
                 stream_path: config.input_name,
-                remote_url: config.input_url || ''
+                remote_url: config.input_url || '',
+                accept_protocol: config.accept_protocol || ''
             });
         },
 

@@ -17,6 +17,8 @@ type Puller struct {
 }
 
 func StartPuller(ctx context.Context, store *state.Store, log *logger.Logger, stream *state.Input, rtmpPort int) (*Puller, error) {
+	// Pullers always push into the internal RTMP relay bus. FFmpeg handles
+	// remote protocol conversion before handing the stream to local workers.
 	localURL := fmt.Sprintf("rtmp://127.0.0.1:%d/%s", rtmpPort, stream.StreamPath)
 
 	args := []string{

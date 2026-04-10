@@ -38,7 +38,7 @@ func TestHandleExportFormat(t *testing.T) {
 	store := state.NewStore()
 	store.AddInput(&state.Input{StreamPath: "test1", RemoteURL: "rtmp://source1"})
 	store.AddOutput(&state.Output{StreamPath: "test1", OutputID: "out1", RemoteURL: "rtmp://dest1"})
-	store.AddInput(&state.Input{StreamPath: "test2", RemoteURL: "rtmp://source2"})
+	store.AddInput(&state.Input{StreamPath: "test2", AcceptProtocol: "srt"})
 	store.AddOutput(&state.Output{StreamPath: "test2", OutputID: "out2", RemoteURL: "rtmp://dest2"})
 
 	s := &Server{store: store}
@@ -73,8 +73,14 @@ func TestHandleExportFormat(t *testing.T) {
 		if len(relay.Outputs) != 1 {
 			t.Errorf("expected 1 output per relay, got %d for %s", len(relay.Outputs), relay.InputName)
 		}
-		if relay.InputURL == "" || relay.InputName == "" {
-			t.Error("relay missing input_url or input_name")
+		if relay.InputName == "" {
+			t.Error("relay missing input_name")
+		}
+		if relay.InputName == "test1" && relay.InputURL == "" {
+			t.Error("expected pull relay to include input_url")
+		}
+		if relay.InputName == "test2" && relay.AcceptProto != "srt" {
+			t.Errorf("expected test2 accept_protocol=srt, got %q", relay.AcceptProto)
 		}
 	}
 }
@@ -140,6 +146,16 @@ func TestParseImportRelay(t *testing.T) {
 			]
 		},
 		{
+			"input_name": "push_stream_srt",
+			"accept_protocol": "srt",
+			"outputs": [
+				{
+					"output_url": "rtmp://dest2srt",
+					"output_name": "out2srt"
+				}
+			]
+		},
+		{
 			"input_name": "push_stream",
 			"outputs": [
 				{
@@ -155,8 +171,8 @@ func TestParseImportRelay(t *testing.T) {
 		t.Fatalf("failed to parse import: %v", err)
 	}
 
-	if len(relays) != 2 {
-		t.Errorf("expected 2 relays, got %d", len(relays))
+	if len(relays) != 3 {
+		t.Errorf("expected 3 relays, got %d", len(relays))
 	}
 
 	relay := relays[0]
@@ -191,8 +207,19 @@ func TestParseImportRelay(t *testing.T) {
 	if relay2.InputURL != "" {
 		t.Errorf("expected empty input_url for push mode, got %s", relay2.InputURL)
 	}
-	if relay2.InputName != "push_stream" {
-		t.Errorf("expected input_name push_stream, got %s", relay2.InputName)
+	if relay2.InputName != "push_stream_srt" {
+		t.Errorf("expected input_name push_stream_srt, got %s", relay2.InputName)
+	}
+	if relay2.AcceptProto != "srt" {
+		t.Errorf("expected accept_protocol srt, got %s", relay2.AcceptProto)
+	}
+
+	relay3 := relays[2]
+	if relay3.InputURL != "" {
+		t.Errorf("expected empty input_url for push mode, got %s", relay3.InputURL)
+	}
+	if relay3.InputName != "push_stream" {
+		t.Errorf("expected input_name push_stream, got %s", relay3.InputName)
 	}
 }
 

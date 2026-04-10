@@ -9,7 +9,13 @@ document.addEventListener('DOMContentLoaded', function () {
         <h2>Add Input</h2>
         <div class="md-input-row" id="addInputRow" style="display:flex; flex-wrap:wrap; gap:12px; align-items:center;">
             <input type="text" id="inputName" placeholder="Input Name" style="flex:1; min-width:150px;">
-            <input type="text" id="inputUrl" placeholder="Input URL (to pull only)" style="flex:2; min-width:250px;">
+            <select id="inputMode" style="flex:1; min-width:180px;">
+                <option value="pull">Pull (set Input URL)</option>
+                <option value="accept-rtmp">Passive Accept (RTMP)</option>
+                <option value="accept-rtsp">Passive Accept (RTSP)</option>
+                <option value="accept-srt">Passive Accept (SRT)</option>
+            </select>
+            <input type="text" id="inputUrl" placeholder="Input URL (required for pull mode, e.g. srt://source:9000/live)" style="flex:2; min-width:250px;">
             <button id="startInputBtn"><span class="material-icons">play_arrow</span>Start Input</button>
         </div>
         
@@ -298,16 +304,25 @@ document.addEventListener('DOMContentLoaded', function () {
     document.getElementById('startInputBtn').onclick = function () {
         const inputName = document.getElementById('inputName').value.trim();
         const inputUrl = document.getElementById('inputUrl').value.trim();
+        const inputMode = document.getElementById('inputMode').value;
 
         if (!inputName) {
             alert('Input Name is required');
             return;
         }
 
-        API.startInput({
+        const req = {
             input_name: inputName,
-            input_url: inputUrl
-        }).then(() => {
+            input_url: inputMode === 'pull' ? inputUrl : '',
+            accept_protocol: inputMode === 'accept-srt' ? 'srt' : (inputMode === 'accept-rtsp' ? 'rtsp' : 'rtmp')
+        };
+
+        if (inputMode === 'pull' && !inputUrl) {
+            alert('Input URL is required in pull mode');
+            return;
+        }
+
+        API.startInput(req).then(() => {
             document.getElementById('inputName').value = '';
             document.getElementById('inputUrl').value = '';
             fetchStatus();
@@ -390,13 +405,24 @@ document.addEventListener('DOMContentLoaded', function () {
         window.location = '/system/export';
     };
 
+    function confirmImportDestructive() {
+        return confirm('Import will delete all current inputs and outputs, interrupt active streams, and recreate the configuration from the selected file. Continue?');
+    }
+
     document.getElementById('importBtn').onclick = function () {
+        if (!confirmImportDestructive()) {
+            return;
+        }
         document.getElementById('importFile').click();
     };
 
     document.getElementById('importFile').onchange = function (e) {
         const file = e.target.files[0];
         if (!file) return;
+        if (!confirmImportDestructive()) {
+            e.target.value = '';
+            return;
+        }
         const formData = new FormData();
         formData.append('file', file);
         API.importConfig(file).then(() => {

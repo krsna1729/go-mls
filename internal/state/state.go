@@ -30,11 +30,14 @@ const (
 
 // Input represents a registered input stream.
 type Input struct {
-	StreamPath  string    `json:"stream_path"`
-	RemoteURL   string    `json:"remote_url,omitempty"`
-	IngestToken string    `json:"ingest_token,omitempty"`
-	Mode        InputMode `json:"mode"`
-	RemoteAddr  string    `json:"-"`
+	StreamPath string `json:"stream_path"`
+	RemoteURL  string `json:"remote_url,omitempty"`
+	// AcceptProtocol selects the passive ingest protocol when RemoteURL is empty.
+	// Supported values are "rtmp" (default), "rtsp", and "srt".
+	AcceptProtocol string    `json:"accept_protocol,omitempty"`
+	IngestToken    string    `json:"ingest_token,omitempty"`
+	Mode           InputMode `json:"mode"`
+	RemoteAddr     string    `json:"-"`
 
 	// Runtime state (not persisted)
 	Status    InputStatus `json:"-"`

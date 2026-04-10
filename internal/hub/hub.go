@@ -1,5 +1,5 @@
 // Package hub provides a unified interface for media ingestion hubs.
-// It supports both RTMP and RTSP protocols for receiving published streams.
+// It supports RTMP, RTSP, and SRT protocols for receiving published streams.
 package hub
 
 import (
@@ -26,6 +26,7 @@ type HubType string
 const (
 	HubTypeRTMP = HubType("rtmp")
 	HubTypeRTSP = HubType("rtsp")
+	HubTypeSRT  = HubType("srt")
 )
 
 // Hub is the interface for media ingestion hubs.

@@ -200,7 +200,7 @@ func (h *rtspHub) OnPlay(ctx *gortsplib.ServerHandlerOnPlayCtx) (*base.Response,
 	return &base.Response{StatusCode: base.StatusOK}, nil
 }
 
-func (h *rtspHub) OnRecord(ctx *gortsplib.ServerHandlerOnPlayCtx) (*base.Response, error) {
+func (h *rtspHub) OnRecord(ctx *gortsplib.ServerHandlerOnRecordCtx) (*base.Response, error) {
 	pathName := strings.TrimPrefix(ctx.Path, "/")
 
 	h.mu.RLock()

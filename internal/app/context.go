@@ -38,17 +38,17 @@ func NewContext(cfg *config.Config, log *logger.Logger) (*Context, error) {
 		hubType = hub.HubType(cfg.Relay.HubType)
 	}
 
-	var hubPort int
-	var hubHost string
+	internalRTMPHub := hub.NewRTMPHub(log, cfg.Relay.RTMPHub.Host, cfg.Relay.RTMPHub.Port)
+	rtspHub := hub.NewRTSPHub(log, cfg.Relay.RTSPHub.Host, cfg.Relay.RTSPHub.Port)
+	srtHub := hub.NewSRTHub(log, cfg.Relay.SRTHub.Host, cfg.Relay.SRTHub.Port)
+	primaryHub := hub.Hub(internalRTMPHub)
 	if hubType == hub.HubTypeRTSP {
-		hubHost = cfg.Relay.RTSPHub.Host
-		hubPort = cfg.Relay.RTSPHub.Port
-	} else {
-		hubHost = cfg.Relay.RTMPHub.Host
-		hubPort = cfg.Relay.RTMPHub.Port
+		primaryHub = rtspHub
+	} else if hubType == hub.HubTypeSRT {
+		primaryHub = srtHub
 	}
-
-	ctx.Hub = hub.NewHub(log, hubType, hubHost, hubPort)
+	ctx.Hub = hub.NewCompositeHub(primaryHub, internalRTMPHub, rtspHub, srtHub)
+	internalRTMPPort := cfg.Relay.RTMPHub.Port
 
 	ffmpeg.SetBinaryPath(cfg.FFmpeg.Path)
 	ffmpeg.SetLogLevel(cfg.FFmpeg.LogLevel)
@@ -57,7 +57,10 @@ func NewContext(cfg *config.Config, log *logger.Logger) (*Context, error) {
 	_ = ffmpegTimeout
 
 	ctx.Ingest = ingest.NewRouter(ctx.Store, log, ingest.Config{
-		RTMPPort: hubPort,
+		RTMPPort: internalRTMPPort,
+		RTSPPort: cfg.Relay.RTSPHub.Port,
+		SRTHost:  cfg.Relay.SRTHub.Host,
+		SRTPort:  cfg.Relay.SRTHub.Port,
 	})
 
 	ctx.Hub.SetOnPublish(ctx.Ingest.OnPublish)
@@ -74,7 +77,7 @@ func NewContext(cfg *config.Config, log *logger.Logger) (*Context, error) {
 		log,
 		cfg.HLS.PlaylistBaseDir,
 		hlsPreset,
-		hubPort,
+		internalRTMPPort,
 		time.Duration(cfg.HLS.ViewerHeartbeatTimeout),
 		time.Duration(cfg.HLS.IdleTimeout),
 	)
@@ -84,7 +87,7 @@ func NewContext(cfg *config.Config, log *logger.Logger) (*Context, error) {
 
 func (c *Context) Start() error {
 	if err := c.Hub.Start(); err != nil {
-		return fmt.Errorf("failed to start RTMP hub: %w", err)
+		return fmt.Errorf("failed to start ingest hubs: %w", err)
 	}
 
 	c.Logger.Info("Application context initialized successfully")

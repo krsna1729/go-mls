@@ -36,6 +36,9 @@ func TestDefaultConfig(t *testing.T) {
 	if config.Relay.RTSPHub.Host != "0.0.0.0" || config.Relay.RTSPHub.Port != 8554 {
 		t.Errorf("expected default RTSP hub 0.0.0.0:8554, got %s:%d", config.Relay.RTSPHub.Host, config.Relay.RTSPHub.Port)
 	}
+	if config.Relay.SRTHub.Host != "0.0.0.0" || config.Relay.SRTHub.Port != 9000 {
+		t.Errorf("expected default SRT hub 0.0.0.0:9000, got %s:%d", config.Relay.SRTHub.Host, config.Relay.SRTHub.Port)
+	}
 
 	// Test Recording defaults
 	if config.Recording.Directory != "recordings" {
@@ -120,7 +123,15 @@ func TestConfigValidation(t *testing.T) {
 				c.Relay.HubType = "invalid"
 			},
 			shouldError: true,
-			errorMsg:    "hub_type must be 'rtmp' or 'rtsp'",
+			errorMsg:    "hub_type must be 'rtmp', 'rtsp', or 'srt'",
+		},
+		{
+			name: "Invalid SRT hub port",
+			modifyFunc: func(c *Config) {
+				c.Relay.SRTHub.Port = 0
+			},
+			shouldError: true,
+			errorMsg:    "SRT hub port must be between 1 and 65535",
 		},
 		{
 			name: "Empty recording directory",

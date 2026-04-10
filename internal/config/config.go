@@ -53,9 +53,10 @@ type HTTPConfig struct {
 type RelayConfig struct {
 	InputTimeout  Duration   `json:"input_timeout"`
 	OutputTimeout Duration   `json:"output_timeout"`
-	HubType       string     `json:"hub_type"` // "rtmp" or "rtsp", defaults to "rtmp"
+	HubType       string     `json:"hub_type"` // "rtmp", "rtsp", or "srt", defaults to "rtmp"
 	RTSPHub       RTSPConfig `json:"rtsp_hub"`
 	RTMPHub       RTMPConfig `json:"rtmp_hub"`
+	SRTHub        SRTConfig  `json:"srt_hub"`
 }
 
 // RTSPConfig contains RTSP server settings
@@ -66,6 +67,12 @@ type RTSPConfig struct {
 
 // RTMPConfig contains RTMP hub settings
 type RTMPConfig struct {
+	Host string `json:"host"`
+	Port int    `json:"port"`
+}
+
+// SRTConfig contains SRT listener settings for passive accept-mode inputs.
+type SRTConfig struct {
 	Host string `json:"host"`
 	Port int    `json:"port"`
 }
@@ -132,6 +139,10 @@ func DefaultConfig() *Config {
 			RTMPHub: RTMPConfig{
 				Host: "0.0.0.0",
 				Port: 1935,
+			},
+			SRTHub: SRTConfig{
+				Host: "0.0.0.0",
+				Port: 9000,
 			},
 		},
 		Recording: RecordingConfig{
@@ -200,8 +211,8 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("output timeout must be greater than input timeout")
 	}
 
-	if c.Relay.HubType != "rtmp" && c.Relay.HubType != "rtsp" {
-		return fmt.Errorf("hub_type must be 'rtmp' or 'rtsp'")
+	if c.Relay.HubType != "rtmp" && c.Relay.HubType != "rtsp" && c.Relay.HubType != "srt" {
+		return fmt.Errorf("hub_type must be 'rtmp', 'rtsp', or 'srt'")
 	}
 
 	// Validate RTMP hub configuration
@@ -212,6 +223,11 @@ func (c *Config) Validate() error {
 	// Validate RTSP hub configuration (port 0 = OS-assigned, valid for testing/dynamic binding)
 	if c.Relay.RTSPHub.Port < 0 || c.Relay.RTSPHub.Port > 65535 {
 		return fmt.Errorf("RTSP hub port must be between 0 and 65535")
+	}
+
+	// Validate SRT listener configuration
+	if c.Relay.SRTHub.Port <= 0 || c.Relay.SRTHub.Port > 65535 {
+		return fmt.Errorf("SRT hub port must be between 1 and 65535")
 	}
 
 	// Validate recording directory

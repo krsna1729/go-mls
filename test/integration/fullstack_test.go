@@ -89,6 +89,7 @@ func setupTestEnv(t *testing.T, hubType string) *testEnv {
 
 	var rtmpPort int
 	var rtspAddr string
+	rtmpPort = cfg.Relay.RTMPHub.Port
 
 	switch hubType {
 	case "rtsp":
@@ -97,10 +98,8 @@ func setupTestEnv(t *testing.T, hubType string) *testEnv {
 			Host: "127.0.0.1",
 			Port: 0,
 		}
-		rtmpPort = 0
 	default:
 		hubType = "rtmp"
-		rtmpPort = 1935
 	}
 
 	appCtx, err := app.NewContext(cfg, log)

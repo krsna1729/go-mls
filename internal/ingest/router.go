@@ -20,26 +20,52 @@ type Router struct {
 	store    *state.Store
 	log      *logger.Logger
 	rtmpPort int
+	rtspPort int
+	srtHost  string
+	srtPort  int
 	mu       sync.RWMutex
 
 	evictStream func(streamPath string)
 
 	// Map of stream_path -> active Puller for pull-mode inputs
 	pullers map[string]*worker.Puller
+
+	// Map of stream_path -> active SRT-to-RTMP adapter for srt accept-mode inputs.
+	srtAdapters map[string]*worker.SRTAdapter
+
+	// Map of stream_path -> active RTSP-to-RTMP adapter for rtsp accept-mode inputs.
+	rtspAdapters map[string]*worker.RTSPAdapter
 }
 
 // Config holds router configuration.
 type Config struct {
 	RTMPPort int
+	RTSPPort int
+	SRTHost  string
+	SRTPort  int
 }
 
 // NewRouter creates a new ingest router.
 func NewRouter(store *state.Store, log *logger.Logger, cfg Config) *Router {
+	srtHost := cfg.SRTHost
+	if strings.TrimSpace(srtHost) == "" {
+		srtHost = "0.0.0.0"
+	}
+	srtPort := cfg.SRTPort
+	if srtPort <= 0 {
+		srtPort = 9000
+	}
+
 	return &Router{
-		store:    store,
-		log:      log.With("component", "ingest"),
-		rtmpPort: cfg.RTMPPort,
-		pullers:  make(map[string]*worker.Puller),
+		store:        store,
+		log:          log.With("component", "ingest"),
+		rtmpPort:     cfg.RTMPPort,
+		rtspPort:     cfg.RTSPPort,
+		srtHost:      srtHost,
+		srtPort:      srtPort,
+		pullers:      make(map[string]*worker.Puller),
+		srtAdapters:  make(map[string]*worker.SRTAdapter),
+		rtspAdapters: make(map[string]*worker.RTSPAdapter),
 	}
 }
 
@@ -56,9 +82,14 @@ func (r *Router) SetStreamEvictor(evictor func(streamPath string)) {
 func (r *Router) RegisterInput(ctx context.Context, in *state.Input) error {
 	// Determine mode
 	if in.RemoteURL == "" {
+		if in.AcceptProtocol == "" {
+			in.AcceptProtocol = "rtmp"
+		}
+		in.AcceptProtocol = normalizeAcceptProtocol(in.AcceptProtocol)
 		in.Mode = state.InputModeAccept
 		in.Status = state.InputStatusStarting
 	} else {
+		in.AcceptProtocol = ""
 		in.Mode = state.InputModePull
 		in.Status = state.InputStatusStarting
 	}
@@ -69,6 +100,10 @@ func (r *Router) RegisterInput(ctx context.Context, in *state.Input) error {
 
 	if in.Mode == state.InputModePull {
 		go r.startPuller(ctx, in)
+	} else if in.AcceptProtocol == "srt" {
+		r.log.Info("SRT adapter input registered, waiting for SRT publisher", "stream_path", in.StreamPath)
+	} else if in.AcceptProtocol == "rtsp" {
+		r.log.Info("RTSP adapter input registered, waiting for RTSP publisher", "stream_path", in.StreamPath)
 	} else {
 		r.log.Info("Acceptor registered, waiting for push", "stream_path", in.StreamPath)
 	}
@@ -112,11 +147,25 @@ func (r *Router) UnregisterInput(streamPath string) error {
 	if puller != nil {
 		delete(r.pullers, streamPath)
 	}
+	srtAdapter := r.srtAdapters[streamPath]
+	if srtAdapter != nil {
+		delete(r.srtAdapters, streamPath)
+	}
+	rtspAdapter := r.rtspAdapters[streamPath]
+	if rtspAdapter != nil {
+		delete(r.rtspAdapters, streamPath)
+	}
 	evictor := r.evictStream
 	r.mu.Unlock()
 
 	if puller != nil {
 		puller.Stop()
+	}
+	if srtAdapter != nil {
+		srtAdapter.Stop()
+	}
+	if rtspAdapter != nil {
+		rtspAdapter.Stop()
 	}
 
 	if evictor != nil {
@@ -131,6 +180,22 @@ func (r *Router) UnregisterInput(streamPath string) error {
 		}
 	}
 
+	if srtAdapter != nil {
+		select {
+		case <-srtAdapter.Done():
+		case <-time.After(5 * time.Second):
+			r.log.Warn("Timed out waiting for SRT adapter to stop during unregister", "stream_path", streamPath)
+		}
+	}
+
+	if rtspAdapter != nil {
+		select {
+		case <-rtspAdapter.Done():
+		case <-time.After(5 * time.Second):
+			r.log.Warn("Timed out waiting for RTSP adapter to stop during unregister", "stream_path", streamPath)
+		}
+	}
+
 	return r.store.RemoveInput(streamPath)
 }
 
@@ -139,11 +204,25 @@ func (r *Router) Shutdown() {
 	r.mu.Lock()
 	pullers := r.pullers
 	r.pullers = make(map[string]*worker.Puller)
+	srtAdapters := r.srtAdapters
+	r.srtAdapters = make(map[string]*worker.SRTAdapter)
+	rtspAdapters := r.rtspAdapters
+	r.rtspAdapters = make(map[string]*worker.RTSPAdapter)
 	r.mu.Unlock()
 
 	for path, puller := range pullers {
 		r.log.Info("Stopping puller", "stream_path", path)
 		puller.Stop()
+	}
+
+	for path, adapter := range srtAdapters {
+		r.log.Info("Stopping SRT adapter", "stream_path", path)
+		adapter.Stop()
+	}
+
+	for path, adapter := range rtspAdapters {
+		r.log.Info("Stopping RTSP adapter", "stream_path", path)
+		adapter.Stop()
 	}
 
 	// Wait for all pullers to finish
@@ -152,6 +231,22 @@ func (r *Router) Shutdown() {
 		case <-puller.Done():
 		case <-time.After(10 * time.Second):
 			r.log.Warn("Puller did not stop within timeout", "stream_path", path)
+		}
+	}
+
+	for path, adapter := range srtAdapters {
+		select {
+		case <-adapter.Done():
+		case <-time.After(10 * time.Second):
+			r.log.Warn("SRT adapter did not stop within timeout", "stream_path", path)
+		}
+	}
+
+	for path, adapter := range rtspAdapters {
+		select {
+		case <-adapter.Done():
+		case <-time.After(10 * time.Second):
+			r.log.Warn("RTSP adapter did not stop within timeout", "stream_path", path)
 		}
 	}
 }
@@ -194,6 +289,84 @@ func (r *Router) startFFmpegPuller(ctx context.Context, in *state.Input) {
 	}(puller)
 }
 
+func (r *Router) startSRTAdapter(ctx context.Context, in *state.Input) {
+	r.mu.RLock()
+	_, running := r.srtAdapters[in.StreamPath]
+	r.mu.RUnlock()
+	if running {
+		return
+	}
+
+	adapter, err := worker.StartSRTAdapter(ctx, r.store, r.log, in, r.srtPort, r.rtmpPort)
+	if err != nil {
+		r.log.Error("Failed to start SRT adapter", "stream_path", in.StreamPath, "error", err)
+		r.store.UpdateInputStatus(in.StreamPath, state.InputStatusError, err.Error())
+		return
+	}
+
+	r.mu.Lock()
+	r.srtAdapters[in.StreamPath] = adapter
+	r.mu.Unlock()
+
+	r.store.UpdateInputRemoteAddr(in.StreamPath, fmt.Sprintf("srt://%s:%d?mode=caller&streamid=publish:%s", r.srtHost, r.srtPort, in.StreamPath))
+	r.store.UpdateInputStatus(in.StreamPath, state.InputStatusActive, "")
+
+	go func(a *worker.SRTAdapter, streamPath string) {
+		<-a.Done()
+		r.mu.Lock()
+		if current, ok := r.srtAdapters[streamPath]; ok && current == a {
+			delete(r.srtAdapters, streamPath)
+		}
+		r.mu.Unlock()
+	}(adapter, in.StreamPath)
+}
+
+func (r *Router) startRTSPAdapter(ctx context.Context, in *state.Input) {
+	r.mu.RLock()
+	_, running := r.rtspAdapters[in.StreamPath]
+	r.mu.RUnlock()
+	if running {
+		return
+	}
+
+	adapter, err := worker.StartRTSPAdapter(ctx, r.store, r.log, in, r.rtspPort, r.rtmpPort)
+	if err != nil {
+		r.log.Error("Failed to start RTSP adapter", "stream_path", in.StreamPath, "error", err)
+		r.store.UpdateInputStatus(in.StreamPath, state.InputStatusError, err.Error())
+		return
+	}
+
+	r.mu.Lock()
+	r.rtspAdapters[in.StreamPath] = adapter
+	r.mu.Unlock()
+
+	r.store.UpdateInputRemoteAddr(in.StreamPath, fmt.Sprintf("rtsp://%s:%d/%s", "127.0.0.1", r.rtspPort, in.StreamPath))
+	r.store.UpdateInputStatus(in.StreamPath, state.InputStatusActive, "")
+
+	go func(a *worker.RTSPAdapter, streamPath string) {
+		<-a.Done()
+		r.mu.Lock()
+		if current, ok := r.rtspAdapters[streamPath]; ok && current == a {
+			delete(r.rtspAdapters, streamPath)
+		}
+		r.mu.Unlock()
+	}(adapter, in.StreamPath)
+}
+
+func normalizeAcceptProtocol(protocol string) string {
+	p := strings.ToLower(strings.TrimSpace(protocol))
+	if p == "" {
+		return "rtmp"
+	}
+	if p == "srt" {
+		return "srt"
+	}
+	if p == "rtsp" {
+		return "rtsp"
+	}
+	return "rtmp"
+}
+
 // ValidateToken checks if the provided token matches the registered ingest token.
 func (r *Router) ValidateToken(streamPath, token string) bool {
 	in, ok := r.store.GetInput(streamPath)
@@ -206,12 +379,44 @@ func (r *Router) ValidateToken(streamPath, token string) bool {
 	return in.IngestToken == token
 }
 
-// OnPublish is called by the RTMP hub when a publisher connects.
-// It validates the path and token, then activates the input.
+// OnPublish is called by ingest hubs when a publisher connects.
+// It validates the path and token, then activates or adapts the input.
 func (r *Router) OnPublish(streamPath, token, remoteAddr string) error {
 	in, ok := r.store.GetInput(streamPath)
 	if !ok {
 		return fmt.Errorf("stream path %q not registered", streamPath)
+	}
+	if in.Mode == state.InputModeAccept && normalizeAcceptProtocol(in.AcceptProtocol) == "rtsp" {
+		r.mu.RLock()
+		_, running := r.rtspAdapters[streamPath]
+		r.mu.RUnlock()
+		if running || strings.HasPrefix(remoteAddr, "127.0.0.1:") || strings.HasPrefix(remoteAddr, "[::1]:") {
+			r.store.UpdateInputStatus(streamPath, state.InputStatusActive, "")
+			return nil
+		}
+		if remoteAddr != "" {
+			r.store.UpdateInputRemoteAddr(streamPath, remoteAddr)
+		}
+		r.store.UpdateInputStatus(streamPath, state.InputStatusStarting, "")
+		go r.startRTSPAdapter(context.Background(), in)
+		r.log.Info("RTSP publisher connected, adapter starting", "stream_path", streamPath, "remote_addr", remoteAddr)
+		return nil
+	}
+	if in.Mode == state.InputModeAccept && normalizeAcceptProtocol(in.AcceptProtocol) == "srt" {
+		r.mu.RLock()
+		_, running := r.srtAdapters[streamPath]
+		r.mu.RUnlock()
+		if running {
+			r.store.UpdateInputStatus(streamPath, state.InputStatusActive, "")
+			return nil
+		}
+		if remoteAddr != "" {
+			r.store.UpdateInputRemoteAddr(streamPath, remoteAddr)
+		}
+		r.store.UpdateInputStatus(streamPath, state.InputStatusStarting, "")
+		go r.startSRTAdapter(context.Background(), in)
+		r.log.Info("SRT publisher connected, adapter starting", "stream_path", streamPath, "remote_addr", remoteAddr)
+		return nil
 	}
 	if in.IngestToken != "" && in.IngestToken != token {
 		return fmt.Errorf("invalid ingest token for %q", streamPath)
@@ -226,6 +431,14 @@ func (r *Router) OnPublish(streamPath, token, remoteAddr string) error {
 
 // OnPublishEnd is called when a publisher disconnects.
 func (r *Router) OnPublishEnd(streamPath string) {
+	r.mu.Lock()
+	if adapter, ok := r.srtAdapters[streamPath]; ok {
+		delete(r.srtAdapters, streamPath)
+		r.mu.Unlock()
+		adapter.Stop()
+	} else {
+		r.mu.Unlock()
+	}
 	r.store.UpdateInputStatus(streamPath, state.InputStatusStopped, "")
 	r.log.Info("Publisher disconnected", "stream_path", streamPath)
 }

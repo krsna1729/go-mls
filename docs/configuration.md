@@ -8,7 +8,7 @@ The checked-in reference file is `config.example.json`, and examples below mirro
 The configuration is divided into several sections:
 
 - **http**: HTTP API server settings.
-- **relay**: Hub configuration (RTMP/RTSP), timeouts.
+- **relay**: Hub configuration (RTMP/RTSP), SRT passive-accept listener settings, and timeouts.
 - **recording**: Recording settings.
 - **hls**: HLS streaming settings.
 - **ffmpeg**: FFmpeg process settings.
@@ -40,6 +40,10 @@ Examples: `"30s"`, `"5m"`, `"1h"`, `"500ms"`.
     "rtsp_hub": {
       "host": "0.0.0.0",
       "port": 8554
+    },
+    "srt_hub": {
+      "host": "0.0.0.0",
+      "port": 9000
     }
   },
   "recording": {
@@ -88,6 +92,26 @@ For IP cameras, NVRs, or RTSP-compatible sources:
     "port": 8554
   }
 }
+```
+
+### SRT Passive Accept Listener
+For SRT caller publishers targeting accept-mode inputs (`accept_protocol: "srt"` in `/inputs` API):
+
+```json
+"relay": {
+  "srt_hub": {
+    "host": "0.0.0.0",
+    "port": 9000
+  }
+}
+```
+
+Use a single shared SRT port and set `streamid=publish:<stream_path>` from the publisher.
+
+Example publisher URL:
+
+```text
+srt://<host>:9000?mode=caller&streamid=publish:push-stream&transtype=live
 ```
 
 ## Common Scenarios
