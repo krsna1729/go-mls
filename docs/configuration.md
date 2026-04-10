@@ -68,8 +68,29 @@ Examples: `"30s"`, `"5m"`, `"1h"`, `"500ms"`.
 
 ## Hub Configuration
 
-### RTMP Hub (Default)
-For OBS, streaming software, or any RTMP-compatible encoder:
+### Multi-Protocol Ingest Architecture
+
+Go-MLS supports simultaneous ingest via multiple protocols through a **Composite Hub** architecture:
+
+- All configured hub protocols are **started simultaneously**
+- The `hub_type` setting designates which is the **primary** hub for Addr() reporting
+- Each protocol operates independently but feeds the same internal RTMP backbone
+- Inputs can be registered as pull-mode (external source) or accept-mode (wait for publisher)
+
+### Hub Type: Primary Hub Selection
+
+The `relay.hub_type` setting controls which hub is the **primary** (reports main address):
+
+| Value | Primary | Secondary Hubs | When to Use |
+|-------|---------|-----------------|----------|
+| `"rtmp"` (default) | RTMP Hub | RTSP, SRT, Internal | OBS/streaming software push |
+| `"rtsp"` | RTSP Hub | RTMP, SRT, Internal | IP cameras / NVR streams |
+| `"srt"` | SRT Hub | RTMP, RTSP, Internal | SRT encoder inputs |
+
+All hubs are started regardless of type; the primary determines what `Addr()` returns for API clients.
+
+### RTMP Hub (Native Protocol Support)
+For OBS, streaming software, encoders, or any RTMP-compatible publisher:
 
 ```json
 "relay": {
@@ -81,8 +102,12 @@ For OBS, streaming software, or any RTMP-compatible encoder:
 }
 ```
 
-### RTSP Hub
-For IP cameras, NVRs, or RTSP-compatible sources:
+**Input modes:**
+- **Accept RTMP**: Publishers push streams directly (e.g., `rtmp://server:1935/stream-path`)
+- **Pull RTMP**: Register input with `pull_protocol: "rtmp"` and remote URL
+
+### RTSP Hub (IP Camera & NVR Support)
+For IP cameras, NVRs, and RTSP-compatible sources with automatic protocol bridging:
 
 ```json
 "relay": {
@@ -94,8 +119,27 @@ For IP cameras, NVRs, or RTSP-compatible sources:
 }
 ```
 
-### SRT Passive Accept Listener
-For SRT caller publishers targeting accept-mode inputs (`accept_protocol: "srt"` in `/inputs` API):
+**Input modes:**
+- **Accept RTSP**: Publishers push streams directly to hub listener
+  - When a stream connects, an **RTSPAdapter** is spawned (FFmpeg bridge)
+  - The adapter pulls from the RTSP hub and re-pushes to internal RTMP backbone
+  - This allows RTSP sources to be treated as first-class inputs in the system
+- **Pull RTSP**: Register input with `pull_protocol: "rtsp"` and remote URL
+  - The Puller pulls directly from the remote RTSP source
+  - Pushed to internal RTMP backbone
+
+```json
+{
+  "stream_path": "camera-1",
+  "accept_protocol": "rtsp",
+  "token": ""
+}
+```
+
+When a camera connects to `rtsp://server:8554/camera-1`, an RTSPAdapter is automatically started to bridge it.
+
+### SRT Hub (SRT Accept-Mode Support)
+For SRT caller publishers targeting passive-accept listeners:
 
 ```json
 "relay": {
@@ -106,13 +150,40 @@ For SRT caller publishers targeting accept-mode inputs (`accept_protocol: "srt"`
 }
 ```
 
-Use a single shared SRT port and set `streamid=publish:<stream_path>` from the publisher.
+**Input modes:**
+- **Accept SRT**: Publishers send SRT calls, triggering **SRTAdapter** spawning
+  - When SRT publisher connects, an SRTAdapter (FFmpeg bridge) is created
+  - Adapter pulls from SRT listener and re-pushes to internal RTMP backbone
+- **Pull SRT**: Register input with `pull_protocol: "srt"` and caller URL
 
-Example publisher URL:
-
-```text
-srt://<host>:9000?mode=caller&streamid=publish:push-stream&transtype=live
+```json
+{
+  "stream_path": "encoder-1",
+  "accept_protocol": "srt"
+}
 ```
+
+**SRT Publisher Example:**
+```bash
+ffmpeg -i input.mp4 -c copy -f mpegts srt://server:9000?mode=caller&streamid=publish:encoder-1
+```
+
+### Internal RTMP Backbone (Automatic)
+All protocols bridge to an internal RTMP hub for unified distribution:
+
+```json
+"relay": {
+  "rtmp_hub": {
+    "host": "127.0.0.1",
+    "port": 1935
+  }
+}
+```
+
+- **Scope**: Localhost only (127.0.0.1), not exposed externally  
+- **Purpose**: Internal convergence point for all ingested streams
+- **Consumers**: Restreamer, Recorder, HLS Manager pull from this backbone
+- **Auto-managed**: Created and started automatically via CompositeHub
 
 ## Common Scenarios
 
